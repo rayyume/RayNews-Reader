@@ -773,6 +773,27 @@ assert.equal(context._store.aiRelayOrigins, undefined);  // origin not marked
 """)
 
 
+def test_opencode_go_endpoint_uses_relay_without_attempting_browser_direct_call():
+    _run("""
+const relayCalls = [];
+context.fetch = async (url, opts) => {
+  relayCalls.push({ url, body: JSON.parse(opts.body) });
+  return { ok: true, json: async () => ({ content: 'relayed' }) };
+};
+let directCalls = 0;
+context.callOpenAiChat = async () => { directCalls++; throw new Error('must not call direct'); };
+
+const out = await context.aiChat(
+  { provider_type: 'openai', endpoint: 'https://opencode.ai/zen/go/v1' },
+  [{ role: 'user', content: 'hi' }], 100, 0.3);
+
+assert.equal(out, 'relayed');
+assert.equal(directCalls, 0);
+assert.equal(relayCalls.length, 1);
+assert.equal(relayCalls[0].url, '/ai/chat');
+""")
+
+
 def test_browser_direct_deepseek_request_disables_thinking():
     _run("""
 const calls = [];
@@ -802,7 +823,7 @@ let directCalls = 0;
 context.callOpenAiChat = async () => { directCalls++; throw new TypeError('Load failed'); };
 context.callClaudeChat = async () => { throw new Error('unused'); };
 
-const cfg = { provider_type: 'openai', endpoint: 'https://opencode.ai/zen/go/v1' };
+const cfg = { provider_type: 'openai', endpoint: 'https://cors-blocked.example/v1' };
 const out1 = await context.aiChat(cfg, [{ role: 'user', content: 'hi' }], 8000, 0.3);
 assert.equal(out1, 'relayed');
 assert.equal(directCalls, 1);                 // tried direct once
@@ -811,7 +832,7 @@ assert.equal(relayCalls[0].url, '/ai/chat');
 assert.equal(relayCalls[0].auth, 'Bearer tok');
 assert.equal(relayCalls[0].body.max_tokens, 8000);
 // Origin remembered so the next call skips the doomed direct attempt.
-assert.deepEqual(JSON.parse(context._store.aiRelayOrigins), ['https://opencode.ai']);
+assert.deepEqual(JSON.parse(context._store.aiRelayOrigins), ['https://cors-blocked.example']);
 
 const out2 = await context.aiChat(cfg, [{ role: 'user', content: 'again' }], 8000, 0.3);
 assert.equal(out2, 'relayed');
