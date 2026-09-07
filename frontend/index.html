@@ -4409,6 +4409,17 @@ function isDeepSeekModel(model) {
   return (model || '').toLowerCase().includes('deepseek');
 }
 
+function isOpenCodeGoEndpoint(endpoint) {
+  try {
+    const url = new URL(endpoint);
+    const path = url.pathname.toLowerCase().replace(/\/$/, '');
+    return url.hostname.toLowerCase() === 'opencode.ai'
+      && (path === '/zen/go' || path.startsWith('/zen/go/'));
+  } catch (e) {
+    return false;
+  }
+}
+
 async function callOpenAiChat(config, messages, maxTokens, temperature) {
   const base = (config.endpoint || '').replace(/\/$/, '');
   const url = base.includes('/v1') ? base + '/chat/completions' : base + '/v1/chat/completions';
@@ -4517,6 +4528,10 @@ async function aiChat(config, messages, maxTokens, temperature) {
   const direct = () => (config.provider_type === 'claude'
     ? callClaudeChat(config, messages, maxTokens, temperature)
     : callOpenAiChat(config, messages, maxTokens, temperature));
+
+  // OpenCode Go requires a stable x-opencode-session header and an identifying
+  // User-Agent. Browsers cannot set User-Agent, so always use the server relay.
+  if (isOpenCodeGoEndpoint(config.endpoint)) return callAiRelay(messages, maxTokens, temperature);
 
   // Known CORS-blocked endpoint — don't waste a doomed direct attempt.
   if (aiRelayNeeded(config.endpoint)) return callAiRelay(messages, maxTokens, temperature);

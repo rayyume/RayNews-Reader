@@ -4,6 +4,7 @@ import os
 import json
 import requests
 import re
+import uuid
 from collections import defaultdict
 from typing import Optional
 from urllib.parse import urlsplit
@@ -208,6 +209,20 @@ class AIService:
         self.model = model
         self.provider_type = provider_type  # 'openai' or 'claude'
         self.request_timeout = int(os.environ.get("AI_REQUEST_TIMEOUT_SECONDS", "300"))
+        self._session_id = str(uuid.uuid4())
+
+    def _opencode_routing_headers(self) -> dict[str, str]:
+        parsed = urlsplit(self.endpoint)
+        path = parsed.path.lower().rstrip("/")
+        if (
+            parsed.hostname == "opencode.ai"
+            and (path == "/zen/go" or path.startswith("/zen/go/"))
+        ):
+            return {
+                "User-Agent": "RayNews-Reader/1.0",
+                "x-opencode-session": self._session_id,
+            }
+        return {}
 
     def _is_deepseek(self) -> bool:
         return "deepseek.com" in (self.endpoint or "").lower()
@@ -266,13 +281,15 @@ class AIService:
         if self._is_deepseek_model():
             body["thinking"] = {"type": "disabled"}
 
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        headers.update(self._opencode_routing_headers())
         try:
             resp = safe_post(
                 url,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
+                headers=headers,
                 json=body,
                 timeout=(30, self.request_timeout),
                 allow_private=_ALLOW_PRIVATE_AI_ENDPOINTS,
@@ -328,14 +345,16 @@ class AIService:
         if system:
             body["system"] = system
 
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        headers.update(self._opencode_routing_headers())
         try:
             resp = safe_post(
                 url,
-                headers={
-                    "x-api-key": self.api_key,
-                    "anthropic-version": "2023-06-01",
-                    "Content-Type": "application/json",
-                },
+                headers=headers,
                 json=body,
                 timeout=(30, self.request_timeout),
                 allow_private=_ALLOW_PRIVATE_AI_ENDPOINTS,

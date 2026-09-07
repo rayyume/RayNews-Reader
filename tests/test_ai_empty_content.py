@@ -3,6 +3,7 @@ that exhaust max_tokens on hidden reasoning) into an actionable error, not a bar
 callers log as "empty" and retry forever."""
 
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,9 @@ def _patch_post(monkeypatch, payload):
 
     def fake_post(url, headers=None, json=None, timeout=None, **kwargs):
         captured["body"] = json
+        captured.setdefault("calls", []).append(
+            {"url": url, "headers": headers, "body": json}
+        )
         return FakeResp(payload)
 
     monkeypatch.setattr(network_safety, "_send_bound_request", fake_post)
@@ -117,6 +121,55 @@ def test_non_deepseek_openai_request_does_not_send_thinking(monkeypatch):
         [{"role": "user", "content": "hi"}]
     )
     assert "thinking" not in captured["body"]
+
+
+def test_opencode_go_openai_requests_send_one_stable_session_per_service(monkeypatch):
+    captured = _patch_post(monkeypatch, {"choices": [{"message": {"content": "ok"}}]})
+    service = AIService("key", "https://opencode.ai/zen/go/v1", "deepseek-v4-flash")
+
+    service.chat([{"role": "user", "content": "first"}])
+    service.chat([{"role": "user", "content": "second"}])
+
+    first_headers = captured["calls"][0]["headers"]
+    second_headers = captured["calls"][1]["headers"]
+    uuid.UUID(first_headers["x-opencode-session"])
+    assert second_headers["x-opencode-session"] == first_headers["x-opencode-session"]
+    assert first_headers["User-Agent"] == "RayNews-Reader/1.0"
+
+
+def test_separate_opencode_go_services_use_separate_sessions(monkeypatch):
+    captured = _patch_post(monkeypatch, {"choices": [{"message": {"content": "ok"}}]})
+
+    for _ in range(2):
+        AIService("key", "https://opencode.ai/zen/go/v1", "deepseek-v4-flash").chat(
+            [{"role": "user", "content": "hi"}]
+        )
+
+    session_ids = [call["headers"]["x-opencode-session"] for call in captured["calls"]]
+    assert session_ids[0] != session_ids[1]
+
+
+def test_opencode_go_claude_requests_send_session_header(monkeypatch):
+    captured = _patch_post(monkeypatch, {
+        "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": "ok"}],
+    })
+
+    _svc("claude").chat([{"role": "user", "content": "hi"}])
+
+    headers = captured["calls"][0]["headers"]
+    uuid.UUID(headers["x-opencode-session"])
+    assert headers["User-Agent"] == "RayNews-Reader/1.0"
+
+
+def test_non_opencode_provider_does_not_receive_opencode_session_header(monkeypatch):
+    captured = _patch_post(monkeypatch, {"choices": [{"message": {"content": "ok"}}]})
+
+    AIService("key", "https://api.openai.com/v1", "gpt-4o-mini").chat(
+        [{"role": "user", "content": "hi"}]
+    )
+
+    assert "x-opencode-session" not in captured["calls"][0]["headers"]
 
 
 def test_openai_null_content_does_not_crash_and_raises(monkeypatch):
