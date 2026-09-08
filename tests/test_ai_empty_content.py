@@ -11,8 +11,18 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import ai_service
+import models
 import network_safety
 from ai_service import AIService
+
+
+@pytest.fixture(autouse=True)
+def _isolated_opencode_session_store(tmp_path, monkeypatch):
+    """Session ids persist in app_state; point that DB at a throwaway file and
+    reset the process-level cache so each test starts with a clean session."""
+    monkeypatch.setattr(models, "DB_FILE", tmp_path / "opencode-sessions.db")
+    monkeypatch.setattr(ai_service, "_opencode_session_cache", {})
+    yield
 
 
 class FakeResp:
@@ -140,13 +150,42 @@ def test_opencode_go_openai_requests_send_one_stable_session_per_service(monkeyp
 def test_separate_opencode_go_services_use_separate_sessions(monkeypatch):
     captured = _patch_post(monkeypatch, {"choices": [{"message": {"content": "ok"}}]})
 
+    for api_key in ("key-one", "key-two"):
+        AIService(api_key, "https://opencode.ai/zen/go/v1", "deepseek-v4-flash").chat(
+            [{"role": "user", "content": "hi"}]
+        )
+
+    session_ids = [call["headers"]["x-opencode-session"] for call in captured["calls"]]
+    uuid.UUID(session_ids[0])
+    assert session_ids[0] != session_ids[1]
+
+
+def test_opencode_go_session_is_stable_across_service_instances(monkeypatch):
+    """Instances are built per request/job, so a per-instance id would look like
+    a brand-new client on every call. Same credentials must reuse one session."""
+    captured = _patch_post(monkeypatch, {"choices": [{"message": {"content": "ok"}}]})
+
     for _ in range(2):
         AIService("key", "https://opencode.ai/zen/go/v1", "deepseek-v4-flash").chat(
             [{"role": "user", "content": "hi"}]
         )
 
     session_ids = [call["headers"]["x-opencode-session"] for call in captured["calls"]]
-    assert session_ids[0] != session_ids[1]
+    uuid.UUID(session_ids[0])
+    assert session_ids[0] == session_ids[1]
+
+
+def test_opencode_go_session_survives_process_restart(monkeypatch):
+    """The persisted id must outlive the in-process cache (a restart)."""
+    _patch_post(monkeypatch, {"choices": [{"message": {"content": "ok"}}]})
+
+    first = AIService("key", "https://opencode.ai/zen/go/v1", "deepseek-v4-flash")
+    first_session = first._opencode_session()
+
+    monkeypatch.setattr(ai_service, "_opencode_session_cache", {})
+
+    restarted = AIService("key", "https://opencode.ai/zen/go/v1", "deepseek-v4-flash")
+    assert restarted._opencode_session() == first_session
 
 
 def test_opencode_go_claude_requests_send_session_header(monkeypatch):
