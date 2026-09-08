@@ -2,8 +2,10 @@
 
 import os
 import json
+import hashlib
 import requests
 import re
+import threading
 import uuid
 from collections import defaultdict
 from typing import Optional
@@ -195,6 +197,50 @@ def _token_aware_truncate(text: str, max_chars: int = _MAX_INPUT_CHARS) -> str:
     return '\n\n'.join(parts)
 
 
+_opencode_session_lock = threading.Lock()
+# state_key -> session id for this process; the durable copy lives in app_state.
+_opencode_session_cache: dict[str, str] = {}
+
+
+def _stable_opencode_session(endpoint: str, api_key: str) -> str:
+    """One long-lived x-opencode-session id per (endpoint, api_key) pair.
+
+    The provider treats this header as the caller's session identity and
+    risk-controls clients that mint a fresh random id per request. The id is
+    generated once, persisted in app_state so it survives restarts, and then
+    reused by every AIService instance built with the same credentials —
+    new instances are created per request/job, so per-instance generation
+    would look like a brand-new client on every call. Different credentials
+    keep separate sessions. Persistence is best-effort: without a usable
+    app DB the id simply stays stable for the life of the process.
+    """
+    identity = hashlib.sha256(
+        f"{(endpoint or '').rstrip('/')}\x00{api_key or ''}".encode("utf-8")
+    ).hexdigest()[:24]
+    state_key = f"opencode_session:{identity}"
+    with _opencode_session_lock:
+        cached = _opencode_session_cache.get(state_key)
+    if cached:
+        return cached
+    session_id = ""
+    try:
+        from models import get_app_state, set_app_state
+        stored = get_app_state(state_key)
+        if stored:
+            try:
+                uuid.UUID(str(stored))
+                session_id = str(stored)
+            except (TypeError, ValueError):
+                session_id = ""
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            set_app_state(state_key, session_id)
+    except Exception:
+        session_id = str(uuid.uuid4())
+    with _opencode_session_lock:
+        return _opencode_session_cache.setdefault(state_key, session_id)
+
+
 class AIService:
     """Unified AI service supporting both OpenAI format and Claude format APIs.
 
@@ -209,7 +255,14 @@ class AIService:
         self.model = model
         self.provider_type = provider_type  # 'openai' or 'claude'
         self.request_timeout = int(os.environ.get("AI_REQUEST_TIMEOUT_SECONDS", "300"))
-        self._session_id = str(uuid.uuid4())
+        # Resolved lazily (only for opencode.ai/zen/go endpoints) so ordinary
+        # providers never pay the session-lookup cost or touch the app DB.
+        self._session_id: Optional[str] = None
+
+    def _opencode_session(self) -> str:
+        if self._session_id is None:
+            self._session_id = _stable_opencode_session(self.endpoint, self.api_key)
+        return self._session_id
 
     def _opencode_routing_headers(self) -> dict[str, str]:
         parsed = urlsplit(self.endpoint)
@@ -220,7 +273,7 @@ class AIService:
         ):
             return {
                 "User-Agent": "RayNews-Reader/1.0",
-                "x-opencode-session": self._session_id,
+                "x-opencode-session": self._opencode_session(),
             }
         return {}
 
