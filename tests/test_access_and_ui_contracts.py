@@ -479,41 +479,6 @@ def test_source_mutation_routes_are_admin_only_and_shared():
     assert "user_id=g.user_id" not in server[server.index("def save_source"):server.index("def classify_sources")]
 
 
-def test_article_navigation_splits_mobile_and_desktop_history_modes():
-    html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
-    assert "function usesMobileArticleNavigation()" in html
-    assert "(hover: none) and (pointer: coarse)" in html
-    assert "(display-mode: standalone)" in html
-    assert "navigator.maxTouchPoints > 0" in html
-    sync_start = html.index("function syncArticleHistory(id, date)")
-    sync_end = html.index("function openArticle(id)", sync_start)
-    sync_block = html[sync_start:sync_end]
-    assert "if (usesMobileArticleNavigation())" in sync_block
-    mobile_start = sync_block.index("if (usesMobileArticleNavigation())")
-    mobile_end = sync_block.index("history.pushState({ raynewsArticle: true }")
-    mobile_block = sync_block[mobile_start:mobile_end]
-    assert "history.replaceState({ raynewsMobileArticle: true }" in mobile_block
-    assert "history.pushState({ raynewsMobileArticle: true }" not in mobile_block
-    assert "history.pushState({ raynewsArticle: true }" in html
-    assert "history.replaceState({ raynewsHome: true }" in html
-    assert "function closeArticle(fromHistoryNavigation = false, forceInAppNavigation = false)" in html
-    close_start = html.index("function closeArticle(fromHistoryNavigation = false, forceInAppNavigation = false)")
-    close_end = html.index("// Handle hash-based article links", close_start)
-    close_block = html[close_start:close_end]
-    assert "const mobileNavigation = forceInAppNavigation || usesMobileArticleNavigation();" in close_block
-    assert "history.state.raynewsArticle" in close_block
-    assert "history.back();" in close_block
-    mobile_close_start = close_block.index("if (!fromHistoryNavigation && mobileNavigation)")
-    history_back_pos = close_block.index("history.back();")
-    assert mobile_close_start < history_back_pos
-    mobile_close_block = close_block[mobile_close_start:history_back_pos]
-    assert "finishArticleClose(true);" in mobile_close_block
-    assert "history.back();" not in mobile_close_block
-    assert "history.replaceState({ raynewsHome: true }" in close_block
-    assert "if (!overlay.classList.contains('open')) return;" in html
-    assert "closeArticle(true)" in html
-
-
 def test_mobile_edge_swipe_claims_navigation_at_touch_start():
     html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     swipe_marker = html.index("let sx = 0, sy = 0, swiping = false")
@@ -525,7 +490,7 @@ def test_mobile_edge_swipe_claims_navigation_at_touch_start():
     assert "edgeCandidate = sx < 50;" in swipe_block
     assert "if (edgeCandidate) e.preventDefault();" in swipe_block
     assert "overlay.addEventListener('touchcancel'" in swipe_block
-    assert "closeArticle(false, true);" in swipe_block
+    assert "closeArticle();" in swipe_block
 
 
 def test_mobile_back_button_is_excluded_from_edge_swipe_and_handles_touch_directly():
@@ -544,7 +509,7 @@ def test_mobile_back_button_is_excluded_from_edge_swipe_and_handles_touch_direct
 
 def test_article_back_does_not_replace_the_whole_list():
     html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
-    close_start = html.index("function closeArticle(fromHistoryNavigation = false, forceInAppNavigation = false)")
+    close_start = html.index("function closeArticle(fromHistoryNavigation = false)")
     close_end = html.index("// Handle hash-based article links", close_start)
     close_block = html[close_start:close_end]
     assert "function reconcileVisibleArticles({ animate = false } = {})" in html
@@ -1134,8 +1099,9 @@ def test_article_history_keeps_only_one_desktop_article_entry():
     end = html.index("function openArticle(id)", start)
     block = html[start:end]
     assert "history.state && history.state.raynewsArticle" in block
-    assert "history.replaceState({ raynewsArticle: true }, '', articleHash);" in block
-    assert "history.pushState({ raynewsArticle: true }, '', articleHash);" in block
+    assert "const articleState = { raynewsArticle: true, articleId: Number(id) };" in block
+    assert "history.replaceState(articleState, '', articleHash);" in block
+    assert "history.pushState(articleState, '', articleHash);" in block
 
 
 def test_list_motion_reuses_cards_and_animates_insertions():
@@ -1228,7 +1194,7 @@ def test_article_return_has_one_scroll_owner_and_preserves_search_scroll():
 
 def test_article_return_does_not_flush_or_animate_homepage():
     html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
-    close_start = html.index("function finishArticleClose(mobileNavigation)")
+    close_start = html.index("function finishArticleClose()")
     close_end = html.index("// Handle hash-based article links", close_start)
     close_block = html[close_start:close_end]
 

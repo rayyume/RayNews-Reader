@@ -476,6 +476,10 @@ body.body-scroll-lock{overflow:hidden!important}
 .daily-summary-content p{margin:0 0 12px}
 .daily-summary-content a{color:var(--accent);text-decoration:none}
 .daily-summary-content a:hover{text-decoration:underline}
+/* sanitizeTranslatedHtml() strips the inline styles renderMarkdown() puts on
+   images/code — restore their layout here, mirroring .notif-markdown. */
+.daily-summary-content img{display:block;max-width:100%!important;height:auto;border-radius:8px}
+.daily-summary-content code{background:var(--bg-surface);padding:1px 5px;border-radius:3px;font-size:0.9em}
 .ai-label{display:block;font-size:12px;font-weight:700;color:var(--text-3);margin-bottom:4px;margin-top:14px}
 .ai-label:first-child{margin-top:0}
 .ai-input{width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:13px;font-family:var(--font);outline:none;transition:border-color 0.15s;box-sizing:border-box}
@@ -1235,6 +1239,26 @@ function getAvatarUrl(user) {
   return 'https://www.gravatar.com/avatar/' + hash + '?d=mp&s=80';
 }
 
+// Set an avatar <img> with a guaranteed letter fallback: gravatar.com is
+// unreachable from some networks (and a broken header avatar reads as a bug),
+// so any load failure swaps in the initial-letter tile instead.
+function applyAvatarToElements(img, letter, user) {
+  if (!img || !letter || !user) return;
+  const showLetter = () => {
+    img.style.display = 'none';
+    letter.style.display = '';
+    letter.textContent = ((user.nickname || user.email || '?')[0] || '?').toUpperCase();
+  };
+  img.onerror = showLetter;
+  img.onload = () => { img.style.display = ''; letter.style.display = 'none'; };
+  img.style.display = '';
+  letter.style.display = 'none';
+  img.src = getAvatarUrl(user);
+  // The (cached) failure may already have happened before the handlers were
+  // attached — complete + zero natural size means there is nothing to show.
+  if (img.complete && img.naturalWidth === 0) showLetter();
+}
+
 // Tiny MD5 implementation (RFC 1321) for Gravatar
 function md5(s) {
   function F(b,c,d){return b&c|~b&d}
@@ -1380,6 +1404,29 @@ function logout() {
   localStorage.removeItem('raynews_token');
   localStorage.removeItem('raynews_user');
   closeUserMenu();
+  // Drop per-account cached state: article bodies may hold shared AI results
+  // gated on the previous account's share_active/share_view_* flags, and
+  // userAutoSettings itself drives displayTitle() — neither may leak into the
+  // next (possibly guest or different-user) session. seenArticleIds stays: it's
+  // a session-lifetime dedup guard, not per-account data.
+  userAutoSettings = null;
+  Object.values(articleBodyControllers).forEach(controller => {
+    try { controller.abort(); } catch (e) {}
+  });
+  articleBodyCache = {};
+  articleBodyPromises = {};
+  articleBodyControllers = {};
+  articleBodyRequestGenerations = {};
+  dailySummaryRetryInFlight = false;
+  setDailySummaryState({
+    status: 'scheduled',
+    result: null,
+    error: '',
+    unread: false,
+    attempts: 0,
+    nextRetryAt: null,
+    canRetry: false,
+  });
   updateUserUI();
   resetNotifState();
   renderList();
@@ -2352,19 +2399,21 @@ function updateUserUI() {
       headerRight.prepend(wrap);
       existingAvatar = wrap;
     }
-    const hdrImg = document.getElementById('hdrAvatarImg');
-    const hdrLetter = document.getElementById('hdrAvatarLetter');
-    hdrImg.src = getAvatarUrl(authUser);
-    hdrImg.style.display = '';
-    hdrLetter.style.display = 'none';
+    applyAvatarToElements(
+      document.getElementById('hdrAvatarImg'),
+      document.getElementById('hdrAvatarLetter'),
+      authUser,
+    );
     existingAvatar.style.display = '';
 
     // Update user menu
     document.getElementById('userNickname').textContent = authUser.nickname || authUser.email.split('@')[0];
     document.getElementById('userEmail').textContent = authUser.email;
-    document.getElementById('userAvatarImg').src = getAvatarUrl(authUser);
-    document.getElementById('userAvatarImg').style.display = '';
-    document.getElementById('userAvatarLetter').style.display = 'none';
+    applyAvatarToElements(
+      document.getElementById('userAvatarImg'),
+      document.getElementById('userAvatarLetter'),
+      authUser,
+    );
     document.getElementById('adminSettingsBtn').style.display = authUser.role === 'admin' ? '' : 'none';
     document.querySelectorAll('.source-admin-only').forEach(el => {
       el.style.display = authUser.role === 'admin' ? '' : 'none';
@@ -2585,19 +2634,12 @@ async function publishBroadcast() {
 }
 
 function loadAccountTab() {
-  const img = document.getElementById('settingsAvatarImg');
-  const letter = document.getElementById('settingsAvatarLetter');
   if (authUser) {
-    const avatarUrl = getAvatarUrl(authUser);
-    if (avatarUrl && !avatarUrl.startsWith('https://www.gravatar.com/')) {
-      img.src = avatarUrl;
-      img.style.display = '';
-      letter.style.display = 'none';
-    } else {
-      img.style.display = 'none';
-      letter.style.display = '';
-      letter.textContent = (authUser.nickname || authUser.email || '?')[0].toUpperCase();
-    }
+    applyAvatarToElements(
+      document.getElementById('settingsAvatarImg'),
+      document.getElementById('settingsAvatarLetter'),
+      authUser,
+    );
   }
 }
 
@@ -4115,7 +4157,11 @@ function renderDailySummaryBody() {
     const generatedTime = formatDailySummaryTime(data.updated_at);
     body.innerHTML =
       '<div class="daily-summary-content">' +
-      renderMarkdown(normalizeDailySummaryMarkdown(data.summary)) +
+      // Same safe pipeline as notification bodies (renderNotifBodyHtml): the digest
+      // is LLM-generated from article content, so a prompt-injection payload (e.g. a
+      // javascript: link) must not reach innerHTML unsanitized. Article links are
+      // absolute https://…/#/article/… URLs, which the whitelist keeps intact.
+      sanitizeTranslatedHtml(proxyImages(renderMarkdown(normalizeDailySummaryMarkdown(data.summary)))) +
       '</div><div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px">' +
       '<p style="font-size:11px;color:var(--text-3);margin:0">于 ' + generatedTime + ' 基于 ' + data.article_count + ' 篇文章生成</p>' +
       '</div>';
@@ -8080,25 +8126,27 @@ function usesMobileArticleNavigation() {
 }
 
 function syncArticleHistory(id, date) {
+  const articleState = { raynewsArticle: true, articleId: Number(id) };
   const shortDate = date ? date.slice(2) : '';
-  if (!shortDate) return;
-  const articleHash = '#/article/' + shortDate + '-' + id;
-  if (usesMobileArticleNavigation()) {
-    history.replaceState({ raynewsMobileArticle: true }, '', articleHash);
+  if (!shortDate) {
+    if (!(history.state && history.state.raynewsArticle)) {
+      history.pushState(articleState, '');
+    }
     return;
   }
+  const articleHash = '#/article/' + shortDate + '-' + id;
   if (location.hash === articleHash) {
     if (!(history.state && history.state.raynewsArticle)) {
       history.replaceState({ raynewsHome: true }, '', window.location.pathname + window.location.search);
-      history.pushState({ raynewsArticle: true }, '', articleHash);
+      history.pushState(articleState, '', articleHash);
     }
     return;
   }
   if (history.state && history.state.raynewsArticle) {
-    history.replaceState({ raynewsArticle: true }, '', articleHash);
+    history.replaceState(articleState, '', articleHash);
     return;
   }
-  history.pushState({ raynewsArticle: true }, '', articleHash);
+  history.pushState(articleState, '', articleHash);
 }
 
 function rememberArticleReturnState(id) {
@@ -8111,7 +8159,11 @@ function rememberArticleReturnState(id) {
     fromSearch: searchOpen,
     searchScrollTop: document.getElementById('searchBody').scrollTop,
   };
-  if (!searchOpen) rememberCurrentListHistory();
+  // Back/Forward may already have selected an article entry. Replacing that
+  // entry with home here would create a duplicate article when it is reopened.
+  if (!searchOpen && !(history.state && history.state.raynewsArticle)) {
+    rememberCurrentListHistory();
+  }
 }
 
 function restoreArticleReturnState(onComplete) {
@@ -8149,6 +8201,7 @@ function openArticle(id) {
   }
   if (!articleWasOpen) {
     rememberArticleReturnState(id);
+    syncArticleHistory(id, n ? n.date : '');
   }
 
   // Reset favorite button
@@ -8721,8 +8774,9 @@ function shareArticle() {
 }
 
 let _closingOverlay = false;
+let articleHistoryBackPending = false;
 
-function finishArticleClose(mobileNavigation) {
+function finishArticleClose() {
   if (document.getElementById('lb').classList.contains('open')) {
     closeLightbox();
   }
@@ -8733,32 +8787,28 @@ function finishArticleClose(mobileNavigation) {
   overlay.classList.remove('open');
   overlay.classList.remove('from-source-history');
   overlay.classList.remove('over-daily-summary');
+  overlay.style.transition = '';
+  overlay.style.transform = '';
+  overlay.style.opacity = '';
   unlockArticleBackground();
-  if (mobileNavigation) {
-    const homeUrl = window.location.pathname + window.location.search;
-    history.replaceState({ raynewsHome: true }, '', homeUrl);
-  }
   if (pendingNewArticleCount > 0) showNewArticlesPrompt();
   restoreArticleReturnState(() => {
+    articleHistoryBackPending = false;
     articleReturnInProgress = false;
     _closingOverlay = false;
   });
 }
 
-function closeArticle(fromHistoryNavigation = false, forceInAppNavigation = false) {
-  if (_closingOverlay) return;
+function closeArticle(fromHistoryNavigation = false) {
+  if (_closingOverlay || (!fromHistoryNavigation && articleHistoryBackPending)) return;
   const overlay = document.getElementById('overlay');
   if (!overlay.classList.contains('open')) return;
-  const mobileNavigation = forceInAppNavigation || usesMobileArticleNavigation();
-  if (!fromHistoryNavigation && mobileNavigation) {
-    finishArticleClose(true);
-    return;
-  }
   if (
     !fromHistoryNavigation
     && history.state
     && history.state.raynewsArticle
   ) {
+    articleHistoryBackPending = true;
     history.back();
     return;
   }
@@ -8766,7 +8816,7 @@ function closeArticle(fromHistoryNavigation = false, forceInAppNavigation = fals
     const homeUrl = window.location.pathname + window.location.search;
     history.replaceState({ raynewsHome: true }, '', homeUrl);
   }
-  finishArticleClose(mobileNavigation);
+  finishArticleClose();
 }
 
 function closeArticleFromButton() {
@@ -8849,12 +8899,16 @@ document.addEventListener('keydown', e => {
     }
   }
 });
+// textContent→innerHTML escapes & < > but NOT quotes — yet esc() output is also
+// interpolated into attribute (title="...") and inline-handler (onclick='...${esc(x)}...')
+// contexts, where an unescaped quote breaks out of the attribute/string. Escape both
+// quote characters explicitly so esc() is safe in every context it is used in.
+const _escDiv = document.createElement('div');
 function esc(str) {
   if (str === null || str === undefined) return '';
   if (typeof str !== 'string') str = String(str);
-  const d = document.createElement('div');
-  d.textContent = str;
-  return d.innerHTML;
+  _escDiv.textContent = str;
+  return _escDiv.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // The server always stores both the original and (if admin-translated) the
@@ -9084,7 +9138,7 @@ function shouldRetryBrokenImage(img) {
 
 function retryBrokenVisibleImages() {
   if (document.hidden) return;
-  document.querySelectorAll('#list img, #overlay img, #favoritesList img').forEach(img => {
+  document.querySelectorAll('#list img, #overlay img, #favBody img, #sourceArticlesBody img').forEach(img => {
     if (!shouldRetryBrokenImage(img)) return;
     img.dataset.imgRetry = '0';
     recoverImageLoad(img);
@@ -9253,6 +9307,11 @@ window.addEventListener('hashchange', () => {
   else closeArticle(true);
 });
 window.addEventListener('popstate', () => {
+  const forwardArticleId = Number(history.state && history.state.articleId);
+  if (history.state && history.state.raynewsArticle && forwardArticleId) {
+    openArticle(forwardArticleId);
+    return;
+  }
   if (location.hash) return;
   if (
     articleReturnInProgress
@@ -9270,21 +9329,29 @@ window.addEventListener('keydown', e => {
 });
 // Handle initial hash from shared URL
 setTimeout(handleHash, 200);
-// Auto-refresh: check for new articles every 60 seconds (incremental)
+// Auto-refresh: check for new articles every 60 seconds (incremental).
+// Skip every tick while the tab is hidden — desktop browsers keep throttled
+// timers running in background tabs, and nothing here is useful until the tab
+// is visible again (onReturnToForeground() re-syncs everything on resume).
 setInterval(function() {
+  if (document.hidden) return;
   const cursor = latestKnownTimestamp || latestNewsTimestamp();
   if (cursor > 0) loadSince(cursor);
   // Low-frequency poll so backend-generated notifications (share revalidation
   // failures etc.) light up the avatar dot while the page stays open, instead
   // of only surfacing when the user opens the menu. Self-guards on authToken
   // and carries the same token/seq protection against out-of-order overwrites.
-  if (authToken && !document.hidden) refreshNotifStatus();
+  if (authToken) refreshNotifStatus();
   // Same poll keeps the ✨ badge honest: 'completed' lights it amber, and a
   // failed generation lights it red for admins without needing a reload.
-  if (authToken && !document.hidden) syncDailySummaryToday();
+  if (authToken) syncDailySummaryToday();
 }, 60000);
-setInterval(showLatestAfterIdle, 15000);
 setInterval(function() {
+  if (document.hidden) return;
+  showLatestAfterIdle();
+}, 15000);
+setInterval(function() {
+  if (document.hidden) return;
   if (news.length > 0) {
     pollTitleUpdates();
     pollTranslationUpdates();
@@ -9319,11 +9386,9 @@ async function checkForNewArticlesAfterForegroundResume(cursor) {
 }
 
 let lastForegroundSyncAt = 0;
-function usesIpadPwaTrackpadNavigation() {
+function usesIpadTrackpadNavigation() {
   return navigator.platform === 'MacIntel'
-    && navigator.maxTouchPoints > 0
-    && window.matchMedia
-    && window.matchMedia('(display-mode: standalone)').matches;
+    && navigator.maxTouchPoints > 0;
 }
 function onReturnToForeground() {
   const now = Date.now();
@@ -9379,10 +9444,33 @@ window.addEventListener('focus', onReturnToForeground);
 (function() {
   const overlay = document.getElementById('overlay');
   let sx = 0, sy = 0, swiping = false, edgeCandidate = false;
+  let swipeClosePending = false;
+  let swipeFinishTimer = null;
   let trackpadRightDistance = 0;
+  let trackpadGestureClaimed = false;
   let trackpadResetTimer = null;
 
+  function clearArticleSwipeCompletion() {
+    clearTimeout(swipeFinishTimer);
+    swipeFinishTimer = null;
+    overlay.removeEventListener('transitionend', finishArticleSwipe);
+    overlay.removeEventListener('transitioncancel', finishArticleSwipe);
+  }
+
+  function finishArticleSwipe(event) {
+    if (!swipeClosePending) return;
+    if (event && event.target !== overlay) return;
+    if (event && event.type === 'transitionend' && event.propertyName !== 'transform') return;
+    swipeClosePending = false;
+    clearArticleSwipeCompletion();
+    swiping = false;
+    edgeCandidate = false;
+    closeArticle();
+  }
+
   function resetArticleSwipe() {
+    swipeClosePending = false;
+    clearArticleSwipeCompletion();
     overlay.style.transition = '';
     overlay.style.transform = '';
     overlay.style.opacity = '';
@@ -9426,10 +9514,10 @@ window.addEventListener('focus', onReturnToForeground);
       overlay.style.transition = 'transform .28s cubic-bezier(.22,.61,.36,1), opacity .28s cubic-bezier(.22,.61,.36,1)';
       overlay.style.transform = 'translateX(100%)';
       overlay.style.opacity = '0';
-      overlay.addEventListener('transitionend', () => {
-        closeArticle(false, true);
-        resetArticleSwipe();
-      }, { once: true });
+      swipeClosePending = true;
+      overlay.addEventListener('transitionend', finishArticleSwipe);
+      overlay.addEventListener('transitioncancel', finishArticleSwipe);
+      swipeFinishTimer = setTimeout(finishArticleSwipe, 360);
     } else if (edgeCandidate) {
       overlay.style.transition = 'transform .18s ease, opacity .18s ease';
       overlay.style.transform = '';
@@ -9442,22 +9530,35 @@ window.addEventListener('focus', onReturnToForeground);
 
   overlay.addEventListener('touchcancel', resetArticleSwipe, { passive: true });
 
-  // iPadOS PWA receives Magic Keyboard two-finger swipes as horizontal wheel
-  // events, unlike the touch edge swipe handled above.  Keep this path tightly
-  // scoped so desktop and ordinary iOS browser gestures remain native.
+  // iPadOS receives Magic Keyboard two-finger swipes as horizontal wheel
+  // events in both Safari and an installed PWA. Claim a rightward gesture on
+  // its first cancelable event so WebKit never starts a second Back animation.
   overlay.addEventListener('wheel', e => {
-    if (!usesIpadPwaTrackpadNavigation()) return;
+    if (!usesIpadTrackpadNavigation()) return;
     if (!overlay.classList.contains('open')) return;
     if (document.getElementById('lb').classList.contains('open')) return;
     if (Math.abs(e.deltaX) < Math.abs(e.deltaY) * 1.5) return;
     // A physical two-finger swipe right reports negative horizontal scrolling.
-    if (e.deltaX >= 0) { trackpadRightDistance = 0; return; }
+    if (e.deltaX >= 0) {
+      trackpadRightDistance = 0;
+      trackpadGestureClaimed = false;
+      return;
+    }
+    if (e.cancelable) {
+      e.preventDefault();
+      trackpadGestureClaimed = true;
+    } else if (!trackpadGestureClaimed) {
+      return;
+    }
     trackpadRightDistance += -e.deltaX;
     clearTimeout(trackpadResetTimer);
-    trackpadResetTimer = setTimeout(() => { trackpadRightDistance = 0; }, 180);
+    trackpadResetTimer = setTimeout(() => {
+      trackpadRightDistance = 0;
+      trackpadGestureClaimed = false;
+    }, 180);
     if (trackpadRightDistance < 80) return;
-    e.preventDefault();
     trackpadRightDistance = 0;
+    trackpadGestureClaimed = false;
     closeArticleFromButton();
   }, { passive: false });
 })();
