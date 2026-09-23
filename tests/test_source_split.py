@@ -113,6 +113,18 @@ def test_classified_reference_does_not_override_unknown_explicit_via():
     assert fetcher.detect_group_source(content, '', '@feed') == ('知识分子', '')
 
 
+def test_classified_telegram_reference_does_not_override_unrelated_via():
+    history = ({'科技圈': '科技圈'}, {})
+    footer = '<p><a href="https://t.me/tech_circle">科技圈</a></p>'
+    for via in (
+        '<p>via 知识分子</p>',
+        '<p>via <a href="https://mp.weixin.qq.com/s/article">知识分子</a></p>',
+    ):
+        content = '<p>正文</p>' + footer + via
+        assert fetcher.source_from_classified_history(content, history) is None
+        assert fetcher.detect_group_source(content, '', '@feed') == ('知识分子', '')
+
+
 def test_classified_telegram_footer_beats_weibo_reference(tmp_path, monkeypatch):
     # Reproduces article 348108: the Weibo URL is the cited original post,
     # while the Telegram footer identifies the already classified publisher.

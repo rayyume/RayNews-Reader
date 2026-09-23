@@ -2603,7 +2603,6 @@ def _generate_daily_summary_global(date_str: str) -> dict | None:
         definitions = _digest_category_definitions()
         missing = [article for article in articles if not article.get("digest_signals")]
         signal_failures = 0
-        failed_signal_batches = 0
         for offset in range(0, len(missing), 20):
             batch = missing[offset:offset + 20]
             try:
@@ -2611,7 +2610,6 @@ def _generate_daily_summary_global(date_str: str) -> dict | None:
             except Exception as exc:
                 app.logger.warning("Daily signal batch failed: %s", _redact_api_error(str(exc)))
                 generated = {}
-                failed_signal_batches += 1
             updates = []
             for article in batch:
                 raw = generated.get(article["id"])
@@ -2636,7 +2634,7 @@ def _generate_daily_summary_global(date_str: str) -> dict | None:
                 f"event signal coverage too low: {len(articles) - signal_failures}/"
                 f"{len(articles)} articles"
             )
-        if missing and failed_signal_batches == (len(missing) + 19) // 20:
+        if signal_failures == len(articles):
             raise RuntimeError("AI event signal generation failed")
         groups = group_events(articles)
         selected = rank_events(

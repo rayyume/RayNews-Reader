@@ -795,8 +795,7 @@ def source_from_classified_history(
                 source for source, label in matches.items()
                 if label.casefold() in via_label.casefold()
             }
-            if len(related) == 1:
-                return next(iter(related))
+            return next(iter(related)) if len(related) == 1 else None
         return next(iter(matches)) if len(matches) == 1 else None
 
     if via_links:

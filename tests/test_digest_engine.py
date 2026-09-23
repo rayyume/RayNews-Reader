@@ -106,6 +106,39 @@ def test_low_signal_coverage_does_not_cache_a_two_item_daily_digest(tmp_path, mo
     assert "signal coverage too low" in web_server._daily_summary_last_error
 
 
+def test_one_failed_signal_batch_does_not_block_cached_daily_digest(tmp_path, monkeypatch):
+    monkeypatch.setattr(web_server, "NEWS_DB", str(tmp_path / "absent.db"))
+    rows = [article(i, f"来源{i}", f"机构{i}发布消息", impact=2, entity=f"机构{i}")
+            for i in range(1, 101)]
+    rows[-1]["digest_signals"] = None
+
+    class PartialService:
+        def __init__(self, **_kwargs):
+            pass
+
+        def batch_digest_signals(self, _articles):
+            raise RuntimeError("temporary provider error")
+
+        def write_digest_events(self, _events):
+            return {}
+
+    monkeypatch.setattr(web_server, "AIService", PartialService)
+    monkeypatch.setattr(web_server, "_note_system_ai_success", lambda: None)
+    monkeypatch.setattr(web_server, "_fetch_articles_by_date", lambda *_args, **_kwargs: rows)
+    monkeypatch.setattr(web_server, "_digest_category_definitions", lambda: [
+        {"category": "News", "label": "政经新闻"},
+    ])
+    monkeypatch.setattr(web_server, "_previous_digest_signals", lambda _date: [])
+    monkeypatch.setattr(web_server, "_save_daily_summary_global_cache", lambda *_args: True)
+    monkeypatch.setattr(web_server, "get_system_ai_config", lambda: {
+        "enabled": True, "api_key": "key", "endpoint": "https://example.com", "model": "test",
+    })
+    result = web_server._generate_daily_summary_global("2026-09-23")
+    assert result is not None
+    assert result["stats"]["signal_fallbacks"] == 1
+    assert result["stats"]["digest_item_count"] == 60
+
+
 def test_high_volume_digest_uses_relative_ranking_after_valid_signals(tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "NEWS_DB", str(tmp_path / "absent.db"))
     rows = [article(i, f"来源{i}", f"机构{i}发布消息", impact=2, entity=f"机构{i}")
