@@ -227,6 +227,28 @@ def test_automatic_summary_records_its_generation_provenance(tmp_path, monkeypat
     assert row[3]
 
 
+def test_automatic_summary_does_not_report_unsaved_result_as_success(monkeypatch):
+    monkeypatch.setattr(web_server, "_get_ai_result", lambda _id: None)
+    monkeypatch.setattr(
+        web_server, "_fetch_article_body",
+        lambda _id: {"title": "标题", "body_html": "正文"},
+    )
+    monkeypatch.setattr(web_server, "_save_ai_result", lambda *_args, **_kwargs: False)
+
+    class SummaryService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def summarize(self, **_kwargs):
+            return "已生成但未保存的摘要"
+
+    monkeypatch.setattr(web_server, "_SystemAIService", SummaryService)
+    with pytest.raises(RuntimeError, match="Could not save article AI summary"):
+        web_server._generate_article_summary(
+            51, {"api_key": "key", "endpoint": "https://example.com", "model": "test"}
+        )
+
+
 def test_automatic_translation_records_its_generation_provenance(tmp_path, monkeypatch):
     db_path = tmp_path / "news.db"
     sqlite3.connect(db_path).close()

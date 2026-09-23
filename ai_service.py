@@ -21,6 +21,7 @@ from source_categories import CATEGORY_NAMES, CATEGORY_ORDER, clamp_weighted, lo
 # surfacing as "empty AI title summary". Give these calls enough room to finish; tune
 # via AI_TITLE_MAX_TOKENS if a heavier reasoning model still comes back empty.
 TITLE_MAX_TOKENS = max(200, int(os.environ.get("AI_TITLE_MAX_TOKENS", "4096")))
+SUMMARY_MAX_TOKENS = max(200, int(os.environ.get("AI_SUMMARY_MAX_TOKENS", "4096")))
 SOURCE_CLASSIFY_MAX_TOKENS = max(
     200, int(os.environ.get("AI_SOURCE_CLASSIFY_MAX_TOKENS", "2048"))
 )
@@ -503,11 +504,20 @@ class AIService:
                 '"action":"...","topics":[],"impact":2,"novelty":1,'
                 '"evidence":1,"material_update":false}}'
             )},
-        ], max_tokens=900)
-        data = self._digest_json(raw)
-        summary = data.get("summary")
-        if not isinstance(summary, str) or not summary.strip():
-            raise ValueError("AI returned an empty article summary")
+        ], max_tokens=SUMMARY_MAX_TOKENS)
+        try:
+            data = self._digest_json(raw)
+            summary = data.get("summary")
+            if not isinstance(summary, str) or not summary.strip():
+                raise ValueError("AI returned an empty article summary")
+        except ValueError:
+            # Some supported chat models answer the summary request but ignore
+            # the JSON envelope. Preserve automatic summaries for those models;
+            # digest signals can be backfilled separately.
+            summary = self.summarize(article_text=article_text, title=title).strip()
+            if not summary:
+                raise ValueError("AI returned an empty article summary")
+            return summary, {}
         return summary.strip(), data.get("signals") if isinstance(data.get("signals"), dict) else {}
 
     def batch_digest_signals(self, articles: list[dict]) -> dict[int, dict]:
