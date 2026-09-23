@@ -783,6 +783,22 @@ def source_from_classified_history(
     names, domains = history
     links = bottom_source_links(content)
     via_links = [item for item in links if item["via"]]
+    telegram_links = [item for item in links if item["telegram"] and not item["via"]]
+
+    def classified_telegram_source(via_label: str = "") -> str | None:
+        matches = {
+            names[item["label"].casefold()]: item["label"]
+            for item in telegram_links if item["label"].casefold() in names
+        }
+        if via_label:
+            related = {
+                source for source, label in matches.items()
+                if label.casefold() in via_label.casefold()
+            }
+            if len(related) == 1:
+                return next(iter(related))
+        return next(iter(matches)) if len(matches) == 1 else None
+
     if via_links:
         # An unknown explicit via is still stronger than a classified reference.
         for item in reversed(via_links):
@@ -790,14 +806,30 @@ def source_from_classified_history(
                 return names[item["label"].casefold()], ""
             if item["domain"] in domains:
                 return domains[item["domain"]], item["domain"]
+            if item["telegram"]:
+                source = classified_telegram_source(item["label"])
+                if source:
+                    return source, ""
         return None
     via_names = _extract_bottom_via_sources(content)
     if via_names:
         for name in via_names:
             if name.casefold() in names:
                 return names[name.casefold()], ""
+            source = classified_telegram_source(name)
+            if source:
+                return source, ""
+        return None
+    source = classified_telegram_source()
+    if source:
+        return source, ""
+    if any(item["label"].casefold() in names for item in telegram_links):
+        # Several classified channel links are ambiguous; an unrelated source
+        # URL in the footer cannot break the tie.
         return None
     for item in reversed(links):
+        if item["telegram"]:
+            continue
         if item["label"] and item["label"].casefold() in names:
             return names[item["label"].casefold()], ""
         if item["domain"] in domains:
@@ -855,19 +887,21 @@ def bottom_source_links(content: str) -> list[dict]:
             host = _safe_http_host(href)
             if not host:
                 continue
-            if host in {"t.me", "telegram.me", "telegra.ph"}:
+            telegram = host in {"t.me", "telegram.me"}
+            if host == "telegra.ph":
                 continue
-            domain = extract_domain_from_url(href) or ""
+            domain = "" if telegram else (extract_domain_from_url(href) or "")
             label = _clean_source_name(clean_html(link.get_text(" ", strip=True)))
             if not _valid_attribution_name(label):
                 label = ""
-            if not domain and not host.endswith("weixin.qq.com"):
+            if not domain and not (host.endswith("weixin.qq.com") or telegram):
                 continue
             if not domain and not label:
                 continue
             match = lookup_source_by_domain([domain]) if domain else None
             items.append({"group": match[0] if match else (domain or label),
-                          "label": label, "domain": domain, "via": via and not plain_via})
+                          "label": label, "domain": domain, "via": via and not plain_via,
+                          "telegram": telegram})
             # Only the first valid link after "via" is an attribution.
             via = False
     return items

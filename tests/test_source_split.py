@@ -113,6 +113,53 @@ def test_classified_reference_does_not_override_unknown_explicit_via():
     assert fetcher.detect_group_source(content, '', '@feed') == ('知识分子', '')
 
 
+def test_classified_telegram_footer_beats_weibo_reference(tmp_path, monkeypatch):
+    # Reproduces article 348108: the Weibo URL is the cited original post,
+    # while the Telegram footer identifies the already classified publisher.
+    content = (
+        '<p>小米新机开售。</p>'
+        '<p><a href="https://weibo.com/1771925961/5346401887192763">小米公司</a></p>'
+        '<p><a href="http://t.me/zaihuanews">科技圈</a> · '
+        '<a href="https://t.me/zaihuachat">茶馆</a> · '
+        '<a href="http://t.me/ZaiHuabot">投稿</a></p>'
+        '<p>via <a href="https://t.me/zaihuapd/44001">在花科技圈 - Telegram Channel</a></p>'
+    )
+    monkeypatch.setattr(fetcher, 'DB_FILE', tmp_path / 'news.db')
+    conn = fetcher.init_db()
+    try:
+        conn.executemany(
+            "INSERT INTO source_categories (source, category, label, status) "
+            "VALUES (?, 'Tech', ?, 'classified')",
+            [('科技圈', '科技圈'), ('weibo.com', 'weibo.com')],
+        )
+        history = fetcher.classified_source_history(conn)
+        assert fetcher.source_from_classified_history(content, history) == ('科技圈', '')
+        fetcher.upsert_articles(conn, [{
+            'id': 348108, 'source': 'weibo.com', 'group_source': 'weibo.com',
+            'publisher_domain': 'weibo.com', 'source_html': content,
+        }], sync_sources=False)
+        assert tuple(conn.execute(
+            'SELECT group_source, publisher_domain FROM articles WHERE id=348108'
+        ).fetchone()) == ('科技圈', '')
+    finally:
+        conn.close()
+
+
+def test_telegram_footer_without_via_uses_only_unambiguous_classified_channel():
+    content = (
+        '<p>正文</p><p><a href="https://weibo.com/user/post">原帖</a></p>'
+        '<p><a href="https://t.me/tech_channel">科技圈</a> · '
+        '<a href="https://t.me/chat_room">茶馆</a></p>'
+    )
+    history = ({'科技圈': '科技圈', '茶馆': '茶馆', 'weibo.com': 'weibo.com'},
+               {'weibo.com': 'weibo.com'})
+    assert fetcher.source_from_classified_history(content, history) is None
+    assert fetcher.source_from_classified_history(
+        content, ({'科技圈': '科技圈', 'weibo.com': 'weibo.com'},
+                  {'weibo.com': 'weibo.com'})
+    ) == ('科技圈', '')
+
+
 def test_invalid_footer_link_is_skipped_without_aborting_batch(tmp_path, monkeypatch):
     malformed = '<p>正文</p><p>via <a href="https://[broken/path">坏链接</a></p>'
     valid = '<p>正文</p><p>via <a href="https://www.reuters.com/story">路透社</a></p>'
