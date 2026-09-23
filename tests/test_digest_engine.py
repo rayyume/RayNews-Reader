@@ -58,7 +58,7 @@ def test_identical_generic_ai_event_does_not_merge_unrelated_articles():
     assert len(engine.group_events([left, right])) == 2
 
 
-def test_relative_ranking_does_not_promote_missing_ai_signals():
+def test_relative_ranking_fills_requested_count_even_with_low_scores():
     reliable = article(1, "甲报", "机构A发布消息", impact=2, entity="机构A")
     fallback = article(2, "乙报", "机构B发布消息", impact=2, entity="机构B")
     for item in (reliable, fallback):
@@ -67,7 +67,18 @@ def test_relative_ranking_does_not_promote_missing_ai_signals():
     selected = engine.rank_events(
         engine.group_events([reliable, fallback]), [], cutoff=1000, min_events=2,
     )
-    assert [group["representative"]["id"] for group in selected] == [1]
+    assert [group["representative"]["id"] for group in selected] == [1, 2]
+    assert all(group["selection_basis"] == "relative ranking" for group in selected)
+
+
+def test_relative_ranking_still_excludes_unchanged_previous_events():
+    articles = [article(i, f"来源{i}", f"机构{i}发布消息", impact=0, entity=f"机构{i}")
+                for i in range(1, 4)]
+    selected = engine.rank_events(
+        engine.group_events(articles), [articles[0]["digest_signals"]],
+        cutoff=1000, min_events=60,
+    )
+    assert [group["representative"]["id"] for group in selected] == [2, 3]
 
 
 def test_low_signal_coverage_does_not_cache_a_two_item_daily_digest(tmp_path, monkeypatch):
@@ -124,8 +135,8 @@ def test_high_volume_digest_uses_relative_ranking_after_valid_signals(tmp_path, 
     })
     result = web_server._generate_daily_summary_global("2026-09-23")
     assert result["stats"]["articles_after_dedup"] == 100
-    assert result["stats"]["digest_item_count"] == 10
-    assert result["stats"]["relative_ranked_events"] == 10
+    assert result["stats"]["digest_item_count"] == 60
+    assert result["stats"]["relative_ranked_events"] == 60
 
 
 def test_dynamic_sections_number_from_one_and_limit_to_sixty():
@@ -216,11 +227,11 @@ def test_generation_persists_selected_and_rejected_events(tmp_path, monkeypatch)
     result = web_server._generate_daily_summary_global("2026-09-23")
     assert result["stats"]["total_articles"] == 3
     assert result["stats"]["events"] == 2
-    assert result["stats"]["selected_events"] == 1
+    assert result["stats"]["selected_events"] == 2
     assert "重大决定" in result["summary"]
     with sqlite3.connect(db_path) as check:
         audit = check.execute("SELECT selected, reason FROM daily_digest_events ORDER BY selected DESC").fetchall()
-        assert audit == [(1, ""), (0, "below importance threshold")]
+        assert audit == [(1, ""), (1, "")]
         assert check.execute("SELECT COUNT(*) FROM ai_results WHERE digest_signals_json IS NOT NULL").fetchone()[0] == 3
     assert web_server._generate_daily_summary_global("2026-09-23")["summary"] == result["summary"]
 

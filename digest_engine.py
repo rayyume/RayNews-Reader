@@ -13,7 +13,6 @@ from difflib import SequenceMatcher
 SIGNAL_VERSION = 1
 MIN_EVENT_SCORE = 55
 MAX_DIGEST_EVENTS = 60
-RELATIVE_EVENT_FLOOR = 30
 
 
 def _plain(value: object, limit: int = 160) -> str:
@@ -136,16 +135,13 @@ def rank_events(groups: list[dict], previous: list[dict], *, cutoff: int,
     selected = eligible[:max_events]
     for group in eligible[max_events:]:
         group["reason"] = "daily limit"
-    # On a high-volume day, absolute scores can be conservative across the
-    # board. Fill a small editorial floor from the strongest remaining events,
-    # while still excluding yesterday's unchanged events and weak evidence.
+    # Absolute scores identify standout events, but every day's digest should
+    # still contain the strongest distinct events up to the requested count.
+    # Yesterday's unchanged events remain ineligible.
     if len(selected) < min(min_events, max_events):
         relative = sorted(
             (group for group in groups
-             if group["reason"] == "below importance threshold"
-             and group["score"] >= RELATIVE_EVENT_FLOOR
-             and any(not article.get("digest_signal_fallback")
-                     for article in group["articles"])),
+             if group["reason"] == "below importance threshold"),
             key=lambda group: (
                 -group["score"], -group["publisher_count"],
                 -int(group["representative"].get("ingested_at") or 0),

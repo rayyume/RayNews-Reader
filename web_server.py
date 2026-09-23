@@ -63,7 +63,7 @@ from auth import init_auth, create_token, require_auth, require_role
 from auth_validation import is_valid_email
 from image_validation import detect_image_content_type
 from ai_service import AIService, _redact_api_error, validate_ai_endpoint_base_url
-from digest_engine import (SIGNAL_VERSION, normalize_signals, group_events,
+from digest_engine import (MAX_DIGEST_EVENTS, SIGNAL_VERSION, normalize_signals, group_events,
                            rank_events, render_digest)
 from network_safety import UnsafeUrlError, assert_ai_endpoint_url, assert_public_http_url
 from image_cache import (
@@ -2636,14 +2636,13 @@ def _generate_daily_summary_global(date_str: str) -> dict | None:
                 f"event signal coverage too low: {len(articles) - signal_failures}/"
                 f"{len(articles)} articles"
             )
+        if missing and failed_signal_batches == (len(missing) + 19) // 20:
+            raise RuntimeError("AI event signal generation failed")
         groups = group_events(articles)
-        minimum = min(20, max(10, len(groups) // 50)) if len(groups) >= 50 else 0
         selected = rank_events(
             groups, _previous_digest_signals(date_str), cutoff=cutoff,
-            min_events=minimum,
+            min_events=MAX_DIGEST_EVENTS,
         )
-        if missing and failed_signal_batches == (len(missing) + 19) // 20 and not selected:
-            raise RuntimeError("AI event signal generation failed")
         written = {}
         writing_failures = 0
         for offset in range(0, len(selected), 10):
