@@ -735,7 +735,7 @@ body.body-scroll-lock{overflow:hidden!important}
       <div id="adminTabSources" style="display:none">
         <div class="source-step">
           <div class="source-step-title">1. 识别文章来源标签</div>
-          <p class="ai-hint">从文章底部最后一个 via 链接重新识别真正来源，用于修复历史文章中误识别的来源。</p>
+          <p class="ai-hint">根据文章底部链接或纯文本 via 识别待分类来源；已手工或批量分类的历史文章保持原分类，并为新文章提供匹配依据。</p>
           <div class="source-step-actions source-admin-only">
             <button class="ai-save-btn" id="sourceRedetectBtn" onclick="redetectArticleSources()" style="margin:0;width:auto;padding:8px 12px">重新识别来源</button>
           </div>

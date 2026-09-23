@@ -66,6 +66,162 @@ def test_wechat_via_uses_account_name_instead_of_qq_platform():
     assert (group, domain) == ("知识分子", "")
 
 
+def test_unclassified_single_footer_website_works_without_via():
+    group, domain = fetcher.detect_group_source(
+        '<p>正文</p><p><a href="https://edition.example.co.uk/story">来源网站</a></p>',
+        "https://telegra.ph/story", "@feed",
+    )
+    assert (group, domain) == ("example.co.uk", "example.co.uk")
+
+
+def test_plain_via_takes_priority_over_unrelated_preview_and_image_link():
+    content = (
+        '<p>新闻正文</p><p>via 知识分子 '
+        '<a href="https://www.ifeng.com/photo"><img src="cover.jpg"></a></p>'
+    )
+    assert fetcher.detect_group_source(content, "https://telegra.ph/story", "@feed") == (
+        "知识分子", ""
+    )
+
+
+def test_explicit_via_beats_known_reference_link():
+    reference = '<a href="https://www.reuters.com/story">路透社背景</a>'
+    for via, expected in (
+        ('via 知识分子', ('知识分子', '')),
+        ('via <a href="https://unknown.example.org/story">未知媒体</a>',
+         ('example.org', 'example.org')),
+    ):
+        content = f'<p>新闻正文</p><p>{reference}</p><p>{via}</p>'
+        assert fetcher.detect_group_source(content, "", "@feed") == expected
+
+
+def test_plain_via_before_reference_link_in_same_footer_wins():
+    content = (
+        '<p>新闻正文</p><p>via 知识分子 '
+        '<a href="https://www.reuters.com/story">背景链接</a></p>'
+    )
+    assert fetcher.detect_group_source(content, "", "@feed") == ('知识分子', '')
+
+
+def test_classified_reference_does_not_override_unknown_explicit_via():
+    content = (
+        '<p>正文</p><p><a href="https://www.reuters.com/story">背景</a></p>'
+        '<p>via 知识分子</p>'
+    )
+    history = ({'路透社': '路透社'}, {'reuters.com': '路透社'})
+    assert fetcher.source_from_classified_history(content, history) is None
+    assert fetcher.detect_group_source(content, '', '@feed') == ('知识分子', '')
+
+
+def test_invalid_footer_link_is_skipped_without_aborting_batch(tmp_path, monkeypatch):
+    malformed = '<p>正文</p><p>via <a href="https://[broken/path">坏链接</a></p>'
+    valid = '<p>正文</p><p>via <a href="https://www.reuters.com/story">路透社</a></p>'
+    assert fetcher.detect_group_source(malformed, "", "@feed") == ('@feed', '')
+    assert fetcher.detect_group_source(valid, "", "@feed") == ('路透社', 'reuters.com')
+    mixed = (
+        '<p><a href="https://[broken/path">坏链接</a> '
+        '<a href="https://www.reuters.com/story">有效来源</a></p>'
+    )
+    assert fetcher.detect_group_source(mixed, "", "@feed") == ('路透社', 'reuters.com')
+    monkeypatch.setattr(fetcher, 'DB_FILE', tmp_path / 'news.db')
+    conn = fetcher.init_db()
+    try:
+        fetcher.upsert_articles(conn, [
+            {'id': 1, 'source': '@feed', 'source_html': malformed},
+            {'id': 2, 'source': '路透社', 'source_html': valid},
+        ], sync_sources=False)
+        assert conn.execute('SELECT COUNT(*) FROM articles').fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_adjacent_image_anchor_is_not_a_source_link():
+    content = (
+        '<p>新闻正文</p><p><a href="https://www.ifeng.com/photo">'
+        '<img src="cover.jpg"></a><a href="https://www.scmp.com/news">来源网站</a></p>'
+    )
+    assert fetcher.detect_group_source(content, "", "@feed") == ("南华早报", "scmp.com")
+
+
+def test_classified_history_guides_new_articles_and_preserves_old_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(fetcher, "DB_FILE", tmp_path / "news.db")
+    conn = fetcher.init_db()
+    try:
+        conn.execute(
+            "INSERT INTO source_categories (source, category, label, status) "
+            "VALUES ('历史来源', 'News', '历史署名', 'manual')"
+        )
+        conn.execute(
+            "INSERT INTO articles (id, title, source, group_source, origin_source, "
+            "publisher_domain, timestamp) VALUES "
+            "(1, '旧文章', '历史来源', '历史来源', '原始署名', 'example.org', 100)"
+        )
+        conn.commit()
+        fetcher.upsert_articles(conn, [{
+            "id": 2, "source": "错误来源", "group_source": "错误来源",
+            "origin_source": "错误来源", "source_html": (
+                '<p>正文</p><p><a href="https://other.test/image">'
+                '<img src="photo.jpg"></a><a href="https://example.org/story">正文来源</a></p>'
+            ),
+        }], sync_sources=False)
+        assert conn.execute("SELECT group_source FROM articles WHERE id=2").fetchone()[0] == "历史来源"
+        fetcher.upsert_articles(conn, [{
+            "id": 1, "source": "新来源", "group_source": "新来源",
+            "origin_source": "新来源", "publisher_domain": "new.test",
+        }], sync_sources=False)
+        assert tuple(conn.execute(
+            "SELECT source, group_source, origin_source, publisher_domain "
+            "FROM articles WHERE id=1"
+        ).fetchone()) == ("历史来源", "历史来源", "原始署名", "example.org")
+    finally:
+        conn.close()
+
+
+def test_week_replay_reads_only_and_uses_older_training_articles(tmp_path, monkeypatch):
+    from scripts.compare_source_week import compare
+
+    db_path = tmp_path / "news.db"
+    monkeypatch.setattr(fetcher, "DB_FILE", db_path)
+    conn = fetcher.init_db()
+    try:
+        conn.execute(
+            "INSERT INTO source_categories (source, category, label, status) "
+            "VALUES ('历史来源', 'News', '历史来源', 'classified')"
+        )
+        conn.execute(
+            "INSERT INTO articles (id, title, source, group_source, publisher_domain, "
+            "body_html, timestamp) VALUES "
+            "(1, '训练', '历史来源', '历史来源', 'example.org', '', 100), "
+            "(2, '验证', '历史来源', '历史来源', '', "
+            "'<p><a href=\"https://example.org/story\">来源</a></p>', 800000)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    report = compare(db_path)
+    assert (report["total"], report["matched"], report["mismatched"]) == (1, 1, 0)
+
+
+def test_normal_body_words_do_not_become_publishers():
+    for body in (
+        "<p>The official spoke as the vice chairman arrived.</p>",
+        "<p>via and as part of the report.</p>",
+        "<p>—— 常务副主席</p>",
+    ):
+        assert fetcher.detect_group_source(body, "https://telegra.ph/story", "@feed") == ("@feed", "")
+
+
+def test_body_reference_is_not_treated_as_footer_source():
+    body = (
+        '<p>这是一段较长的新闻正文，讨论已有报道及其背景。' + '相关事实说明。' * 15
+        + '<a href="https://www.ifeng.com/reference">参考报道</a></p>'
+        '<p><a href="https://publisher.example.org/story">来源网站</a></p>'
+    )
+    assert fetcher.detect_group_source(body, "https://telegra.ph/story", "@feed") == (
+        "example.org", "example.org"
+    )
+
+
 def test_upsert_reuses_domain_mapping_per_batch_and_observes_later_edits(tmp_path, monkeypatch):
     from source_categories import save_publisher_domain
 

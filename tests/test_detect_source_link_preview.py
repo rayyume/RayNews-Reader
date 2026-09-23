@@ -70,13 +70,11 @@ def test_known_publisher_wins_over_unknown_preview_url():
     )
 
 
-def test_unknown_publishers_still_fall_back_to_first_domain():
-    """With no identifiable domain, keep the previous first-link behavior."""
+def test_multiple_unknown_footer_links_keep_feed_fallback():
+    """Multiple unknown links do not establish which site published the article."""
     content = (
         f"{_long_body()}"
         '<br><a href="https://harbor-news.cn/a2">某站</a>'
         '<br><a href="https://site-b.cn/a3">另一站</a>'
     )
-    detected = detect_group_source(content, channel="@feed")
-    assert detected[0] == detected[1] != ""
-    assert detected[1] in {"harbor-news.cn", "site-b.cn"}
+    assert detect_group_source(content, channel="@feed") == ("@feed", "")

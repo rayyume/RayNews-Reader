@@ -160,12 +160,27 @@ def upsert_articles(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
-            source = excluded.source,
+            source = CASE WHEN EXISTS (SELECT 1 FROM source_categories sc
+                WHERE sc.source = COALESCE(NULLIF(articles.group_source, ''), articles.source)
+                  AND sc.status IN ('manual', 'classified'))
+                THEN articles.source ELSE excluded.source END,
             feed_source = excluded.feed_source,
-            origin_source = excluded.origin_source,
-            group_source = excluded.group_source,
-            publisher_domain = excluded.publisher_domain,
-            source_detection_version = excluded.source_detection_version,
+            origin_source = CASE WHEN EXISTS (SELECT 1 FROM source_categories sc
+                WHERE sc.source = COALESCE(NULLIF(articles.group_source, ''), articles.source)
+                  AND sc.status IN ('manual', 'classified'))
+                THEN articles.origin_source ELSE excluded.origin_source END,
+            group_source = CASE WHEN EXISTS (SELECT 1 FROM source_categories sc
+                WHERE sc.source = COALESCE(NULLIF(articles.group_source, ''), articles.source)
+                  AND sc.status IN ('manual', 'classified'))
+                THEN articles.group_source ELSE excluded.group_source END,
+            publisher_domain = CASE WHEN EXISTS (SELECT 1 FROM source_categories sc
+                WHERE sc.source = COALESCE(NULLIF(articles.group_source, ''), articles.source)
+                  AND sc.status IN ('manual', 'classified'))
+                THEN articles.publisher_domain ELSE excluded.publisher_domain END,
+            source_detection_version = CASE WHEN EXISTS (SELECT 1 FROM source_categories sc
+                WHERE sc.source = COALESCE(NULLIF(articles.group_source, ''), articles.source)
+                  AND sc.status IN ('manual', 'classified'))
+                THEN articles.source_detection_version ELSE excluded.source_detection_version END,
             time = excluded.time,
             date = excluded.date,
             timestamp = excluded.timestamp,
@@ -194,22 +209,28 @@ def upsert_articles(
     }
     # Reuse mappings within this batch; the next batch sees admin edits.
     publisher_sources = {}
+    history = classified_source_history(conn)
     for e in entries:
         article_id = int(e.get("id", 0) or 0)
         if article_id in deleted_ids:
             continue
         domain = e.get("publisher_domain", "") or ""
         group_source = e.get("group_source") or e.get("source") or e.get("feed_source", "")
+        source_html = e.get("source_html") or e.get("body_html") or ""
+        learned = source_from_classified_history(source_html, history)
+        if learned:
+            group_source, domain = learned
         if domain:
             if domain not in publisher_sources:
                 publisher_sources[domain] = publisher_source_for_domain(conn, domain)
-            group_source = publisher_sources[domain] or group_source
+            if not learned:
+                group_source = publisher_sources[domain] or group_source
         rows.append((
             article_id,
             e.get("title", ""),
             group_source,
             e.get("feed_source", e.get("source", "")),
-            e.get("origin_source") or group_source,
+            group_source if learned else (e.get("origin_source") or group_source),
             group_source,
             domain,
             int(e.get("source_detection_version", 0) or 0),
@@ -673,43 +694,199 @@ def detect_feed_source(channel: str = "") -> str:
 
 
 def detect_group_source(content: str, preview_url: str = "", channel: str = "") -> tuple[str, str]:
-    """Return deterministic publisher group identity and its strongest domain evidence."""
-    via_domain = None
-    chunks = re.split(r"<br\s*/?>", content or "", flags=re.IGNORECASE)
-    for chunk in reversed(chunks):
-        if not re.search(r"(?i)(^|\s)via\b", clean_html(chunk)):
-            continue
-        via_match = re.search(r"(?i)\bvia\b", chunk)
-        if not via_match:
-            continue
-        after_via = BeautifulSoup(chunk[via_match.end():], "html.parser")
-        link = after_via.find("a", href=True)
-        if link:
-            via_domain = extract_domain_from_url(link.get("href", ""))
-        if via_domain:
-            break
-
-    candidates = [via_domain, extract_domain_from_url(preview_url)]
-    bottom_domains = extract_domains_from_html(_extract_bottom_html(content or "", ratio=0.15))
-    candidates.extend(bottom_domains)
-    # Prefer a domain we can actually identify (built-in registry or a
-    # user-configured mapping) over whichever link happens to come first; a
-    # bottom-of-article "read more"/reference link, or a syndication preview
-    # URL, must not displace a recognized publisher. Candidates are ordered
-    # via -> preview -> bottom, so the first identifiable one is also the
-    # most trustworthy. Fall back to the first non-empty domain when none is
-    # identifiable, keeping the previous behavior for unknown publishers.
-    domain = next((item for item in candidates if item and lookup_source_by_domain([item])), "")
-    if not domain:
-        domain = next((item for item in candidates if item), "")
+    """Identify an explicit footer attribution or the article preview publisher."""
+    links = bottom_source_links(content)
+    # An explicit attribution outweighs ordinary footer reference links.
+    for item in reversed(links):
+        if item["via"]:
+            return item["group"], item["domain"]
+    attribution = _extract_bottom_via_sources(content or "")
+    if attribution:
+        return attribution[0], ""
+    # Without attribution, prefer a recognized publisher among footer links.
+    for item in reversed(links):
+        if item["domain"]:
+            match = lookup_source_by_domain([item["domain"]])
+            if match:
+                return match[0], item["domain"]
+    # A single footer website is usable evidence. Several unknown websites
+    # are ambiguous, so leave the existing source alone during re-detection.
+    websites = [item for item in links if item["domain"]]
+    if len(websites) == 1:
+        return websites[0]["group"], websites[0]["domain"]
+    domain = extract_domain_from_url(preview_url)
     if domain:
         match = lookup_source_by_domain([domain])
         return (match[0] if match else domain), domain
-
-    attribution = detect_source_from_attribution(content or "")
-    if attribution:
-        return attribution, ""
     return detect_feed_source(channel=channel), ""
+
+
+def classified_source_history(
+    conn: sqlite3.Connection, before_timestamp: int | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Learn only unambiguous identities from already classified sources/articles."""
+    if before_timestamp is None:
+        rows = conn.execute(
+            "SELECT source, label FROM source_categories WHERE status IN ('manual', 'classified')"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT sc.source, sc.label FROM source_categories sc "
+            "WHERE sc.status IN ('manual', 'classified') AND EXISTS "
+            "(SELECT 1 FROM articles a WHERE a.group_source = sc.source "
+            "AND a.timestamp < ?)", (before_timestamp,)
+        ).fetchall()
+    names = {source.casefold(): source for source, _label in rows}
+    label_targets = {}
+    for source, label in rows:
+        if label:
+            label_targets.setdefault(label.casefold(), set()).add(source)
+    for label, targets in label_targets.items():
+        if len(targets) == 1:
+            names.setdefault(label, next(iter(targets)))
+    classified_keys = {source.casefold() for source, _label in rows}
+    domains = {}
+    conflicts = set()
+    article_sql = (
+        "SELECT publisher_domain, group_source FROM articles "
+        "WHERE publisher_domain != '' AND group_source != ''"
+    )
+    if before_timestamp is not None:
+        article_sql += " AND timestamp < ?"
+    for domain, source in conn.execute(
+        article_sql, () if before_timestamp is None else (before_timestamp,)
+    ):
+        if source.casefold() not in classified_keys:
+            continue
+        if domain in domains and domains[domain] != source:
+            conflicts.add(domain)
+        else:
+            domains[domain] = source
+    for domain, source in conn.execute(
+        "SELECT domain, group_source FROM publisher_domains WHERE enabled = 1"
+    ):
+        if source.casefold() not in classified_keys:
+            continue
+        if domain in domains and domains[domain] != source:
+            conflicts.add(domain)
+        else:
+            domains[domain] = source
+    for domain in conflicts:
+        domains.pop(domain, None)
+    return names, domains
+
+
+def source_from_classified_history(
+    content: str, history: tuple[dict[str, str], dict[str, str]],
+) -> tuple[str, str] | None:
+    """Match footer evidence to existing classifications without changing history."""
+    names, domains = history
+    links = bottom_source_links(content)
+    via_links = [item for item in links if item["via"]]
+    if via_links:
+        # An unknown explicit via is still stronger than a classified reference.
+        for item in reversed(via_links):
+            if item["label"] and item["label"].casefold() in names:
+                return names[item["label"].casefold()], ""
+            if item["domain"] in domains:
+                return domains[item["domain"]], item["domain"]
+        return None
+    via_names = _extract_bottom_via_sources(content)
+    if via_names:
+        for name in via_names:
+            if name.casefold() in names:
+                return names[name.casefold()], ""
+        return None
+    for item in reversed(links):
+        if item["label"] and item["label"].casefold() in names:
+            return names[item["label"].casefold()], ""
+        if item["domain"] in domains:
+            return domains[item["domain"]], item["domain"]
+    return None
+
+
+def _safe_http_host(href: str) -> str:
+    """Reject malformed or non-web footer links without aborting the article."""
+    try:
+        parsed = urlsplit(href or "")
+        return (parsed.hostname or "").lower() if parsed.scheme.lower() in {"http", "https"} else ""
+    except (TypeError, ValueError):
+        return ""
+
+
+def bottom_source_links(content: str) -> list[dict]:
+    """Footer links with explicit via links marked; preserve document order."""
+    chunks = re.split(r'(?:<br\s*/?>\s*)+|</p>|</div>|<hr[^>]*>|\n\s*\n', content or "", flags=re.I)
+    chunks = [chunk.strip() for chunk in chunks if chunk.strip()]
+    if not chunks:
+        return []
+    end = len(chunks) - 1
+    skipped = 0
+    while end >= 0 and "<a" not in chunks[end].lower() and skipped < 2:
+        if len(clean_html(chunks[end])) > 80:
+            return []
+        end -= 1
+        skipped += 1
+    if end < 0 or "<a" not in chunks[end].lower():
+        return []
+    start = end
+    while start > 0:
+        previous = chunks[start - 1]
+        if "<a" not in previous.lower() or len(clean_html(previous)) > 100:
+            break
+        start -= 1
+    tail = chunks[start:end + 1]
+    items = []
+    for chunk in tail:
+        text = clean_html(chunk).strip()
+        via = bool(re.match(r"(?i)^via\b\s*[:：-]?", text))
+        if via:
+            match = re.search(r"(?i)\bvia\b", chunk)
+            fragment = chunk[match.end():] if match else chunk
+        else:
+            fragment = chunk
+        plain_via = _plain_via_prefix(fragment) if via else ""
+        soup = BeautifulSoup(fragment, "html.parser")
+        for link in soup.find_all("a", href=True):
+            # An image wrapped in an anchor is a thumbnail, not a source link.
+            if link.find("img") and not link.get_text(" ", strip=True):
+                continue
+            href = link.get("href", "")
+            host = _safe_http_host(href)
+            if not host:
+                continue
+            if host in {"t.me", "telegram.me", "telegra.ph"}:
+                continue
+            domain = extract_domain_from_url(href) or ""
+            label = _clean_source_name(clean_html(link.get_text(" ", strip=True)))
+            if not _valid_attribution_name(label):
+                label = ""
+            if not domain and not host.endswith("weixin.qq.com"):
+                continue
+            if not domain and not label:
+                continue
+            match = lookup_source_by_domain([domain]) if domain else None
+            items.append({"group": match[0] if match else (domain or label),
+                          "label": label, "domain": domain, "via": via and not plain_via})
+            # Only the first valid link after "via" is an attribution.
+            via = False
+    return items
+
+
+def _plain_via_prefix(fragment: str) -> str:
+    """Return a standalone source name written before the first footer link."""
+    before_link = re.split(r"<a\b", fragment, maxsplit=1, flags=re.I)[0]
+    value = _clean_source_name(clean_html(before_link)).strip(" :：-—|\t\n")
+    return value if _valid_attribution_name(value) and re.search(r"\w", value) else ""
+
+
+def _valid_attribution_name(name: str) -> bool:
+    value = (name or "").strip()
+    words = value.lower().split()
+    return bool(value and len(value) <= 30 and value != "常务副主席"
+                and len(words) <= 4 and (not words or words[0] not in {
+                    "and", "as", "via", "or", "by", "from", "source"
+                }) and value.lower() != "read more")
 
 
 def detect_source_from_attribution(content: str) -> str | None:
@@ -718,10 +895,7 @@ def detect_source_from_attribution(content: str) -> str | None:
     if via_candidates:
         return via_candidates[0]
 
-    # Fallback: body-inline attribution patterns common in Chinese news articles.
-    # Examples: "—— 界面新闻", "▲ 财联社", "— BBC News"
-    body_attr = _extract_body_attribution(content)
-    return body_attr
+    return None
 
 
 def _extract_body_attribution(content: str) -> str | None:
@@ -759,11 +933,11 @@ def _extract_bottom_via_sources(content: str) -> list[str]:
     if not all_via or (len(plain_all) - all_via[-1].start()) > 500:
         return []
 
-    chunks = re.split(r"<br\s*/?>", content, flags=re.IGNORECASE)
+    chunks = re.split(r'(?:<br\s*/?>\s*)+|</p>|</div>|<hr[^>]*>|\n\s*\n', content, flags=re.I)
     candidates = []
     for chunk in reversed(chunks):
         line = clean_html(chunk)
-        if not re.search(r"(?i)(^|\s)via\b", line):
+        if not re.match(r"(?i)^\s*via\b", line):
             continue
 
         # Find the last "via" in the raw HTML — attribution lines are at the end
@@ -771,6 +945,10 @@ def _extract_bottom_via_sources(content: str) -> list[str]:
         if via_matches:
             # Only examine HTML after the last "via" (at most 150 chars)
             after_via_html = chunk[via_matches[-1].end():][:150]
+            plain_prefix = _plain_via_prefix(after_via_html)
+            if plain_prefix:
+                candidates.append(plain_prefix)
+                continue
             after_via_soup = BeautifulSoup(after_via_html, "html.parser")
             via_links = []
             for link in after_via_soup.find_all("a"):
@@ -778,13 +956,18 @@ def _extract_bottom_via_sources(content: str) -> list[str]:
                 href = link.get("href", "")
                 if not text:
                     continue
-                if href and "telegra.ph" in href:
+                host = _safe_http_host(href)
+                if not host:
+                    continue
+                if host in {"telegra.ph", "t.me", "telegram.me"}:
                     continue
                 via_links.append(text)
             if via_links:
                 raw = _clean_source_name(via_links[0])
-                if raw and len(raw) <= 30:
+                if _valid_attribution_name(raw):
                     candidates.append(raw)
+                continue
+            if any(link.get_text(" ", strip=True) for link in after_via_soup.find_all("a")):
                 continue
 
         # No via-adjacent link found — fall back to plain text after "via".
@@ -801,7 +984,7 @@ def _extract_bottom_via_sources(content: str) -> list[str]:
         if raw and len(raw) > 80:
             raw = raw[:80].rsplit(" ", 1)[0]
         raw = _clean_source_name(raw)
-        if raw and len(raw) <= 30:
+        if _valid_attribution_name(raw) and len(raw) <= 30:
             candidates.append(raw)
     return candidates
 
@@ -1161,6 +1344,8 @@ def process_message(msg: dict, orig_msg_id: int) -> dict:
         "has_full_content": False,
         "telegraph_url": telegraph_url or "",
         "body_html": "",
+        # Keep the Telegram footer available when full text replaces the body.
+        "source_html": content,
         "summary": "",
     }
 

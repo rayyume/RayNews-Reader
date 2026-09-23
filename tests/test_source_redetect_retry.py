@@ -4,6 +4,77 @@ import fetcher
 import web_server
 
 
+def test_classified_display_label_does_not_protect_pending_source(tmp_path, monkeypatch):
+    db_path = tmp_path / "news.db"
+    monkeypatch.setattr(fetcher, "DB_FILE", db_path)
+    monkeypatch.setattr(web_server, "NEWS_DB", str(db_path))
+    conn = fetcher.init_db()
+    conn.execute(
+        "INSERT INTO source_categories (source, category, label, status) "
+        "VALUES ('Example Media', 'News', 'Example', 'classified')"
+    )
+    conn.execute(
+        "INSERT INTO articles (id, title, source, feed_source, group_source, "
+        "body_html, timestamp) VALUES "
+        "(1, '新闻', 'Example', '@feed', 'Example', '<p>via 知识分子</p>', 1)"
+    )
+    conn.commit()
+    conn.close()
+    result = web_server._redetect_article_sources_work(10, 0, False, pending_only=True)
+    assert result["checked"] == 1
+    with sqlite3.connect(db_path) as check:
+        assert check.execute(
+            "SELECT source, source_detection_version FROM articles WHERE id = 1"
+        ).fetchone() == ("知识分子", 1)
+
+
+def test_invalid_via_link_does_not_stop_later_backfill(tmp_path, monkeypatch):
+    db_path = tmp_path / "news.db"
+    monkeypatch.setattr(fetcher, "DB_FILE", db_path)
+    monkeypatch.setattr(web_server, "NEWS_DB", str(db_path))
+    conn = fetcher.init_db()
+    conn.executemany(
+        "INSERT INTO articles (id, title, source, feed_source, group_source, "
+        "body_html, timestamp) VALUES (?, '新闻', '@feed', '@feed', '@feed', ?, ?)",
+        [
+            (1, '<p>via <a href="https://[broken/path">坏链接</a></p>', 2),
+            (2, '<p>via <a href="https://www.reuters.com/story">路透社</a></p>', 1),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    result = web_server._redetect_article_sources_work(10, 0, False, pending_only=True)
+    assert result["checked"] == 2
+    with sqlite3.connect(db_path) as check:
+        assert check.execute("SELECT source FROM articles WHERE id=2").fetchone()[0] == "路透社"
+
+
+def test_pending_backfill_ignores_already_classified_history(tmp_path, monkeypatch):
+    db_path = tmp_path / "news.db"
+    monkeypatch.setattr(fetcher, "DB_FILE", db_path)
+    monkeypatch.setattr(web_server, "NEWS_DB", str(db_path))
+    conn = fetcher.init_db()
+    conn.execute(
+        "INSERT INTO source_categories (source, category, label, status) "
+        "VALUES ('原来源', 'News', '原来源', 'classified')"
+    )
+    conn.execute(
+        "INSERT INTO articles (id, title, source, feed_source, group_source, "
+        "origin_source, body_html, timestamp) VALUES "
+        "(1, '新闻', '原来源', '@feed', '原来源', '原署名', "
+        "'<p>via <a href=\"https://www.ifeng.com/story\">凤凰网</a></p>', 100)"
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(web_server, "_fetch_telegram_message_content", lambda _id: 1 / 0)
+    result = web_server._redetect_article_sources_work(10, 10, False, pending_only=True)
+    assert (result["checked"], result["updated"]) == (0, 0)
+    with sqlite3.connect(db_path) as check:
+        assert check.execute(
+            "SELECT source, group_source, origin_source FROM articles WHERE id=1"
+        ).fetchone() == ("原来源", "原来源", "原署名")
+
+
 def test_unreliable_detection_preserves_source_and_remains_retryable(tmp_path, monkeypatch):
     db_path = tmp_path / "news.db"
     monkeypatch.setattr(fetcher, "DB_FILE", db_path)
@@ -157,3 +228,90 @@ def test_manual_category_migrates_when_its_feed_finishes_despite_other_pending_f
         assert check.execute(
             "SELECT category, label, status FROM source_categories WHERE source = '甲发布者'"
         ).fetchone() == ("Tech", "甲订阅", "manual")
+
+
+def test_footer_links_prefer_existing_manual_or_bulk_classification_without_via(
+        tmp_path, monkeypatch):
+    db_path = tmp_path / "news.db"
+    monkeypatch.setattr(fetcher, "DB_FILE", db_path)
+    monkeypatch.setattr(web_server, "NEWS_DB", str(db_path))
+    conn = fetcher.init_db()
+    conn.executemany(
+        "INSERT INTO source_categories (source, category, label, status) VALUES (?, 'News', ?, ?)",
+        [("手工来源", "手工来源", "manual"),
+         ("批量来源", "批量来源", "classified"),
+         ("and", "and", "classified")],
+    )
+    unknown = '<a href="https://unrelated.example.net/a">and</a>'
+    manual = '<a href="https://manual.example.org/a">手工来源</a>'
+    classified = '<a href="https://bulk.example.com/a">批量来源</a>'
+    conn.executemany(
+        "INSERT INTO articles (id, title, source, feed_source, group_source, "
+        "origin_source, body_html, timestamp) VALUES (?, '新闻', ?, '@feed', ?, ?, ?, ?)",
+        [
+            (1, 'and', 'and', 'and', f'<p>正文</p><p>{manual} {unknown}</p>', 2),
+            (2, 'as', 'as', 'as', f'<p>正文</p><p>{unknown} {classified}</p>', 1),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    result = web_server._redetect_article_sources_work(10, 0, False)
+    # The old article already classified as "and" is immutable even if its
+    # footer now suggests another source.
+    assert result["updated"] == 1
+    with sqlite3.connect(db_path) as check:
+        assert check.execute("SELECT id, source, origin_source FROM articles ORDER BY id").fetchall() == [
+            (1, "and", "and"), (2, "批量来源", "批量来源"),
+        ]
+
+
+def test_multiple_unknown_footer_links_leave_existing_source_untouched(tmp_path, monkeypatch):
+    db_path = tmp_path / "news.db"
+    monkeypatch.setattr(fetcher, "DB_FILE", db_path)
+    monkeypatch.setattr(web_server, "NEWS_DB", str(db_path))
+    conn = fetcher.init_db()
+    conn.execute(
+        "INSERT INTO articles (id, title, source, feed_source, group_source, "
+        "origin_source, body_html, timestamp) VALUES "
+        "(1, '新闻', '原来源', '@feed', '原来源', '原署名', "
+        "'<p><a href=\"https://a.example.com\">A</a> "
+        "<a href=\"https://b.other.net\">B</a></p>', 1)"
+    )
+    conn.commit()
+    conn.close()
+    result = web_server._redetect_article_sources_work(10, 0, False, pending_only=True)
+    assert result["skipped"] == 1
+    with sqlite3.connect(db_path) as check:
+        assert check.execute(
+            "SELECT source, origin_source, source_detection_version FROM articles WHERE id = 1"
+        ).fetchone() == ("原来源", "原署名", 0)
+
+
+def test_classified_website_mapping_wins_even_with_generic_link_text(tmp_path, monkeypatch):
+    db_path = tmp_path / "news.db"
+    monkeypatch.setattr(fetcher, "DB_FILE", db_path)
+    monkeypatch.setattr(web_server, "NEWS_DB", str(db_path))
+    conn = fetcher.init_db()
+    conn.execute(
+        "INSERT INTO source_categories (source, category, label, status) "
+        "VALUES ('已分类媒体', 'News', '媒体', 'classified')"
+    )
+    conn.execute(
+        "INSERT INTO publisher_domains (domain, group_source, enabled) "
+        "VALUES ('example.com', '已分类媒体', 1)"
+    )
+    conn.execute(
+        "INSERT INTO articles (id, title, source, feed_source, group_source, "
+        "body_html, timestamp) VALUES "
+        "(1, '新闻', '旧来源', '@feed', '旧来源', "
+        "'<p>正文</p><p><a href=\"https://other.example.net/a\">其他</a> "
+        "<a href=\"https://publisher.example.com/a\">阅读原文</a></p>', 1)"
+    )
+    conn.commit()
+    conn.close()
+    result = web_server._redetect_article_sources_work(10, 0, False)
+    assert result["updated"] == 1
+    with sqlite3.connect(db_path) as check:
+        assert check.execute(
+            "SELECT source, publisher_domain FROM articles WHERE id = 1"
+        ).fetchone() == ("已分类媒体", "example.com")
