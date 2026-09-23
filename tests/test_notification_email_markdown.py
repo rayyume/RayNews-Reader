@@ -244,3 +244,17 @@ def test_daily_summary_email_keeps_two_digit_item_numbers_visible(monkeypatch):
     assert not soup.select(".summary ol")
     assert soup.select_one('.summary a[href="https://example.com/10"]')
     assert "入选 12 篇" in captured["html"]
+
+
+def test_event_digest_email_uses_event_stats_instead_of_zero_defaults(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        notifier, "send_email",
+        lambda _key, _to, _subject, body, **_kwargs: captured.setdefault("html", body),
+    )
+    notifier.send_daily_summary_email(
+        "key", "reader@example.com", "## 新闻\n1. 一则新闻",
+        {"total_articles": 817, "events": 600, "digest_item_count": 16,
+         "selected_articles_with_summary": 9},
+    )
+    assert "817 篇原始 · 600 篇去重 · 入选 16 篇 · 入选中 9 篇已有摘要" in captured["html"]

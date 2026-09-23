@@ -531,8 +531,15 @@ class AIService:
         ], max_tokens=3500)
         data = self._digest_json(raw)
         valid_ids = {item["id"] for item in payload}
-        return {item["id"]: item for item in data.get("items", [])
-                if isinstance(item, dict) and item.get("id") in valid_ids}
+        items = data.get("items")
+        if not isinstance(items, list):
+            raise ValueError("AI returned no digest signal items")
+        signals = {item["id"]: item for item in items
+                   if isinstance(item, dict) and item.get("id") in valid_ids
+                   and isinstance(item.get("event"), str) and item["event"].strip()}
+        if not signals:
+            raise ValueError("AI returned no usable digest signals")
+        return signals
 
     def write_digest_events(self, events: list[dict]) -> dict[int, dict]:
         """Write short copy; the server owns selection, headings and numbering."""

@@ -1,6 +1,7 @@
 import datetime as dt
 import sqlite3
 import json
+import pytest
 
 from ai_service import AIService
 import digest_engine as engine
@@ -46,6 +47,87 @@ def test_generic_topic_does_not_merge_distinct_entities_and_prior_event_is_skipp
     assert groups[0]["reason"] == "already covered"
 
 
+def test_identical_generic_ai_event_does_not_merge_unrelated_articles():
+    left = article(1, "甲报", "A公司公布财报", entity="A公司")
+    right = article(2, "乙报", "B公司公布财报", entity="B公司")
+    left["digest_signals"]["event"] = right["digest_signals"]["event"] = "公司公布财报"
+    assert len(engine.group_events([left, right])) == 2
+    left["digest_signals"]["entities"] = []
+    right["digest_signals"]["entities"] = []
+    left["digest_signals"]["event"] = right["digest_signals"]["event"] = "新闻"
+    assert len(engine.group_events([left, right])) == 2
+
+
+def test_relative_ranking_does_not_promote_missing_ai_signals():
+    reliable = article(1, "甲报", "机构A发布消息", impact=2, entity="机构A")
+    fallback = article(2, "乙报", "机构B发布消息", impact=2, entity="机构B")
+    for item in (reliable, fallback):
+        item["digest_signals"].update({"novelty": 1, "evidence": 1})
+    fallback["digest_signal_fallback"] = True
+    selected = engine.rank_events(
+        engine.group_events([reliable, fallback]), [], cutoff=1000, min_events=2,
+    )
+    assert [group["representative"]["id"] for group in selected] == [1]
+
+
+def test_low_signal_coverage_does_not_cache_a_two_item_daily_digest(tmp_path, monkeypatch):
+    monkeypatch.setattr(web_server, "NEWS_DB", str(tmp_path / "absent.db"))
+    rows = []
+    for article_id in range(1, 21):
+        row = article(article_id, f"来源{article_id}", f"机构{article_id}发布消息", 5)
+        row["digest_signals"] = row["digest_signals"] if article_id <= 2 else None
+        rows.append(row)
+
+    class EmptyService:
+        def __init__(self, **_kwargs):
+            pass
+
+        def batch_digest_signals(self, _articles):
+            return {}
+
+    monkeypatch.setattr(web_server, "AIService", EmptyService)
+    monkeypatch.setattr(web_server, "_note_system_ai_success", lambda: None)
+    monkeypatch.setattr(web_server, "_fetch_articles_by_date", lambda *_args, **_kwargs: rows)
+    monkeypatch.setattr(web_server, "get_system_ai_config", lambda: {
+        "enabled": True, "api_key": "key", "endpoint": "https://example.com", "model": "test",
+    })
+    assert web_server._generate_daily_summary_global("2026-09-23") is None
+    assert "signal coverage too low" in web_server._daily_summary_last_error
+
+
+def test_high_volume_digest_uses_relative_ranking_after_valid_signals(tmp_path, monkeypatch):
+    monkeypatch.setattr(web_server, "NEWS_DB", str(tmp_path / "absent.db"))
+    rows = [article(i, f"来源{i}", f"机构{i}发布消息", impact=2, entity=f"机构{i}")
+            for i in range(1, 101)]
+    _start, cutoff = web_server._digest_window("2026-09-23")
+    for row in rows:
+        row["ingested_at"] = cutoff - 60
+        row["digest_signals"].update({"novelty": 1, "evidence": 1})
+
+    class Writer:
+        def __init__(self, **_kwargs):
+            pass
+
+        def write_digest_events(self, _events):
+            return {}
+
+    monkeypatch.setattr(web_server, "AIService", Writer)
+    monkeypatch.setattr(web_server, "_note_system_ai_success", lambda: None)
+    monkeypatch.setattr(web_server, "_fetch_articles_by_date", lambda *_args, **_kwargs: rows)
+    monkeypatch.setattr(web_server, "_digest_category_definitions", lambda: [
+        {"category": "News", "label": "政经新闻"},
+    ])
+    monkeypatch.setattr(web_server, "_previous_digest_signals", lambda _date: [])
+    monkeypatch.setattr(web_server, "_save_daily_summary_global_cache", lambda *_args: True)
+    monkeypatch.setattr(web_server, "get_system_ai_config", lambda: {
+        "enabled": True, "api_key": "key", "endpoint": "https://example.com", "model": "test",
+    })
+    result = web_server._generate_daily_summary_global("2026-09-23")
+    assert result["stats"]["articles_after_dedup"] == 100
+    assert result["stats"]["digest_item_count"] == 10
+    assert result["stats"]["relative_ranked_events"] == 10
+
+
 def test_dynamic_sections_number_from_one_and_limit_to_sixty():
     articles = [article(i, f"来源{i}", f"机构{i}发布决定", 5, entity=f"机构{i}")
                 for i in range(1, 65)]
@@ -60,6 +142,14 @@ def test_dynamic_sections_number_from_one_and_limit_to_sixty():
     ], {})
     assert "## 新闻\n1." in text
     assert "## 技术\n1." in text
+
+
+def test_selected_unclassified_event_is_rendered():
+    item = article(1, "新来源", "机构发布重要决定", 5)
+    item["category"] = "Uncategorized"
+    selected = engine.rank_events(engine.group_events([item]), [], cutoff=2000)
+    text = engine.render_digest(selected, [{"category": "News", "label": "政经新闻"}], {})
+    assert "## 待分类\n1." in text
 
 
 def test_beijing_cutoff_and_shared_category_mapping(tmp_path, monkeypatch):
@@ -161,3 +251,10 @@ def test_article_summary_produces_signals_in_one_ai_call(monkeypatch):
     assert summary == "摘要"
     assert signals["impact"] == 4
     assert len(calls) == 1
+
+
+def test_empty_batch_signal_response_is_an_ai_failure(monkeypatch):
+    service = AIService("key", "https://example.com", "test")
+    monkeypatch.setattr(service, "chat", lambda *_args, **_kwargs: '{"items":[]}')
+    with pytest.raises(ValueError, match="no usable digest signals"):
+        service.batch_digest_signals([{"id": 1, "title": "消息"}])
