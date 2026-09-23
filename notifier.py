@@ -223,14 +223,18 @@ def send_daily_summary_email(api_key: str, to_email: str,
     """
     summary_html = _render_daily_summary_email_body(summary_text)
     total = stats.get("total_articles", 0)
-    deduped = stats.get("articles_after_dedup", 0)
+    deduped = stats.get("articles_after_dedup", stats.get("events", 0))
     selected = stats.get("digest_item_count", stats.get(
         "articles_selected_for_summary", stats.get("articles_selected_for_ai", deduped)
     ))
-    with_summary = stats.get("selected_articles_with_summary", stats.get("articles_with_summary", 0))
+    with_summary = stats.get("selected_articles_with_summary", stats.get("articles_with_summary"))
+    summary_count = (
+        f"入选中 {with_summary} 篇已有摘要"
+        if with_summary is not None else "入选摘要覆盖未统计"
+    )
     public_url = os.environ.get("RAYNEWS_PUBLIC_URL", "").rstrip("/")
     footer_link = f'<a href="{public_url}">打开 RayNews</a>' if public_url else "RayNews"
-    subtitle = f"{total} 篇原始 · {deduped} 篇去重 · 入选 {selected} 篇 · 入选中 {with_summary} 篇已有摘要"
+    subtitle = f"{total} 篇原始 · {deduped} 篇去重 · 入选 {selected} 篇 · {summary_count}"
     html = f"""<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><style>

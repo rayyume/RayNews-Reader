@@ -51,13 +51,13 @@ def same_event(left: dict, right: dict) -> bool:
     left_event, right_event = _key(left.get("event")), _key(right.get("event"))
     if not left_event or not right_event:
         return False
-    if left_event == right_event:
-        return True
     left_entities = {_key(item) for item in left.get("entities", []) if _key(item)}
     right_entities = {_key(item) for item in right.get("entities", []) if _key(item)}
     shared_entities = left_entities & right_entities
     if left_entities and right_entities and not shared_entities:
         return False
+    if left_event == right_event:
+        return len(left_event) >= 6 or bool(shared_entities)
     event_similarity = SequenceMatcher(None, left_event, right_event).ratio()
     action_similarity = SequenceMatcher(
         None, _key(left.get("action")), _key(right.get("action"))
@@ -66,7 +66,7 @@ def same_event(left: dict, right: dict) -> bool:
     return bool(shared_entities and (
         event_similarity >= 0.64 or
         (action_similarity >= 0.70 and event_similarity >= 0.45)
-    )) or event_similarity >= 0.88
+    )) or (event_similarity >= 0.88 and min(len(left_event), len(right_event)) >= 8)
 
 
 def group_events(articles: list[dict]) -> list[dict]:
@@ -93,7 +93,8 @@ def group_events(articles: list[dict]) -> list[dict]:
 
 
 def rank_events(groups: list[dict], previous: list[dict], *, cutoff: int,
-                max_events: int = MAX_DIGEST_EVENTS, min_score: int = MIN_EVENT_SCORE) -> list[dict]:
+                max_events: int = MAX_DIGEST_EVENTS, min_score: int = MIN_EVENT_SCORE,
+                min_events: int = 0) -> list[dict]:
     for group in groups:
         signal = group["signal"].copy()
         for field in ("impact", "novelty", "evidence"):
@@ -131,9 +132,29 @@ def rank_events(groups: list[dict], previous: list[dict], *, cutoff: int,
             -int(group["representative"].get("ingested_at") or 0),
         ),
     )
+    selected = eligible[:max_events]
     for group in eligible[max_events:]:
         group["reason"] = "daily limit"
-    return eligible[:max_events]
+    # Absolute scores identify standout events, but every day's digest should
+    # still contain the strongest distinct events up to the requested count.
+    # Yesterday's unchanged events remain ineligible.
+    if len(selected) < min(min_events, max_events):
+        relative = sorted(
+            (group for group in groups
+             if group["reason"] == "below importance threshold"),
+            key=lambda group: (
+                -group["score"], -group["publisher_count"],
+                -int(group["representative"].get("ingested_at") or 0),
+            ),
+        )
+        for group in relative[:min(min_events, max_events) - len(selected)]:
+            group["reason"] = ""
+            group["selection_basis"] = "relative ranking"
+            selected.append(group)
+    return sorted(selected, key=lambda group: (
+        -group["score"], -group["publisher_count"],
+        -int(group["representative"].get("ingested_at") or 0),
+    ))
 
 
 def render_digest(events: list[dict], definitions: list[dict], written: dict[int, dict]) -> str:
@@ -151,9 +172,16 @@ def render_digest(events: list[dict], definitions: list[dict], written: dict[int
         link = article.get("url") or ""
         sections.setdefault(category, []).append(f"**{title}：** {sentence} [🔗]({link})")
     lines = []
+    rendered_categories = set()
     for definition in definitions:
         entries = sections.get(definition["category"], [])
         if entries:
             lines.append(f"## {definition['label']}")
             lines.extend(f"{number}. {entry}" for number, entry in enumerate(entries, 1))
+            rendered_categories.add(definition["category"])
+    for category, entries in sections.items():
+        if category in rendered_categories:
+            continue
+        lines.append(f"## {'待分类' if category == 'Uncategorized' else category}")
+        lines.extend(f"{number}. {entry}" for number, entry in enumerate(entries, 1))
     return "\n".join(lines) if lines else "今日无高质量新闻可总结。"

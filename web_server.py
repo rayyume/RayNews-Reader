@@ -63,7 +63,7 @@ from auth import init_auth, create_token, require_auth, require_role
 from auth_validation import is_valid_email
 from image_validation import detect_image_content_type
 from ai_service import AIService, _redact_api_error, validate_ai_endpoint_base_url
-from digest_engine import (SIGNAL_VERSION, normalize_signals, group_events,
+from digest_engine import (MAX_DIGEST_EVENTS, SIGNAL_VERSION, normalize_signals, group_events,
                            rank_events, render_digest)
 from network_safety import UnsafeUrlError, assert_ai_endpoint_url, assert_public_http_url
 from image_cache import (
@@ -2541,7 +2541,8 @@ def _save_daily_summary_global_cache(date_str: str, summary: str,
                     [(date_str, group["representative"]["id"],
                       json.dumps({**group["signal"],
                                   "article_ids": [a["id"] for a in group["articles"]],
-                                  "publisher_count": group["publisher_count"]},
+                                  "publisher_count": group["publisher_count"],
+                                  "selection_basis": group.get("selection_basis", "threshold")},
                                  ensure_ascii=False), group["score"],
                       group["reason"], int(not group["reason"])) for group in events],
                 )
@@ -2602,7 +2603,6 @@ def _generate_daily_summary_global(date_str: str) -> dict | None:
         definitions = _digest_category_definitions()
         missing = [article for article in articles if not article.get("digest_signals")]
         signal_failures = 0
-        failed_signal_batches = 0
         for offset in range(0, len(missing), 20):
             batch = missing[offset:offset + 20]
             try:
@@ -2610,10 +2610,10 @@ def _generate_daily_summary_global(date_str: str) -> dict | None:
             except Exception as exc:
                 app.logger.warning("Daily signal batch failed: %s", _redact_api_error(str(exc)))
                 generated = {}
-                failed_signal_batches += 1
             updates = []
             for article in batch:
                 raw = generated.get(article["id"])
+                article["digest_signal_fallback"] = raw is None
                 if raw is None:
                     signal_failures += 1
                 article["digest_signals"] = normalize_signals(article, raw)
@@ -2625,10 +2625,22 @@ def _generate_daily_summary_global(date_str: str) -> dict | None:
                 article["digest_signals"] = normalize_signals(article, article["digest_signals"])
             else:
                 article["digest_signals"] = normalize_signals(article, None)
-        groups = group_events(articles)
-        selected = rank_events(groups, _previous_digest_signals(date_str), cutoff=cutoff)
-        if missing and failed_signal_batches == (len(missing) + 19) // 20 and not selected:
+        # Normalized defaults can render a digest, but they do not establish
+        # relative importance. Retry the run if a large share of AI signals is
+        # missing; otherwise a few cached high scores can produce a 2-item
+        # digest from hundreds of articles and get cached as today's result.
+        if len(articles) >= 20 and signal_failures > max(5, len(articles) // 5):
+            raise RuntimeError(
+                f"event signal coverage too low: {len(articles) - signal_failures}/"
+                f"{len(articles)} articles"
+            )
+        if signal_failures == len(articles):
             raise RuntimeError("AI event signal generation failed")
+        groups = group_events(articles)
+        selected = rank_events(
+            groups, _previous_digest_signals(date_str), cutoff=cutoff,
+            min_events=MAX_DIGEST_EVENTS,
+        )
         written = {}
         writing_failures = 0
         for offset in range(0, len(selected), 10):
@@ -2639,8 +2651,15 @@ def _generate_daily_summary_global(date_str: str) -> dict | None:
                 app.logger.warning("Daily digest writing batch failed: %s", _redact_api_error(str(exc)))
         summary = render_digest(selected, definitions, written)
         stats = {"total_articles": len(articles), "events": len(groups),
+                 "articles_after_dedup": len(groups),
                  "selected_events": len(selected), "missing_signals": len(missing),
                  "signal_fallbacks": signal_failures, "writing_fallback_batches": writing_failures,
+                 "selected_articles_with_summary": sum(
+                     bool(group["representative"].get("summary")) for group in selected
+                 ),
+                 "relative_ranked_events": sum(
+                     group.get("selection_basis") == "relative ranking" for group in selected
+                 ),
                  "window_start": start, "window_end": cutoff, "digest_item_count": len(selected)}
         if not _save_daily_summary_global_cache(date_str, summary, len(articles), stats, groups):
             raise RuntimeError("Could not persist daily digest and event audit")
@@ -2649,9 +2668,11 @@ def _generate_daily_summary_global(date_str: str) -> dict | None:
             "article_count": len(articles),
             "stats": stats,
         }
-    except Exception:
+    except Exception as exc:
         app.logger.exception("Daily summary generation failed")
-        _set_daily_summary_error("AI 生成失败")
+        _set_daily_summary_error(
+            "AI 生成失败：" + (_redact_api_error(str(exc)) or "未知错误")
+        )
         return None
 
 
