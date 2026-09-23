@@ -66,6 +66,33 @@ def test_wechat_via_uses_account_name_instead_of_qq_platform():
     assert (group, domain) == ("知识分子", "")
 
 
+def test_upsert_reuses_domain_mapping_per_batch_and_observes_later_edits(tmp_path, monkeypatch):
+    from source_categories import save_publisher_domain
+
+    monkeypatch.setattr(fetcher, "DB_FILE", tmp_path / "news.db")
+    conn = fetcher.init_db()
+    calls = []
+    lookup = fetcher.publisher_source_for_domain
+
+    def counted_lookup(conn, domain):
+        calls.append(domain)
+        return lookup(conn, domain)
+
+    monkeypatch.setattr(fetcher, "publisher_source_for_domain", counted_lookup)
+    try:
+        save_publisher_domain(conn, "example.com", "Old Publisher")
+        entries = [{"id": i, "publisher_domain": "example.com"} for i in (1, 2)]
+        fetcher.upsert_articles(conn, entries, sync_sources=False)
+        assert calls == ["example.com"]
+        assert {row[0] for row in conn.execute("SELECT group_source FROM articles")} == {"Old Publisher"}
+        save_publisher_domain(conn, "example.com", "New Publisher")
+        fetcher.upsert_articles(conn, entries, sync_sources=False)
+        assert calls == ["example.com", "example.com"]
+        assert {row[0] for row in conn.execute("SELECT group_source FROM articles")} == {"New Publisher"}
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
-    test_process_message_keeps_feed_source_separate_from_origin()
+    test_process_message_keeps_feed_source_separate_from_publisher_group()
     print("ok")

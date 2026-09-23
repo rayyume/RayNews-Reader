@@ -1129,7 +1129,7 @@ def api_news_list(params: dict) -> bytes:
     conn = None
     try:
         conn = get_db()
-        source_expr = "COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source)"
+        source_expr = "COALESCE(NULLIF(articles.group_source, ''), NULLIF(articles.feed_source, ''), articles.source)"
         clauses = []
         args = []
         if query:
@@ -1153,8 +1153,10 @@ def api_news_list(params: dict) -> bytes:
                 return json.dumps({"error": "invalid category"}).encode()
             if category == UNCATEGORIZED:
                 clauses.append(
-                    f"{source_expr} IN "
-                    "(SELECT source FROM source_categories WHERE category = ?)"
+                    f"({source_expr} IN "
+                    "(SELECT source FROM source_categories WHERE category = ?) "
+                    "OR NOT EXISTS (SELECT 1 FROM source_categories sc "
+                    f"WHERE sc.source = {source_expr}))"
                 )
             else:
                 clauses.append(

@@ -192,6 +192,8 @@ def upsert_articles(
         int(row[0])
         for row in conn.execute("SELECT article_id FROM deleted_articles").fetchall()
     }
+    # Reuse mappings within this batch; the next batch sees admin edits.
+    publisher_sources = {}
     for e in entries:
         article_id = int(e.get("id", 0) or 0)
         if article_id in deleted_ids:
@@ -199,7 +201,9 @@ def upsert_articles(
         domain = e.get("publisher_domain", "") or ""
         group_source = e.get("group_source") or e.get("source") or e.get("feed_source", "")
         if domain:
-            group_source = publisher_source_for_domain(conn, domain) or group_source
+            if domain not in publisher_sources:
+                publisher_sources[domain] = publisher_source_for_domain(conn, domain)
+            group_source = publisher_sources[domain] or group_source
         rows.append((
             article_id,
             e.get("title", ""),
@@ -662,59 +666,7 @@ def _extract_bottom_html(html: str, ratio: float = 0.15) -> str:
     return "\n".join(chunks[-keep:])
 
 
-def detect_source(content: str, extra_html: str = "", *, extra_url: str = "") -> str:
-    """Extract source from the bottom-most standalone via line.
-
-    Tries in priority order:
-      1. via attribution (link text or plain text after "via")
-      2. domain from link_preview_url (always trustworthy — IS the article URL)
-      3. domain from bottom ~15% of body links (source attributions are at the end)
-      4. t.me/channel reference in content
-      5. fallback: "未分类"
-    """
-    # 1) via attribution — already bottom-biased internally
-    via_source = detect_source_from_attribution(content)
-    if via_source:
-        return via_source
-
-    # 2) domain from link_preview_url — this IS the original article URL, no interference
-    preview_domain = extract_domain_from_url(extra_url)
-    if preview_domain:
-        domain_match = lookup_source_by_domain([preview_domain])
-        if domain_match:
-            source_name, _category = domain_match
-            return source_name
-
-    # Keep the legacy extra_html contract for callers that provide actual HTML links.
-    if extra_html:
-        domains = extract_domains_from_html(extra_html)
-        domain_match = lookup_source_by_domain(domains)
-        if domain_match:
-            source_name, _category = domain_match
-            return source_name
-
-    # 3) domain from bottom portion of body only
-    #    Reference links in the middle of articles are excluded
-    bottom = _extract_bottom_html(content, ratio=0.15)
-    if bottom:
-        domains = extract_domains_from_html(bottom)
-        domain_match = lookup_source_by_domain(domains)
-        if domain_match:
-            source_name, _category = domain_match
-            return source_name
-
-    # 4) t.me/channel reference
-    tg = re.search(r't\.me/([a-zA-Z0-9_]+)', content)
-    if tg:
-        name = _clean_source_name(tg.group(1))
-        if name:
-            return f"@{name}"
-
-    # 5) fallback
-    return "未分类"
-
-
-def detect_feed_source(content: str = "", link_preview_title: str = "", channel: str = "") -> str:
+def detect_feed_source(channel: str = "") -> str:
     """Return the Telegram/RSS feed identity, never an article publisher."""
     value = (channel or TELEGRAM_CHANNEL or "").strip().lstrip("@")
     return f"@{value}" if value else "Unknown Feed"
@@ -742,7 +694,8 @@ def detect_group_source(content: str, preview_url: str = "", channel: str = "") 
     candidates.extend(bottom_domains)
     domain = next((item for item in candidates if item), "")
     if domain:
-        return lookup_source_by_domain([domain])[0] if lookup_source_by_domain([domain]) else domain, domain
+        match = lookup_source_by_domain([domain])
+        return (match[0] if match else domain), domain
 
     attribution = detect_source_from_attribution(content or "")
     if attribution:
@@ -1176,9 +1129,7 @@ def process_message(msg: dict, orig_msg_id: int) -> dict:
     text = msg["text"]
     title = extract_title(text)
     telegraph_url = extract_telegraph_url(content)
-    feed_source = detect_feed_source(
-        content, msg.get("link_preview_title", "") or "", msg.get("feed_source", "")
-    )
+    feed_source = detect_feed_source(channel=msg.get("feed_source", ""))
     link_preview_url = msg.get("link_preview_url", "") or ""
     group_source, publisher_domain = detect_group_source(content, link_preview_url, feed_source)
     origin_source = group_source
@@ -1218,7 +1169,8 @@ def process_message(msg: dict, orig_msg_id: int) -> dict:
                 domain = result.get("detected_domain", "")
                 if domain:
                     publisher_domain = domain
-                    group_source = lookup_source_by_domain([domain])[0] if lookup_source_by_domain([domain]) else domain
+                    match = lookup_source_by_domain([domain])
+                    group_source = match[0] if match else domain
                 else:
                     group_source = ts
                 origin_source = group_source

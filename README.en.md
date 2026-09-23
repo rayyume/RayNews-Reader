@@ -32,6 +32,7 @@ The responsive PWA supports system, light, and dark themes.
 ### Reading and organization
 
 - Incremental refresh from a public Telegram channel every 15 minutes, plus manual refresh
+  The first run imports only today's messages in Beijing time; later runs retain messages from previous dates. Recovery after an interruption may import a backlog, with a limit of 200 pages per run. Recovered articles enter digest windows by ingestion time; see the [release notes](release_note_unreleased.md).
 - Full-article extraction for Telegraph, WeChat Official Accounts, and regular web pages
 - Article filtering by publisher and configurable categories; the Telegram/RSS intake feed is stored separately from the publisher
 - Search across article titles, sources, and summaries

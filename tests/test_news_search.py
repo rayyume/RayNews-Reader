@@ -103,6 +103,25 @@ def test_api_news_search_handles_special_characters(tmp_path):
     assert result["items"] == []
 
 
+def test_uncategorized_filter_includes_sources_not_yet_registered(tmp_path):
+    db_path = _setup_news_db(tmp_path)
+    _api_news({})  # Complete schema initialization before simulating a new source.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE source_categories SET category = 'Uncategorized' WHERE source = 'Biz Feed'")
+        conn.execute("DELETE FROM source_categories WHERE source = 'City Feed'")
+        # Exercise the legacy source fallback inside the correlated subquery.
+        conn.execute("UPDATE articles SET group_source = '', feed_source = '' WHERE id = 3")
+    pending = _api_news({"category": ["Uncategorized"], "size": ["1"]})
+    assert pending["total"] == 2
+    assert [item["id"] for item in pending["items"]] == [2]
+    page2 = _api_news({"category": ["Uncategorized"], "size": ["1"], "page": ["2"]})
+    assert [item["id"] for item in page2["items"]] == [3]
+    assert _api_news({"category": ["Info"]})["items"] == []
+    assert [item["id"] for item in _api_news({"category": ["Tech"]})["items"]] == [1]
+    recent = _api_news({"category": ["Uncategorized"], "since": ["150"]})
+    assert [item["id"] for item in recent["items"]] == [2]
+
+
 def test_api_news_filters_category_and_source_before_paginating(tmp_path):
     _setup_news_db(tmp_path)
 
