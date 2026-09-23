@@ -94,7 +94,21 @@ def test_dockerfile_installs_timezone_data_and_copies_filter():
     assert "DEBIAN_FRONTEND=noninteractive" in dockerfile
     assert "tzdata" in dockerfile
     assert "ENV TZ=Asia/Shanghai" in dockerfile
-    assert "timestamp_filter.py" in dockerfile
+    assert _dockerfile_copies_root_module(dockerfile, "timestamp_filter.py")
+
+
+def _dockerfile_copies_root_module(dockerfile: str, module: str) -> bool:
+    """True when the module reaches the image, however the COPY is written.
+
+    The Dockerfile copies root modules as a glob (`COPY *.py .`); asserting a
+    literal filename would only re-test the COPY spelling, so accept either
+    form and let the glob path be covered by test_dockerfile_copies_every_root_module.
+    """
+    import re
+
+    if re.search(rf"COPY\s+\*\.py\s", dockerfile):
+        return (ROOT / module).exists()
+    return module in dockerfile
 
 
 def test_main_tolerates_replacement_char_from_bad_bytes():

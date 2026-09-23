@@ -692,7 +692,16 @@ def detect_group_source(content: str, preview_url: str = "", channel: str = "") 
     candidates = [via_domain, extract_domain_from_url(preview_url)]
     bottom_domains = extract_domains_from_html(_extract_bottom_html(content or "", ratio=0.15))
     candidates.extend(bottom_domains)
-    domain = next((item for item in candidates if item), "")
+    # Prefer a domain we can actually identify (built-in registry or a
+    # user-configured mapping) over whichever link happens to come first; a
+    # bottom-of-article "read more"/reference link, or a syndication preview
+    # URL, must not displace a recognized publisher. Candidates are ordered
+    # via -> preview -> bottom, so the first identifiable one is also the
+    # most trustworthy. Fall back to the first non-empty domain when none is
+    # identifiable, keeping the previous behavior for unknown publishers.
+    domain = next((item for item in candidates if item and lookup_source_by_domain([item])), "")
+    if not domain:
+        domain = next((item for item in candidates if item), "")
     if domain:
         match = lookup_source_by_domain([domain])
         return (match[0] if match else domain), domain
