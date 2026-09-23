@@ -11,7 +11,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
-COPY fetcher.py refresh_server.py models.py auth.py auth_validation.py web_server.py ai_service.py source_categories.py news_schema.py image_cache.py image_validation.py notifier.py network_safety.py runtime_memory.py timestamp_filter.py supervised_pipeline.py .
+COPY *.py .
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY nginx-security-headers.conf /etc/nginx/snippets/raynews-security-headers.conf
 COPY supervisord.conf /app/supervisord.conf
