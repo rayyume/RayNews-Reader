@@ -39,3 +39,29 @@ def test_single_source_redetect_reapplies_mapping_from_stored_domain(tmp_path, m
     row = conn.execute("SELECT source, group_source, publisher_domain FROM articles WHERE id = 1").fetchone()
     assert tuple(row) == ("New Publisher", "New Publisher", "example.com")
     conn.close()
+
+
+def test_single_source_redetect_does_not_treat_display_label_as_classified_source(
+        tmp_path, monkeypatch):
+    db_path = tmp_path / "news.db"
+    monkeypatch.setattr(fetcher, "DB_FILE", db_path)
+    conn = fetcher.init_db()
+    conn.execute(
+        "INSERT INTO source_categories (source, category, label, status) "
+        "VALUES ('Example Media', 'News', 'Example', 'classified')"
+    )
+    conn.execute(
+        "INSERT INTO articles (id, title, source, feed_source, group_source, "
+        "body_html, timestamp) VALUES "
+        "(1, 'Story', 'Example', '@feed', 'Example', '<p>via 知识分子</p>', 1)"
+    )
+    conn.commit()
+    monkeypatch.setattr(web_server, "_get_news_db", lambda: conn)
+    monkeypatch.setattr(web_server, "_fetch_telegram_message_content", lambda _id: "")
+    with web_server.app.test_request_context(
+        "/sources/redetect-single", method="POST", json={"source": "Example"}
+    ):
+        response = web_server.redetect_single_source.__wrapped__()
+    assert response.get_json()["updated"] == 1
+    assert conn.execute("SELECT source FROM articles WHERE id=1").fetchone()[0] == "知识分子"
+    conn.close()

@@ -79,6 +79,7 @@ from source_categories import (
     clamp_weighted, ensure_article_source_columns, ensure_article_sources,
     delete_source_metadata, init_source_categories,
     find_merge_target, maintain_source_categories, merge_source,
+    publisher_source_for_domain,
     promote_user_source_settings,
     recent_titles_for_source, source_aliases_for_target, source_rows,
     update_source_category, extract_domains_from_html,
@@ -6440,23 +6441,65 @@ def _reliable_source_detection(group: str | None, domain: str | None,
     return None, ""
 
 
+def _classified_source_lookup(conn: sqlite3.Connection) -> tuple[dict[str, str], dict[str, str]]:
+    """Reuse the same historical evidence as new article ingestion."""
+    from fetcher import classified_source_history
+    try:
+        return classified_source_history(conn)
+    except sqlite3.OperationalError:
+        # A standalone legacy database may not have category metadata yet.
+        return {}, {}
+
+
+def _classified_source_keys(conn: sqlite3.Connection) -> set[str]:
+    """Exact classified source identities; display labels are not identities."""
+    try:
+        return {
+            row[0].casefold() for row in conn.execute(
+                "SELECT source FROM source_categories WHERE status IN ('manual', 'classified')"
+            )
+        }
+    except sqlite3.OperationalError:
+        return set()
+
+
+def _detect_source_for_redetect(conn: sqlite3.Connection, content: str,
+                                preview_url: str, feed_source: str,
+                                lookup: tuple[dict[str, str], dict[str, str]] | None = None,
+                                ) -> tuple[str | None, str, bool]:
+    """Prefer an already classified footer link over positional link guesses."""
+    from fetcher import detect_group_source, source_from_classified_history
+
+    learned = source_from_classified_history(
+        content, lookup if lookup is not None else _classified_source_lookup(conn)
+    )
+    if learned:
+        return learned[0], learned[1], True
+    group, domain = detect_group_source(content, preview_url, feed_source)
+    group, domain = _reliable_source_detection(group, domain, feed_source)
+    return group, domain, False
+
+
 def _redetect_article_sources_work(limit: int, network_limit: int, force_telegram: bool,
                                    job_id: str | None = None,
                                    pending_only: bool = False) -> dict:
     if not os.path.exists(NEWS_DB):
         raise FileNotFoundError("news db not found")
-    from fetcher import detect_group_source
-
     conn = sqlite3.connect(NEWS_DB, timeout=30)
     conn.row_factory = sqlite3.Row
     ensure_article_source_columns(conn)
+    classified_lookup = _classified_source_lookup(conn)
+    classified_keys = _classified_source_keys(conn)
     rows = conn.execute(
         """
         SELECT id, title, source, feed_source, group_source, publisher_domain,
                source_detection_version, origin_source, body_html, summary, telegraph_url
         FROM articles
         WHERE (? = 0 OR (source_detection_version < 1
-               AND source_detection_last_attempt_at <= ?))
+               AND source_detection_last_attempt_at <= ?
+               AND NOT EXISTS (SELECT 1 FROM source_categories sc
+                   WHERE sc.source = COALESCE(NULLIF(articles.group_source, ''), articles.source)
+                   AND sc.status IN ('manual', 'classified'))))
         ORDER BY source_detection_last_attempt_at ASC, timestamp DESC
         LIMIT ?
         """,
@@ -6480,57 +6523,43 @@ def _redetect_article_sources_work(limit: int, network_limit: int, force_telegra
 
     for row in rows:
         checked += 1
-        detected_group = None
-        detected_domain = ""
+        current_group = (row["group_source"] or row["source"] or "").strip()
+        # Existing manual/automatic classifications are training data, not
+        # candidates for migration. Do not touch their article identity.
+        if current_group.casefold() in classified_keys:
+            skipped += 1
+            update_progress()
+            continue
+        content = row["body_html"] or row["summary"] or row["title"] or ""
+        detected_group, detected_domain, detected_classified = _detect_source_for_redetect(
+            conn, content, row["telegraph_url"], row["feed_source"] or "", classified_lookup
+        )
         fetched_telegram = False
-        telegram_content = ""
         is_telegraph = bool(row["telegraph_url"])
         should_fetch_telegram = (
             telegram_checked < network_limit
-            and (force_telegram or is_telegraph or not row["publisher_domain"])
+            and (force_telegram or (not detected_classified and (
+                is_telegraph or not detected_domain or not detected_group
+            )))
         )
         if should_fetch_telegram:
             fetched_telegram = True
             telegram_checked += 1
             telegram_content = _fetch_telegram_message_content(row["id"])
             if telegram_content:
-                detected_group, detected_domain = detect_group_source(
-                    telegram_content, row["telegraph_url"], row["feed_source"] or ""
+                fetched_group, fetched_domain, fetched_classified = _detect_source_for_redetect(
+                    conn, telegram_content, row["telegraph_url"], row["feed_source"] or "",
+                    classified_lookup,
                 )
-                detected_group, detected_domain = _reliable_source_detection(
-                    detected_group, detected_domain, row["feed_source"] or ""
-                )
-                if detected_group:
-                    telegram_hits += 1
-
-        content = "\n".join([
-            row["body_html"] or "",
-            row["summary"] or "",
-            row["title"] or "",
-        ])
-        if not detected_group:
-            detected_group, detected_domain = detect_group_source(
-                content, row["telegraph_url"], row["feed_source"] or ""
-            )
-            detected_group, detected_domain = _reliable_source_detection(
-                detected_group, detected_domain, row["feed_source"] or ""
-            )
-        if (not detected_domain or not detected_group) and not fetched_telegram and telegram_checked < network_limit:
-            fetched_telegram = True
-            telegram_checked += 1
-            telegram_content = _fetch_telegram_message_content(row["id"])
-            if telegram_content:
-                fetched_group, fetched_domain = detect_group_source(
-                    telegram_content, row["telegraph_url"], row["feed_source"] or ""
-                )
-                fetched_group, fetched_domain = _reliable_source_detection(
-                    fetched_group, fetched_domain, row["feed_source"] or ""
-                )
-                if fetched_group and (fetched_domain or not detected_group):
-                    detected_group, detected_domain = fetched_group, fetched_domain
+                if fetched_group and (
+                    (fetched_classified and not detected_classified)
+                    or (not detected_classified and (fetched_domain or not detected_group))
+                ):
+                    detected_group, detected_domain, detected_classified = (
+                        fetched_group, fetched_domain, fetched_classified
+                    )
                 if fetched_group:
                     telegram_hits += 1
-        current_group = (row["group_source"] or row["source"] or "").strip()
         current_feed = (row["feed_source"] or row["source"] or "").strip()
         current_origin = (row["origin_source"] or "").strip()
         if not detected_group and not detected_domain:
@@ -6550,11 +6579,10 @@ def _redetect_article_sources_work(limit: int, network_limit: int, force_telegra
         stored_domain = (row["publisher_domain"] or "").strip()
         # Older WeChat detections stored qq.com after collapsing mp.weixin.qq.com.
         # An explicit attribution is stronger evidence than that legacy domain.
-        effective_domain = detected_domain or (
+        effective_domain = detected_domain if detected_classified else detected_domain or (
             "" if stored_domain == "qq.com" and detected_group else stored_domain
         )
-        if effective_domain:
-            from source_categories import publisher_source_for_domain
+        if effective_domain and not detected_classified:
             next_group = publisher_source_for_domain(conn, effective_domain) or next_group
         next_origin = next_group or current_origin
         conn.execute(
@@ -6613,7 +6641,10 @@ def _migrate_unambiguous_manual_source_settings(conn: sqlite3.Connection) -> int
         # unrelated feeds may legitimately retain retryable articles indefinitely.
         unfinished = conn.execute(
             "SELECT 1 FROM articles WHERE feed_source = ? "
-            "AND source_detection_version < 1 LIMIT 1", (row["source"],)
+            "AND source_detection_version < 1 "
+            "AND NOT EXISTS (SELECT 1 FROM source_categories sc "
+            "WHERE sc.source = COALESCE(NULLIF(articles.group_source, ''), articles.source) "
+            "AND sc.status IN ('manual', 'classified')) LIMIT 1", (row["source"],)
         ).fetchone()
         if unfinished:
             continue
@@ -6651,7 +6682,10 @@ def _run_source_identity_backfill_once() -> tuple[dict, int, int]:
     if not conn:
         return result, 0, 0
     remaining = conn.execute(
-        "SELECT COUNT(*) FROM articles WHERE source_detection_version < 1"
+        "SELECT COUNT(*) FROM articles WHERE source_detection_version < 1 "
+        "AND NOT EXISTS (SELECT 1 FROM source_categories sc "
+        "WHERE sc.source = COALESCE(NULLIF(articles.group_source, ''), articles.source) "
+        "AND sc.status IN ('manual', 'classified'))"
     ).fetchone()[0]
     migrated = _migrate_unambiguous_manual_source_settings(conn)
     return result, remaining, migrated
@@ -6744,8 +6778,6 @@ def redetect_single_source():
     if not source:
         return jsonify({"error": "source required"}), 400
 
-    from fetcher import detect_group_source
-
     rows = conn.execute(
         "SELECT id, title, source, feed_source, group_source, publisher_domain, origin_source, body_html, summary, telegraph_url "
         "FROM articles "
@@ -6754,43 +6786,38 @@ def redetect_single_source():
         (source,),
     ).fetchall()
 
+    classified_lookup = _classified_source_lookup(conn)
+    classified_keys = _classified_source_keys(conn)
     changed = []
     for row in rows:
-        # Join with <br> so via line stays isolated from title/summary in chunk splitting
-        content = "<br>".join([
-            row["body_html"] or "",
-            row["summary"] or "",
-            row["title"] or "",
-        ])
-        detected_group, detected_domain = detect_group_source(
-            content, row["telegraph_url"], row["feed_source"] or ""
+        current_group = (row["group_source"] or row["source"] or "").strip()
+        if current_group.casefold() in classified_keys:
+            continue
+        content = row["body_html"] or row["summary"] or row["title"] or ""
+        detected_group, detected_domain, detected_classified = _detect_source_for_redetect(
+            conn, content, row["telegraph_url"], row["feed_source"] or "", classified_lookup
         )
-        detected_group, detected_domain = _reliable_source_detection(
-            detected_group, detected_domain, row["feed_source"] or ""
-        )
-        if not detected_domain:
+        if not detected_classified and not detected_domain:
             tg_content = _fetch_telegram_message_content(row["id"])
             if tg_content:
-                fetched_group, fetched_domain = detect_group_source(
-                    tg_content, row["telegraph_url"], row["feed_source"] or ""
+                fetched_group, fetched_domain, fetched_classified = _detect_source_for_redetect(
+                    conn, tg_content, row["telegraph_url"], row["feed_source"] or "",
+                    classified_lookup,
                 )
-                fetched_group, fetched_domain = _reliable_source_detection(
-                    fetched_group, fetched_domain, row["feed_source"] or ""
-                )
-                if fetched_group and (fetched_domain or not detected_group):
-                    detected_group, detected_domain = fetched_group, fetched_domain
-        current_group = (row["group_source"] or row["source"] or "").strip()
+                if fetched_group and (fetched_classified or fetched_domain or not detected_group):
+                    detected_group, detected_domain, detected_classified = (
+                        fetched_group, fetched_domain, fetched_classified
+                    )
         current_origin = (row["origin_source"] or "").strip()
         if (not detected_group and not detected_domain
                 and (not row["publisher_domain"] or row["publisher_domain"] == "qq.com")):
             continue
         next_group = detected_group or current_group
         stored_domain = (row["publisher_domain"] or "").strip()
-        effective_domain = detected_domain or (
+        effective_domain = detected_domain if detected_classified else detected_domain or (
             "" if stored_domain == "qq.com" and detected_group else stored_domain
         )
-        if effective_domain:
-            from source_categories import publisher_source_for_domain
+        if effective_domain and not detected_classified:
             next_group = publisher_source_for_domain(conn, effective_domain) or next_group
         next_origin = next_group or current_origin
         if next_group == current_group and effective_domain == (row["publisher_domain"] or ""):
