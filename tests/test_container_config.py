@@ -388,7 +388,36 @@ def test_wrapper_returns_sigterm_after_reaping_cooperative_members(tmp_path):
 
 def test_container_image_copies_pipeline_wrapper():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    assert "supervised_pipeline.py" in dockerfile
+    assert _dockerfile_copies_root_module(dockerfile, "supervised_pipeline.py")
+
+
+def _dockerfile_copies_root_module(dockerfile: str, module: str) -> bool:
+    """True when the module reaches the image, however the COPY is written."""
+    if re.search(r"COPY\s+\*\.py\s", dockerfile):
+        return (ROOT / module).exists()
+    return module in dockerfile
+
+
+def test_dockerfile_copies_every_root_module():
+    """Every root module must reach the image.
+
+    A hardcoded COPY list silently dropped digest_engine.py, so web_server.py
+    failed to import at startup and nginx answered /auth/* with 502 HTML.
+    """
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert re.search(r"COPY\s+\*\.py\s", dockerfile), (
+        "Dockerfile must copy root modules as a glob; a hardcoded list drops new modules"
+    )
+    # A .dockerignore listing *.py would silently undo the glob again.
+    dockerignore = ROOT / ".dockerignore"
+    if dockerignore.exists():
+        excluded = {
+            line.strip().removeprefix("/")
+            for line in dockerignore.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        }
+        assert "*.py" not in excluded
+        assert not {path.name for path in ROOT.glob("*.py")} & excluded
 
 
 def test_nginx_logs_use_the_timestamp_filter_contract():
