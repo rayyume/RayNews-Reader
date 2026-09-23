@@ -11,6 +11,7 @@ import sqlite3
 import threading
 import time
 import calendar
+import datetime as _dt
 import fcntl
 import ipaddress
 import uuid
@@ -62,6 +63,8 @@ from auth import init_auth, create_token, require_auth, require_role
 from auth_validation import is_valid_email
 from image_validation import detect_image_content_type
 from ai_service import AIService, _redact_api_error, validate_ai_endpoint_base_url
+from digest_engine import (SIGNAL_VERSION, normalize_signals, group_events,
+                           rank_events, render_digest)
 from network_safety import UnsafeUrlError, assert_ai_endpoint_url, assert_public_http_url
 from image_cache import (
     enqueue_article_image_prefetch, unpin_article_images,
@@ -71,6 +74,8 @@ from news_schema import ensure_article_schema, ensure_article_title_columns
 from runtime_memory import runtime_memory_snapshot
 from source_categories import (
     CATEGORY_NAMES, CATEGORY_ORDER, cleanup_stale_source_categories,
+    category_definitions, delete_category_definition, save_category_definition,
+    save_publisher_domain, UNCATEGORIZED, valid_category,
     clamp_weighted, ensure_article_source_columns, ensure_article_sources,
     delete_source_metadata, init_source_categories,
     find_merge_target, maintain_source_categories, merge_source,
@@ -745,8 +750,8 @@ def _get_article_meta(article_id: int) -> dict | None:
         with _news_db_conn() as conn:
             _ensure_news_schema(conn)
             row = conn.execute(
-                "SELECT id, title, original_title, COALESCE(NULLIF(feed_source, ''), source) AS source, "
-                "       COALESCE(NULLIF(feed_source, ''), source) AS feed_source, origin_source, "
+                "SELECT id, title, original_title, COALESCE(NULLIF(group_source, ''), source) AS source, "
+                "       feed_source, group_source, publisher_domain, origin_source, "
                 "       date, time, thumb, has_full_content, timestamp "
                 "FROM articles WHERE id = ?",
                 (article_id,),
@@ -809,8 +814,8 @@ def _get_article_meta_batch(article_ids: list[int]) -> dict[int, dict]:
     try:
         placeholders = ",".join("?" * len(article_ids))
         rows = conn.execute(
-            "SELECT id, title, original_title, COALESCE(NULLIF(feed_source, ''), source) AS source, "
-            "       COALESCE(NULLIF(feed_source, ''), source) AS feed_source, origin_source, "
+            "SELECT id, title, original_title, COALESCE(NULLIF(group_source, ''), source) AS source, "
+            "       feed_source, group_source, publisher_domain, origin_source, "
             f"      date, time, thumb, has_full_content, timestamp FROM articles WHERE id IN ({placeholders})",
             article_ids,
         ).fetchall()
@@ -1206,10 +1211,12 @@ def _generate_article_summary(article_id: int, config: dict,
         model=config["model"],
         provider_type=config.get("provider_type", "openai"),
     )
-    summary = svc.summarize(
-        article_text=article.get("body_html") or article.get("summary") or "",
-        title=article.get("title", ""),
-    )
+    text = article.get("body_html") or article.get("summary") or ""
+    title = article.get("title", "")
+    if hasattr(getattr(svc, "_svc", svc), "summarize_with_signals"):
+        summary, signals = svc.summarize_with_signals(article_text=text, title=title)
+    else:
+        summary, signals = svc.summarize(article_text=text, title=title), None
     if save_shared_cache:
         _save_ai_result(
             article_id,
@@ -1218,6 +1225,8 @@ def _generate_article_summary(article_id: int, config: dict,
             summary_model=config.get("model"),
             summary_by_user_id=config.get("user_id"),
         )
+        if signals:
+            _save_digest_signals(article_id, normalize_signals(article, signals))
     return summary, False
 
 
@@ -2392,6 +2401,64 @@ def _today_str() -> str:
     return _beijing_now().strftime("%Y-%m-%d")
 
 
+def _digest_window(date_str: str) -> tuple[int, int]:
+    """Half-open Beijing cutoff window; late arrivals enter the next run."""
+    beijing = _dt.timezone(_dt.timedelta(hours=8))
+    day = _dt.date.fromisoformat(date_str)
+    cutoff = _dt.datetime.combine(day, _dt.time(DAILY_SUMMARY_HOUR, DAILY_SUMMARY_MINUTE), beijing)
+    return int((cutoff - _dt.timedelta(days=1)).timestamp()), int(cutoff.timestamp())
+
+
+def _digest_category_definitions() -> list[dict]:
+    if not os.path.exists(NEWS_DB):
+        return [{"category": UNCATEGORIZED, "label": "待分类"}]
+    with _news_db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        return category_definitions(conn)
+
+
+def _previous_digest_signals(date_str: str) -> list[dict]:
+    if not os.path.exists(NEWS_DB):
+        return []
+    _init_daily_summary_global_table()
+    previous = (_dt.date.fromisoformat(date_str) - _dt.timedelta(days=1)).isoformat()
+    with _news_db_conn() as conn:
+        rows = conn.execute(
+            "SELECT event_json FROM daily_digest_events WHERE date = ? AND selected = 1", (previous,)
+        ).fetchall()
+    result = []
+    for row in rows:
+        try:
+            result.append(json.loads(row[0]))
+        except (TypeError, json.JSONDecodeError):
+            continue
+    return result
+
+
+@app.route("/admin/daily-digest/events", methods=["GET"])
+@require_role("admin")
+def admin_daily_digest_events():
+    """Explain why each event entered or missed the saved digest."""
+    date_str = request.args.get("date") or _today_str()
+    try:
+        _dt.date.fromisoformat(date_str)
+    except ValueError:
+        return jsonify({"error": "invalid date"}), 400
+    if not os.path.exists(NEWS_DB):
+        return jsonify({"date": date_str, "events": []})
+    _init_daily_summary_global_table()
+    with _news_db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT representative_article_id, event_json, score, reason, selected "
+            "FROM daily_digest_events WHERE date = ? "
+            "ORDER BY selected DESC, score DESC, representative_article_id", (date_str,)
+        ).fetchall()
+    return jsonify({"date": date_str, "events": [
+        {**dict(row), "event": json.loads(row["event_json"])} for row in rows
+    ]})
+
+
 def _init_daily_summary_global_table():
     if not os.path.exists(NEWS_DB):
         return
@@ -2406,6 +2473,15 @@ def _init_daily_summary_global_table():
                     updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
                 )
             """)
+            conn.execute("""CREATE TABLE IF NOT EXISTS daily_digest_events (
+                date TEXT NOT NULL,
+                representative_article_id INTEGER NOT NULL,
+                event_json TEXT NOT NULL,
+                score INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                selected INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(date, representative_article_id)
+            )""")
             conn.commit()
     except Exception as e:
         print(f"[daily-summary] global cache table init failed: {e}")
@@ -2437,9 +2513,10 @@ def _get_daily_summary_global_cache(date_str: str) -> dict | None:
 
 
 def _save_daily_summary_global_cache(date_str: str, summary: str,
-                                     article_count: int, stats: dict):
+                                     article_count: int, stats: dict,
+                                     events: list[dict] | None = None) -> bool:
     if not os.path.exists(NEWS_DB):
-        return
+        return False
     try:
         _init_daily_summary_global_table()
         with _news_db_conn() as conn:
@@ -2454,9 +2531,24 @@ def _save_daily_summary_global_cache(date_str: str, summary: str,
                 "updated_at = datetime('now')",
                 (date_str, summary, article_count, json.dumps(stats or {}, ensure_ascii=False)),
             )
+            if events is not None:
+                conn.execute("DELETE FROM daily_digest_events WHERE date = ?", (date_str,))
+                conn.executemany(
+                    "INSERT INTO daily_digest_events "
+                    "(date, representative_article_id, event_json, score, reason, selected) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    [(date_str, group["representative"]["id"],
+                      json.dumps({**group["signal"],
+                                  "article_ids": [a["id"] for a in group["articles"]],
+                                  "publisher_count": group["publisher_count"]},
+                                 ensure_ascii=False), group["score"],
+                      group["reason"], int(not group["reason"])) for group in events],
+                )
             conn.commit()
+        return True
     except Exception as e:
         print(f"[daily-summary] global cache write failed: {e}")
+        return False
 
 
 # Why the reason travels in a module global instead of the return value: the
@@ -2505,16 +2597,56 @@ def _generate_daily_summary_global(date_str: str) -> dict | None:
             model=sys_config["model"],
             provider_type=sys_config.get("provider_type", "openai"),
         )
-        raw_article_count = len(articles)
-        deduped = _dedup_articles(articles)
-        result = svc.daily_summary(deduped)
-        result["stats"]["total_articles"] = raw_article_count
-        result["stats"]["articles_after_dedup"] = len(deduped)
-        _save_daily_summary_global_cache(date_str, result["summary"], raw_article_count, result["stats"])
+        start, cutoff = _digest_window(date_str)
+        definitions = _digest_category_definitions()
+        missing = [article for article in articles if not article.get("digest_signals")]
+        signal_failures = 0
+        failed_signal_batches = 0
+        for offset in range(0, len(missing), 20):
+            batch = missing[offset:offset + 20]
+            try:
+                generated = svc.batch_digest_signals(batch)
+            except Exception as exc:
+                app.logger.warning("Daily signal batch failed: %s", _redact_api_error(str(exc)))
+                generated = {}
+                failed_signal_batches += 1
+            updates = []
+            for article in batch:
+                raw = generated.get(article["id"])
+                if raw is None:
+                    signal_failures += 1
+                article["digest_signals"] = normalize_signals(article, raw)
+                if raw is not None:
+                    updates.append((article["id"], article["digest_signals"]))
+            _save_digest_signals_batch(updates)
+        for article in articles:
+            if article.get("digest_signals"):
+                article["digest_signals"] = normalize_signals(article, article["digest_signals"])
+            else:
+                article["digest_signals"] = normalize_signals(article, None)
+        groups = group_events(articles)
+        selected = rank_events(groups, _previous_digest_signals(date_str), cutoff=cutoff)
+        if missing and failed_signal_batches == (len(missing) + 19) // 20 and not selected:
+            raise RuntimeError("AI event signal generation failed")
+        written = {}
+        writing_failures = 0
+        for offset in range(0, len(selected), 10):
+            try:
+                written.update(svc.write_digest_events(selected[offset:offset + 10]))
+            except Exception as exc:
+                writing_failures += 1
+                app.logger.warning("Daily digest writing batch failed: %s", _redact_api_error(str(exc)))
+        summary = render_digest(selected, definitions, written)
+        stats = {"total_articles": len(articles), "events": len(groups),
+                 "selected_events": len(selected), "missing_signals": len(missing),
+                 "signal_fallbacks": signal_failures, "writing_fallback_batches": writing_failures,
+                 "window_start": start, "window_end": cutoff, "digest_item_count": len(selected)}
+        if not _save_daily_summary_global_cache(date_str, summary, len(articles), stats, groups):
+            raise RuntimeError("Could not persist daily digest and event audit")
         return {
-            "summary": result["summary"],
-            "article_count": raw_article_count,
-            "stats": result["stats"],
+            "summary": summary,
+            "article_count": len(articles),
+            "stats": stats,
         }
     except Exception:
         app.logger.exception("Daily summary generation failed")
@@ -3669,7 +3801,7 @@ def _fetch_stale_translation_articles(
                 ensure_article_source_columns(conn)
                 rows = conn.execute(
                     "SELECT a.id, a.title, "
-                    "       COALESCE(NULLIF(a.feed_source, ''), a.source) AS source, "
+                    "       COALESCE(NULLIF(a.group_source, ''), a.source) AS source, "
                     "       a.origin_source, a.summary, a.body_html, a.timestamp, "
                     "       a.has_full_content, a.telegraph_url, "
                     "       a.original_body_html, r.translation, "
@@ -3735,7 +3867,7 @@ def _fetch_untranslated_articles(config: dict, limit: int = AUTO_TRANSLATION_BAT
             conn.row_factory = sqlite3.Row
             ensure_article_source_columns(conn)
             rows = conn.execute(
-                "SELECT a.id, a.title, COALESCE(NULLIF(a.feed_source, ''), a.source) AS source, "
+                "SELECT a.id, a.title, COALESCE(NULLIF(a.group_source, ''), a.source) AS source, "
                 "       a.origin_source, a.summary, a.body_html, a.has_full_content, "
                 "       a.telegraph_url, r.translation "
                 "FROM articles a "
@@ -3753,7 +3885,7 @@ def _fetch_untranslated_articles(config: dict, limit: int = AUTO_TRANSLATION_BAT
             # P2.9: also catch articles upgraded to full content after their
             # ``date`` left the today window (backfill succeeded on day >= 2).
             upgraded_rows = conn.execute(
-                "SELECT a.id, a.title, COALESCE(NULLIF(a.feed_source, ''), a.source) AS source, "
+                "SELECT a.id, a.title, COALESCE(NULLIF(a.group_source, ''), a.source) AS source, "
                 "       a.origin_source, a.summary, a.body_html, a.has_full_content, "
                 "       a.telegraph_url, r.translation "
                 "FROM articles a "
@@ -4308,6 +4440,9 @@ def _classify_source_batch(config: dict, limit: int = AUTO_SOURCE_CLASSIFY_BATCH
         )
     ][:limit]
 
+    categories = [row for row in category_definitions(conn) if not row.get("is_system")]
+    category_keys = {row["category"] for row in categories}
+
     svc = _SystemAIService(
         "订阅源分类",
         api_key=config["api_key"],
@@ -4323,18 +4458,28 @@ def _classify_source_batch(config: dict, limit: int = AUTO_SOURCE_CLASSIFY_BATCH
         # Extract domains from recent article bodies for stronger AI signal
         domains = _extract_domains_for_source(conn, source)
         try:
-            result = svc.classify_source(source, titles, domains=domains)
-            saved = update_source_category(
-                conn,
-                source,
-                result["category"],
-                result["label"],
-                status="classified",
-                confidence=result.get("confidence"),
-                reason=result.get("reason") or "ai classified",
-                sample_titles=titles,
-            )
-            processed.append(saved)
+            result = svc.classify_source(source, titles, domains=domains, categories=categories)
+            confidence = float(result.get("confidence") or 0)
+            category = result.get("category") or ""
+            label = result.get("label") or row.get("label") or source
+            if category in category_keys and confidence >= 0.85:
+                saved = update_source_category(
+                    conn, source, category, label, status="classified",
+                    confidence=confidence, reason=result.get("reason") or "AI classified",
+                    sample_titles=titles,
+                )
+                processed.append(saved)
+            else:
+                conn.execute(
+                    "UPDATE source_categories SET suggested_category = ?, suggested_label = ?, "
+                    "suggested_confidence = ?, reason = ?, sample_titles = ?, status = 'review' "
+                    "WHERE source = ? AND status != 'manual'",
+                    (category if category in category_keys else None, label, confidence,
+                     result.get("reason") or "AI suggestion requires review",
+                     json.dumps(titles, ensure_ascii=False), source),
+                )
+                conn.commit()
+                processed.append({"source": source, "suggestion": result, "status": "review"})
         except Exception:
             app.logger.exception("Source classification failed for %s", source)
             try:
@@ -4356,7 +4501,6 @@ def _classify_source_batch(config: dict, limit: int = AUTO_SOURCE_CLASSIFY_BATCH
         if not row.get("alias_target")
         and not row.get("user_override")
         and row.get("status") in ("pending", "failed")
-        and row.get("status") != "manual"
     ]
     return {
         "processed": processed,
@@ -4370,7 +4514,7 @@ def _extract_domains_for_source(conn, source: str) -> list[str]:
     try:
         rows = conn.execute(
             "SELECT body_html, telegraph_url FROM articles "
-            "WHERE COALESCE(NULLIF(feed_source, ''), source) = ? "
+            "WHERE COALESCE(NULLIF(group_source, ''), source) = ? "
             "AND (body_html != '' OR telegraph_url != '') "
             "ORDER BY timestamp DESC LIMIT 5",
             (source,),
@@ -4544,8 +4688,8 @@ def _fetch_recent_articles(limit: int = 20) -> list[dict]:
             conn.row_factory = sqlite3.Row
             ensure_article_source_columns(conn)
             rows = conn.execute(
-                "SELECT id, title, COALESCE(NULLIF(feed_source, ''), source) AS source, "
-                "       COALESCE(NULLIF(feed_source, ''), source) AS feed_source, origin_source, "
+                "SELECT id, title, COALESCE(NULLIF(group_source, ''), source) AS source, "
+                "       feed_source, group_source, publisher_domain, origin_source, "
                 "       date, time FROM articles ORDER BY timestamp DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -4578,7 +4722,7 @@ def _dedup_articles(articles: list[dict]) -> list[dict]:
 
 
 def _fetch_articles_by_date(date_str: str, include_shared_summary: bool = True) -> list[dict]:
-    """Fetch articles for a date, preferring cached AI summaries when available."""
+    """Fetch all arrivals in the digest cutoff window with cached event signals."""
     import sqlite3
     if not os.path.exists(NEWS_DB):
         return []
@@ -4587,48 +4731,92 @@ def _fetch_articles_by_date(date_str: str, include_shared_summary: bool = True) 
         with _news_db_conn() as conn:
             conn.row_factory = sqlite3.Row
             ensure_article_source_columns(conn)
+            init_source_categories(conn)
+            start, cutoff = _digest_window(date_str)
             summary_expr = (
                 "COALESCE(NULLIF(r.summary, ''), a.summary)"
                 if include_shared_summary else "a.summary"
             )
             rows = conn.execute(
-                "SELECT a.id, a.title, COALESCE(NULLIF(a.feed_source, ''), a.source) AS source, "
-                "a.origin_source, a.date, a.time, a.body_html, "
+                "SELECT a.id, a.title, COALESCE(NULLIF(a.group_source, ''), a.source) AS source, "
+                "a.origin_source, a.date, a.time, a.body_html, a.ingested_at, "
                 f"{summary_expr} AS summary, "
-                "a.telegraph_url "
+                "a.telegraph_url, r.digest_signals_json, r.digest_signals_version, "
+                "COALESCE(d.category, ?) AS category "
                 "FROM articles a "
                 "LEFT JOIN ai_results r ON r.article_id = a.id "
-                "WHERE a.date = ? ORDER BY a.timestamp ASC",
-                (date_str,),
+                "LEFT JOIN source_categories sc ON sc.source = COALESCE(NULLIF(a.group_source, ''), a.source) "
+                "LEFT JOIN source_category_definitions d ON d.category = sc.category AND d.enabled = 1 "
+                "WHERE a.ingested_at >= ? AND a.ingested_at < ? ORDER BY a.ingested_at ASC, a.id ASC",
+                (UNCATEGORIZED, start, cutoff),
             ).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for row in rows:
+            article = dict(row)
+            try:
+                article["digest_signals"] = (json.loads(article["digest_signals_json"])
+                    if article["digest_signals_version"] == SIGNAL_VERSION else None)
+            except (TypeError, json.JSONDecodeError):
+                article["digest_signals"] = None
+            article["url"] = (f"https://news.rayyu.me/#/article/"
+                              f"{(article.get('date') or '')[2:]}-{article['id']}")
+            result.append(article)
+        return result
     except Exception:
         return []
 
 
+def _save_digest_signals(article_id: int, signals: dict) -> bool:
+    return _save_digest_signals_batch([(article_id, signals)])
+
+
+def _save_digest_signals_batch(items: list[tuple[int, dict]]) -> bool:
+    if not items:
+        return True
+    if not os.path.exists(NEWS_DB) or not _init_ai_results_table():
+        return False
+    try:
+        with _news_db_conn() as conn:
+            conn.executemany(
+                "INSERT INTO ai_results "
+                "(article_id, digest_signals_json, digest_signals_version, digest_signals_generated_at) "
+                "VALUES (?, ?, ?, datetime('now')) "
+                "ON CONFLICT(article_id) DO UPDATE SET "
+                "digest_signals_json = excluded.digest_signals_json, "
+                "digest_signals_version = excluded.digest_signals_version, "
+                "digest_signals_generated_at = excluded.digest_signals_generated_at",
+                [(article_id, json.dumps(signals, ensure_ascii=False), SIGNAL_VERSION)
+                 for article_id, signals in items],
+            )
+            conn.commit()
+        return True
+    except Exception:
+        app.logger.exception("Could not save digest signals")
+        return False
+
+
 def _fetch_unsummarized_articles(limit: int = AUTO_SUMMARY_BATCH_LIMIT) -> list[dict]:
-    """Fetch recent today articles without cached AI summaries."""
-    import datetime as _dt
+    """Fetch recent arrivals without cached AI summaries, including late news."""
     import sqlite3
     if not os.path.exists(NEWS_DB):
         return []
     try:
         _init_ai_results_table()
-        today_str = _dt.datetime.now().strftime("%Y-%m-%d")
+        recent_start = int(time.time()) - 86400
         with _news_db_conn() as conn:
             conn.row_factory = sqlite3.Row
             ensure_article_source_columns(conn)
             rows = conn.execute(
-                "SELECT a.id, a.title, COALESCE(NULLIF(a.feed_source, ''), a.source) AS source, "
+                "SELECT a.id, a.title, COALESCE(NULLIF(a.group_source, ''), a.source) AS source, "
                 "a.origin_source, a.summary, a.body_html "
                 "FROM articles a "
                 "LEFT JOIN ai_results r ON r.article_id = a.id "
-                "WHERE a.date = ? "
+                "WHERE a.ingested_at >= ? "
                 "AND (r.summary IS NULL OR r.summary = '') "
                 "AND (r.summary_error_at IS NULL OR datetime(r.summary_error_at, '+6 hours') < datetime('now')) "
                 "AND (a.body_html != '' OR a.summary != '') "
-                "ORDER BY a.timestamp ASC LIMIT ?",
-                (today_str, limit),
+                "ORDER BY a.ingested_at ASC LIMIT ?",
+                (recent_start, limit),
             ).fetchall()
         return [dict(r) for r in rows]
     except Exception:
@@ -4645,7 +4833,7 @@ def _fetch_article_body(article_id: int) -> dict | None:
             conn.row_factory = sqlite3.Row
             ensure_article_source_columns(conn)
             row = conn.execute(
-                "SELECT id, title, COALESCE(NULLIF(feed_source, ''), source) AS source, "
+                "SELECT id, title, COALESCE(NULLIF(group_source, ''), source) AS source, "
                 "origin_source, summary, body_html FROM articles WHERE id = ?",
                 (article_id,),
             ).fetchone()
@@ -4709,6 +4897,9 @@ def _init_ai_results_table() -> bool:
                         translation_generated_at TEXT,
                         summary_error TEXT,
                         summary_error_at TEXT,
+                        digest_signals_json TEXT,
+                        digest_signals_version INTEGER,
+                        digest_signals_generated_at TEXT,
                         updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
                     )
                 """)
@@ -4718,6 +4909,9 @@ def _init_ai_results_table() -> bool:
                 }
                 _add_ai_results_column_if_missing(conn, cols, "summary_error", "TEXT")
                 _add_ai_results_column_if_missing(conn, cols, "summary_error_at", "TEXT")
+                _add_ai_results_column_if_missing(conn, cols, "digest_signals_json", "TEXT")
+                _add_ai_results_column_if_missing(conn, cols, "digest_signals_version", "INTEGER")
+                _add_ai_results_column_if_missing(conn, cols, "digest_signals_generated_at", "TEXT")
                 _add_ai_results_column_if_missing(conn, cols, "translation_updated_at", "TEXT")
                 _add_ai_results_column_if_missing(conn, cols, "title_summary", "TEXT")
                 _add_ai_results_column_if_missing(conn, cols, "title_summary_error", "TEXT")
@@ -4762,6 +4956,7 @@ def _init_ai_results_table() -> bool:
                     "summary_by_user_id", "summary_generated_at",
                     "translation_provider", "translation_model",
                     "translation_by_user_id", "translation_generated_at", "updated_at",
+                    "digest_signals_json", "digest_signals_version", "digest_signals_generated_at",
                 }
                 if expected.issubset(current):
                     _ai_results_schema_ready_paths.add(db_path)
@@ -5203,11 +5398,63 @@ def list_sources():
     if not conn:
         return jsonify({"error": "news db not found"}), 404
     _promote_legacy_admin_source_settings(conn)
+    definitions = category_definitions(conn)
+    all_definitions = category_definitions(conn, include_disabled=True)
     return jsonify({
-        "categories": CATEGORY_ORDER,
-        "category_names": CATEGORY_NAMES,
+        "categories": [row["category"] for row in definitions],
+        "category_names": {row["category"]: row["label"] for row in definitions},
+        "category_definitions": all_definitions,
         "sources": source_rows(conn),
     })
+
+
+@app.route("/sources/categories", methods=["PUT", "DELETE"])
+@require_role("admin")
+def manage_source_categories():
+    conn = _get_news_db()
+    if not conn:
+        return jsonify({"error": "news db not found"}), 404
+    data = request.get_json(silent=True) or {}
+    try:
+        if request.method == "PUT":
+            result = save_category_definition(
+                conn,
+                data.get("category", ""),
+                data.get("label", ""),
+                data.get("sort_order", 0),
+                data.get("enabled", True),
+                data.get("migration_target"),
+            )
+            return jsonify({"ok": True, "category": result, "categories": category_definitions(conn)})
+        deleted = delete_category_definition(
+            conn, str(data.get("category", "")), str(data.get("target", ""))
+        )
+        return jsonify({"ok": True, "changed": deleted, "categories": category_definitions(conn)})
+    except (ValueError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/sources/domains", methods=["GET", "PUT"])
+@require_role("admin")
+def manage_publisher_domains():
+    conn = _get_news_db()
+    if not conn:
+        return jsonify({"error": "news db not found"}), 404
+    if request.method == "GET":
+        rows = conn.execute(
+            "SELECT domain, group_source, enabled, is_builtin, updated_at "
+            "FROM publisher_domains ORDER BY domain"
+        ).fetchall()
+        return jsonify({"domains": [dict(row) for row in rows]})
+    data = request.get_json(silent=True) or {}
+    try:
+        row = save_publisher_domain(
+            conn, str(data.get("domain", "")), str(data.get("group_source", "")),
+            bool(data.get("enabled", True)),
+        )
+        return jsonify({"ok": True, "domain": row})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 @app.route("/sources/articles", methods=["GET"])
@@ -5243,10 +5490,10 @@ def list_source_articles():
     sources = list(dict.fromkeys(sources))
     placeholders = ",".join("?" * len(sources))
     rows = conn.execute(
-        "SELECT id, title, original_title, COALESCE(NULLIF(feed_source, ''), source) AS source, "
-        "       COALESCE(NULLIF(feed_source, ''), source) AS feed_source, origin_source, "
+        "SELECT id, title, original_title, COALESCE(NULLIF(group_source, ''), source) AS source, "
+        "       feed_source, group_source, publisher_domain, origin_source, "
         "       date, time, timestamp, thumb, has_full_content "
-        f"FROM articles WHERE COALESCE(NULLIF(feed_source, ''), source) IN ({placeholders}) "
+        f"FROM articles WHERE COALESCE(NULLIF(group_source, ''), source) IN ({placeholders}) "
         "ORDER BY timestamp DESC LIMIT ?",
         (*sources, limit),
     ).fetchall()
@@ -5302,7 +5549,7 @@ def _delete_source_article_ids_in_transaction(
         return {"deleted": 0, "deleted_sources": 0}, []
     placeholders = ",".join("?" * len(ids))
     existing = conn.execute(
-        f"SELECT id, title, COALESCE(NULLIF(feed_source, ''), source) AS source "
+        f"SELECT id, title, COALESCE(NULLIF(group_source, ''), source) AS source "
         f"FROM articles WHERE id IN ({placeholders})",
         ids,
     ).fetchall()
@@ -5451,7 +5698,7 @@ def delete_source_articles():
         sources = _resolve_shared_source_alias_closure(conn, base_sources)
         placeholders = ",".join("?" * len(sources))
         rows = conn.execute(
-            f"SELECT id FROM articles WHERE COALESCE(NULLIF(feed_source, ''), source) IN ({placeholders})",
+            f"SELECT id FROM articles WHERE COALESCE(NULLIF(group_source, ''), source) IN ({placeholders})",
             sources,
         ).fetchall()
         result, deleted_ids = _delete_source_article_ids_in_transaction(
@@ -5991,7 +6238,7 @@ def save_source():
     label = (data.get("label") or "").strip()
     if not source:
         return jsonify({"error": "source required"}), 400
-    if category not in CATEGORY_ORDER:
+    if not valid_category(conn, category):
         return jsonify({"error": "invalid category"}), 400
     if not label:
         return jsonify({"error": "label required"}), 400
@@ -6148,6 +6395,7 @@ def _fetch_telegram_message_content(article_id: int) -> str:
 
 _source_redetect_jobs = {}
 _source_redetect_jobs_lock = threading.Lock()
+SOURCE_REDETECT_RETRY_SECONDS = 900
 
 
 def _parse_source_redetect_options(data: dict) -> tuple[int, int, bool]:
@@ -6181,23 +6429,38 @@ def _update_source_redetect_job(job_id: str, **updates):
             _source_redetect_jobs[job_id].update(updates)
 
 
+def _reliable_source_detection(group: str | None, domain: str | None,
+                               feed_source: str) -> tuple[str | None, str]:
+    """Ignore the channel fallback returned when no publisher was identified."""
+    from fetcher import detect_feed_source
+    group = (group or "").strip()
+    domain = (domain or "").strip()
+    if domain or (group and group != detect_feed_source(channel=feed_source)):
+        return group or None, domain
+    return None, ""
+
+
 def _redetect_article_sources_work(limit: int, network_limit: int, force_telegram: bool,
-                                   job_id: str | None = None) -> dict:
+                                   job_id: str | None = None,
+                                   pending_only: bool = False) -> dict:
     if not os.path.exists(NEWS_DB):
         raise FileNotFoundError("news db not found")
-    from fetcher import detect_feed_source, detect_source, detect_source_from_attribution
+    from fetcher import detect_group_source
 
     conn = sqlite3.connect(NEWS_DB, timeout=30)
     conn.row_factory = sqlite3.Row
     ensure_article_source_columns(conn)
     rows = conn.execute(
         """
-        SELECT id, title, source, feed_source, origin_source, body_html, summary, telegraph_url
+        SELECT id, title, source, feed_source, group_source, publisher_domain,
+               source_detection_version, origin_source, body_html, summary, telegraph_url
         FROM articles
-        ORDER BY timestamp DESC
+        WHERE (? = 0 OR (source_detection_version < 1
+               AND source_detection_last_attempt_at <= ?))
+        ORDER BY source_detection_last_attempt_at ASC, timestamp DESC
         LIMIT ?
         """,
-        (limit,),
+        (1 if pending_only else 0, int(time.time()) - SOURCE_REDETECT_RETRY_SECONDS, limit),
     ).fetchall()
     changed = []
     skipped = 0
@@ -6217,23 +6480,27 @@ def _redetect_article_sources_work(limit: int, network_limit: int, force_telegra
 
     for row in rows:
         checked += 1
-        detected_feed = None
-        detected_origin = None
+        detected_group = None
+        detected_domain = ""
         fetched_telegram = False
         telegram_content = ""
         is_telegraph = bool(row["telegraph_url"])
         should_fetch_telegram = (
             telegram_checked < network_limit
-            and (force_telegram or is_telegraph)
+            and (force_telegram or is_telegraph or not row["publisher_domain"])
         )
         if should_fetch_telegram:
             fetched_telegram = True
             telegram_checked += 1
             telegram_content = _fetch_telegram_message_content(row["id"])
             if telegram_content:
-                detected_feed = detect_feed_source(telegram_content)
-                detected_origin = detect_source(telegram_content)
-                if detected_feed or detected_origin:
+                detected_group, detected_domain = detect_group_source(
+                    telegram_content, row["telegraph_url"], row["feed_source"] or ""
+                )
+                detected_group, detected_domain = _reliable_source_detection(
+                    detected_group, detected_domain, row["feed_source"] or ""
+                )
+                if detected_group:
                     telegram_hits += 1
 
         content = "\n".join([
@@ -6241,45 +6508,70 @@ def _redetect_article_sources_work(limit: int, network_limit: int, force_telegra
             row["summary"] or "",
             row["title"] or "",
         ])
-        if not detected_feed and (telegram_content or not is_telegraph):
-            detected_feed = detect_feed_source(telegram_content or content)
-        detected_origin = detected_origin or detect_source_from_attribution(content)
-        # Telegraph body is mirrored article content; arbitrary links in it are not source attribution.
-        if not detected_origin and not is_telegraph:
-            detected_origin = detect_source(content)
-        if (not detected_feed or not detected_origin) and not fetched_telegram and telegram_checked < network_limit:
+        if not detected_group:
+            detected_group, detected_domain = detect_group_source(
+                content, row["telegraph_url"], row["feed_source"] or ""
+            )
+            detected_group, detected_domain = _reliable_source_detection(
+                detected_group, detected_domain, row["feed_source"] or ""
+            )
+        if (not detected_domain or not detected_group) and not fetched_telegram and telegram_checked < network_limit:
+            fetched_telegram = True
             telegram_checked += 1
             telegram_content = _fetch_telegram_message_content(row["id"])
             if telegram_content:
-                detected_feed = detected_feed or detect_feed_source(telegram_content)
-                detected_origin = detected_origin or detect_source(telegram_content)
-                if detected_feed or detected_origin:
+                fetched_group, fetched_domain = detect_group_source(
+                    telegram_content, row["telegraph_url"], row["feed_source"] or ""
+                )
+                fetched_group, fetched_domain = _reliable_source_detection(
+                    fetched_group, fetched_domain, row["feed_source"] or ""
+                )
+                if fetched_group and (fetched_domain or not detected_group):
+                    detected_group, detected_domain = fetched_group, fetched_domain
+                if fetched_group:
                     telegram_hits += 1
-        if not detected_feed and not detected_origin:
-            skipped += 1
-            update_progress()
-            continue
+        current_group = (row["group_source"] or row["source"] or "").strip()
         current_feed = (row["feed_source"] or row["source"] or "").strip()
         current_origin = (row["origin_source"] or "").strip()
-        next_feed = detected_feed or current_feed
-        next_origin = detected_origin or current_origin
-        if next_feed == current_feed and next_origin == current_origin:
+        if not detected_group and not detected_domain:
+            # Keep the row pending: a later fetch may provide the missing via line.
+            # A quota skip is not a failed attempt. Leave its timestamp at zero
+            # so it gets the next run's network slots before attempted rows.
+            if pending_only and fetched_telegram:
+                conn.execute(
+                    "UPDATE articles SET source_detection_last_attempt_at = ? WHERE id = ?",
+                    (int(time.time()), row["id"]),
+                )
+                conn.commit()
             skipped += 1
             update_progress()
             continue
+        next_group = detected_group or current_group or current_feed
+        stored_domain = (row["publisher_domain"] or "").strip()
+        # Older WeChat detections stored qq.com after collapsing mp.weixin.qq.com.
+        # An explicit attribution is stronger evidence than that legacy domain.
+        effective_domain = detected_domain or (
+            "" if stored_domain == "qq.com" and detected_group else stored_domain
+        )
+        if effective_domain:
+            from source_categories import publisher_source_for_domain
+            next_group = publisher_source_for_domain(conn, effective_domain) or next_group
+        next_origin = next_group or current_origin
         conn.execute(
-            "UPDATE articles SET source = ?, feed_source = ?, origin_source = ? WHERE id = ?",
-            (next_feed, next_feed, next_origin, row["id"]),
+            "UPDATE articles SET source = ?, group_source = ?, publisher_domain = ?, "
+            "origin_source = ?, source_detection_version = 1 WHERE id = ?",
+            (next_group, next_group, effective_domain,
+             next_origin, row["id"]),
         )
         conn.commit()
-        changed.append({
-            "id": row["id"],
-            "title": row["title"],
-            "from": current_feed,
-            "to": next_feed,
-            "origin_from": current_origin,
-            "origin_to": next_origin,
-        })
+        if next_group != current_group or effective_domain != row["publisher_domain"]:
+            changed.append({
+                "id": row["id"], "title": row["title"],
+                "from": current_group, "to": next_group,
+                "origin_from": current_origin, "origin_to": next_origin,
+            })
+        else:
+            skipped += 1
         update_progress()
     ensure_article_sources(conn)
     deleted_sources = cleanup_stale_source_categories(conn)
@@ -6304,6 +6596,92 @@ def _run_source_redetect_job(job_id: str, limit: int, network_limit: int, force_
     except Exception:
         app.logger.exception("Source redetection job failed")
         _update_source_redetect_job(job_id, status="failed", error="redetection failed")
+
+
+_source_identity_backfill_lock = threading.Lock()
+
+
+def _migrate_unambiguous_manual_source_settings(conn: sqlite3.Connection) -> int:
+    """Move legacy channel settings only when that channel resolves to one publisher."""
+    rows = conn.execute(
+        "SELECT source, category, label, status FROM source_categories "
+        "WHERE status = 'manual'"
+    ).fetchall()
+    migrated = 0
+    for row in rows:
+        # A manual setting can move as soon as this feed has finished detection;
+        # unrelated feeds may legitimately retain retryable articles indefinitely.
+        unfinished = conn.execute(
+            "SELECT 1 FROM articles WHERE feed_source = ? "
+            "AND source_detection_version < 1 LIMIT 1", (row["source"],)
+        ).fetchone()
+        if unfinished:
+            continue
+        targets = conn.execute(
+            "SELECT group_source, COUNT(*) AS n FROM articles "
+            "WHERE feed_source = ? AND TRIM(group_source) != '' "
+            "GROUP BY group_source ORDER BY n DESC",
+            (row["source"],),
+        ).fetchall()
+        if len(targets) != 1 or targets[0]["group_source"] == row["source"]:
+            continue
+        target = targets[0]["group_source"]
+        current = conn.execute(
+            "SELECT status FROM source_categories WHERE source = ?", (target,)
+        ).fetchone()
+        if current and current["status"] == "manual":
+            continue
+        conn.execute(
+            "INSERT INTO source_categories (source, category, label, status, reason) "
+            "VALUES (?, ?, ?, 'manual', 'migrated from legacy feed label') "
+            "ON CONFLICT(source) DO UPDATE SET category=excluded.category, "
+            "label=excluded.label, status='manual', reason=excluded.reason",
+            (target, row["category"], row["label"]),
+        )
+        migrated += 1
+    conn.commit()
+    return migrated
+
+
+def _run_source_identity_backfill_once() -> tuple[dict, int, int]:
+    result = _redetect_article_sources_work(
+        limit=100, network_limit=10, force_telegram=False, pending_only=True
+    )
+    conn = _get_news_db()
+    if not conn:
+        return result, 0, 0
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM articles WHERE source_detection_version < 1"
+    ).fetchone()[0]
+    migrated = _migrate_unambiguous_manual_source_settings(conn)
+    return result, remaining, migrated
+
+
+def _source_identity_backfill_loop():
+    """Automatically finish old article source migration in short, resumable batches."""
+    time.sleep(15)
+    while True:
+        if not os.path.exists(NEWS_DB):
+            time.sleep(30)
+            continue
+        if not _source_identity_backfill_lock.acquire(blocking=False):
+            time.sleep(2)
+            continue
+        try:
+            result, remaining, migrated = _run_source_identity_backfill_once()
+            if migrated:
+                print(f"[source-migration] preserved {migrated} unambiguous manual label(s)")
+            if result.get("checked") or result.get("updated"):
+                print(
+                    f"[source-migration] checked {result['checked']}, updated {result['updated']}, "
+                    f"remaining {remaining}"
+                )
+            time.sleep(2 if remaining and result.get("checked") else 60)
+        except Exception:
+            app.logger.exception("Automatic source identity migration failed")
+            time.sleep(30)
+        finally:
+            _source_identity_backfill_lock.release()
 
 
 @app.route("/sources/redetect", methods=["POST"])
@@ -6366,12 +6744,12 @@ def redetect_single_source():
     if not source:
         return jsonify({"error": "source required"}), 400
 
-    from fetcher import detect_feed_source, detect_source, detect_source_from_attribution
+    from fetcher import detect_group_source
 
     rows = conn.execute(
-        "SELECT id, title, source, feed_source, origin_source, body_html, summary, telegraph_url "
+        "SELECT id, title, source, feed_source, group_source, publisher_domain, origin_source, body_html, summary, telegraph_url "
         "FROM articles "
-        "WHERE COALESCE(NULLIF(feed_source, ''), source) = ? "
+        "WHERE COALESCE(NULLIF(group_source, ''), source) = ? "
         "ORDER BY timestamp DESC",
         (source,),
     ).fetchall()
@@ -6384,32 +6762,49 @@ def redetect_single_source():
             row["summary"] or "",
             row["title"] or "",
         ])
-        detected_feed = None if row["telegraph_url"] else detect_feed_source(content)
-        detected_origin = detect_source_from_attribution(content)
-        if not detected_origin and not row["telegraph_url"]:
-            detected_origin = detect_source(content)
-        # If still no result, try fetching the original Telegram message
-        # (body_html may be Telegraph content without via lines)
-        if not detected_feed or not detected_origin:
+        detected_group, detected_domain = detect_group_source(
+            content, row["telegraph_url"], row["feed_source"] or ""
+        )
+        detected_group, detected_domain = _reliable_source_detection(
+            detected_group, detected_domain, row["feed_source"] or ""
+        )
+        if not detected_domain:
             tg_content = _fetch_telegram_message_content(row["id"])
             if tg_content:
-                detected_feed = detected_feed or detect_feed_source(tg_content)
-                detected_origin = detected_origin or detect_source(tg_content)
-        current_feed = (row["feed_source"] or row["source"] or "").strip()
+                fetched_group, fetched_domain = detect_group_source(
+                    tg_content, row["telegraph_url"], row["feed_source"] or ""
+                )
+                fetched_group, fetched_domain = _reliable_source_detection(
+                    fetched_group, fetched_domain, row["feed_source"] or ""
+                )
+                if fetched_group and (fetched_domain or not detected_group):
+                    detected_group, detected_domain = fetched_group, fetched_domain
+        current_group = (row["group_source"] or row["source"] or "").strip()
         current_origin = (row["origin_source"] or "").strip()
-        next_feed = detected_feed or current_feed
-        next_origin = detected_origin or current_origin
-        if next_feed == current_feed and next_origin == current_origin:
+        if (not detected_group and not detected_domain
+                and (not row["publisher_domain"] or row["publisher_domain"] == "qq.com")):
+            continue
+        next_group = detected_group or current_group
+        stored_domain = (row["publisher_domain"] or "").strip()
+        effective_domain = detected_domain or (
+            "" if stored_domain == "qq.com" and detected_group else stored_domain
+        )
+        if effective_domain:
+            from source_categories import publisher_source_for_domain
+            next_group = publisher_source_for_domain(conn, effective_domain) or next_group
+        next_origin = next_group or current_origin
+        if next_group == current_group and effective_domain == (row["publisher_domain"] or ""):
             continue
         conn.execute(
-            "UPDATE articles SET source = ?, feed_source = ?, origin_source = ? WHERE id = ?",
-            (next_feed, next_feed, next_origin, row["id"]),
+            "UPDATE articles SET source = ?, group_source = ?, publisher_domain = ?, "
+            "origin_source = ?, source_detection_version = 1 WHERE id = ?",
+            (next_group, next_group, effective_domain, next_origin, row["id"]),
         )
         changed.append({
             "id": row["id"],
             "title": row["title"],
-            "from": current_feed,
-            "to": next_feed,
+            "from": current_group,
+            "to": next_group,
             "origin_from": current_origin,
             "origin_to": next_origin,
         })
@@ -6835,6 +7230,7 @@ if __name__ == "__main__":
     _th.Thread(target=_auto_translation_loop, daemon=True).start()
     _th.Thread(target=_auto_title_process_loop, daemon=True).start()
     _th.Thread(target=_auto_source_classification_loop, daemon=True).start()
+    _th.Thread(target=_source_identity_backfill_loop, daemon=True).start()
     _th.Thread(target=_ai_share_revalidation_loop, daemon=True).start()
     _th.Thread(target=_pin_existing_favorite_images_on_startup, daemon=True).start()
     _start_memory_monitor_thread()

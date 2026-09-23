@@ -9,6 +9,7 @@ import threading
 import time
 from datetime import datetime
 from urllib.parse import urlsplit
+import tldextract
 
 from news_schema import ensure_article_source_columns as _ensure_article_source_columns
 
@@ -21,130 +22,113 @@ CATEGORY_NAMES = {
     "Info": "其他信息",
 }
 
-INITIAL_CATEGORY_MAP = {
-    "News": ["竹新社", "风向旗参考快讯", "界面新闻", "即刻精选", "联合早报"],
-    "Tech": [
-        "凤凰网科技", "cnBeta", "知识分子", "逛逛GitHub", "开源日记",
-        "科技圈🎗在花频道📮", "MacRumors", "少数派", "爱范儿", "Chiphell",
-        "APPDO 数字生活指南", "XP Digital Lab", "RaysBlog", "Yummy 😋",
-        "阮一峰", "小声逼逼",
-    ],
-    "Biz": [
-        "金十数据", "格隆汇", "财经早餐", "凤凰网财经", "晚点", "投资界",
-        "创业最前线", "WBusiness商业", "包邮区", "理想生活实验室",
-    ],
-    "Info": ["美卡指南", "蓝翼说", "酒店圈儿", "银探", "济南本地宝"],
-}
+DEFAULT_CATEGORIES = [
+    ("News", "政经新闻"),
+    ("Tech", "科技动态"),
+    ("Biz", "商业聚焦"),
+    ("Info", "其他信息"),
+]
+UNCATEGORIZED = "Uncategorized"
 
-VALID_STATUSES = {"pending", "classified", "manual", "failed"}
-INITIAL_SOURCES = {
-    source
-    for sources in INITIAL_CATEGORY_MAP.values()
-    for source in sources
-}
+VALID_STATUSES = {"pending", "review", "classified", "manual", "failed"}
 
 
 def ensure_article_source_columns(conn: sqlite3.Connection) -> None:
     """Upgrade split source fields through the shared migration protocol."""
     _ensure_article_source_columns(conn)
 
-# ─── Domain → Source mapping (used by fetcher + AI classification) ──
-# Format: "domain" → ("source_display_name", "default_category")
-# When detect_source() finds a domain in article content, it uses this
-# mapping to assign a source name without waiting for AI classification.
-KNOWN_DOMAINS: dict[str, tuple[str, str]] = {
-    # ── News 政经新闻 ──
-    "zaobao.com": ("联合早报", "News"),
-    "jiemian.com": ("界面新闻", "News"),
-    "ifeng.com": ("凤凰网", "News"),
-    "thepaper.cn": ("澎湃新闻", "News"),
-    "bbc.com": ("BBC", "News"),
-    "bbc.co.uk": ("BBC", "News"),
-    "reuters.com": ("路透社", "News"),
-    "wsj.com": ("华尔街日报", "News"),
-    "ft.com": ("金融时报", "News"),
-    "nytimes.com": ("纽约时报", "News"),
-    "bloomberg.com": ("彭博社", "News"),
-    "cnn.com": ("CNN", "News"),
-    "theguardian.com": ("卫报", "News"),
-    "scmp.com": ("南华早报", "News"),
-    "dw.com": ("德国之声", "News"),
-    "rfi.fr": ("法国国际广播", "News"),
-    "nikkei.com": ("日经新闻", "News"),
-    "yicai.com": ("第一财经", "News"),
-    "apnews.com": ("美联社", "News"),
-    "aljazeera.com": ("半岛电视台", "News"),
-    "france24.com": ("France 24", "News"),
-    "huanqiu.com": ("环球网", "News"),
-    "guancha.cn": ("观察者网", "News"),
-    "cna.com.tw": ("中央社", "News"),
-    "ltn.com.tw": ("自由时报", "News"),
-    "udn.com": ("联合报", "News"),
-    "straitstimes.com": ("海峡时报", "News"),
-    "rthk.hk": ("香港电台", "News"),
+# ─── Built-in publisher identity registry ───────────────────────────
+# Format: "registrable domain" → "canonical publisher name".
+# Categories are instance configuration and deliberately do not live here.
+KNOWN_DOMAINS: dict[str, str] = {
+    "zaobao.com": "联合早报",
+    "jiemian.com": "界面新闻",
+    "ifeng.com": "凤凰网",
+    "thepaper.cn": "澎湃新闻",
+    "bbc.com": "BBC",
+    "bbc.co.uk": "BBC",
+    "reuters.com": "路透社",
+    "wsj.com": "华尔街日报",
+    "ft.com": "金融时报",
+    "nytimes.com": "纽约时报",
+    "bloomberg.com": "彭博社",
+    "cnn.com": "CNN",
+    "theguardian.com": "卫报",
+    "scmp.com": "南华早报",
+    "dw.com": "德国之声",
+    "rfi.fr": "法国国际广播",
+    "nikkei.com": "日经新闻",
+    "yicai.com": "第一财经",
+    "apnews.com": "美联社",
+    "aljazeera.com": "半岛电视台",
+    "france24.com": "France 24",
+    "huanqiu.com": "环球网",
+    "guancha.cn": "观察者网",
+    "cna.com.tw": "中央社",
+    "ltn.com.tw": "自由时报",
+    "udn.com": "联合报",
+    "straitstimes.com": "海峡时报",
+    "rthk.hk": "香港电台",
 
-    # ── Tech 科技动态 ──
-    "cnbeta.com": ("cnBeta", "Tech"),
-    "cnbeta.com.tw": ("cnBeta", "Tech"),
-    "sspai.com": ("少数派", "Tech"),
-    "ifanr.com": ("爱范儿", "Tech"),
-    "36kr.com": ("36氪", "Tech"),
-    "chiphell.com": ("Chiphell", "Tech"),
-    "macrumors.com": ("MacRumors", "Tech"),
-    "techcrunch.com": ("TechCrunch", "Tech"),
-    "theverge.com": ("The Verge", "Tech"),
-    "arstechnica.com": ("Ars Technica", "Tech"),
-    "wired.com": ("Wired", "Tech"),
-    "github.com": ("GitHub", "Tech"),
-    "ruanyifeng.com": ("阮一峰", "Tech"),
-    "zhihu.com": ("知乎", "Tech"),
-    "ithome.com": ("IT之家", "Tech"),
-    "solidot.org": ("Solidot", "Tech"),
-    "producthunt.com": ("Product Hunt", "Tech"),
-    "xiaohongshu.com": ("小红书", "Tech"),
-    "huggingface.co": ("HuggingFace", "Tech"),
-    "openai.com": ("OpenAI", "Tech"),
-    "anthropic.com": ("Anthropic", "Tech"),
-    "9to5mac.com": ("9to5Mac", "Tech"),
-    "oschina.net": ("开源中国", "Tech"),
-    "v2ex.com": ("V2EX", "Tech"),
-    "nodeseek.com": ("NodeSeek", "Tech"),
-    "hackernews.com": ("Hacker News", "Tech"),
-    "infoq.cn": ("InfoQ", "Tech"),
-    "geekpark.net": ("极客公园", "Tech"),
-    "pingwest.com": ("品玩", "Tech"),
-    "sohu.com": ("搜狐", "Tech"),
+    "cnbeta.com": "cnBeta",
+    "cnbeta.com.tw": "cnBeta",
+    "sspai.com": "少数派",
+    "ifanr.com": "爱范儿",
+    "36kr.com": "36氪",
+    "chiphell.com": "Chiphell",
+    "macrumors.com": "MacRumors",
+    "techcrunch.com": "TechCrunch",
+    "theverge.com": "The Verge",
+    "arstechnica.com": "Ars Technica",
+    "wired.com": "Wired",
+    "github.com": "GitHub",
+    "ruanyifeng.com": "阮一峰",
+    "zhihu.com": "知乎",
+    "ithome.com": "IT之家",
+    "solidot.org": "Solidot",
+    "producthunt.com": "Product Hunt",
+    "xiaohongshu.com": "小红书",
+    "huggingface.co": "HuggingFace",
+    "openai.com": "OpenAI",
+    "anthropic.com": "Anthropic",
+    "9to5mac.com": "9to5Mac",
+    "oschina.net": "开源中国",
+    "v2ex.com": "V2EX",
+    "nodeseek.com": "NodeSeek",
+    "hackernews.com": "Hacker News",
+    "infoq.cn": "InfoQ",
+    "geekpark.net": "极客公园",
+    "pingwest.com": "品玩",
+    "sohu.com": "搜狐",
 
-    # ── Biz 商业聚焦 ──
-    "gelonghui.com": ("格隆汇", "Biz"),
-    "jin10.com": ("金十数据", "Biz"),
-    "pedaily.cn": ("投资界", "Biz"),
-    "wallstreetcn.com": ("华尔街见闻", "Biz"),
-    "latepost.com": ("晚点", "Biz"),
-    "cls.cn": ("财联社", "Biz"),
-    "eastmoney.com": ("东方财富", "Biz"),
-    "sina.com.cn": ("新浪财经", "Biz"),
-    "fortunechina.com": ("财富中文网", "Biz"),
-    "hbr.org": ("哈佛商业评论", "Biz"),
-    "caixin.com": ("财新", "Biz"),
-    "fortune.com": ("财富", "Biz"),
-    "fastcompany.com": ("Fast Company", "Biz"),
-    "cnbc.com": ("CNBC", "Biz"),
-    "economist.com": ("经济学人", "Biz"),
-    "businessinsider.com": ("商业内幕", "Biz"),
-    "forbes.com": ("福布斯", "Biz"),
-    "barrons.com": ("巴伦周刊", "Biz"),
-    "stcn.com": ("证券时报", "Biz"),
-    "21jingji.com": ("21世纪经济报道", "Biz"),
-    "nbd.com.cn": ("每日经济新闻", "Biz"),
-    "10jqka.com.cn": ("同花顺", "Biz"),
-    "ce.cn": ("中国经济网", "Biz"),
-    "cnstock.com": ("上海证券报", "Biz"),
-    "cs.com.cn": ("中证网", "Biz"),
+    "gelonghui.com": "格隆汇",
+    "jin10.com": "金十数据",
+    "pedaily.cn": "投资界",
+    "wallstreetcn.com": "华尔街见闻",
+    "latepost.com": "晚点",
+    "cls.cn": "财联社",
+    "eastmoney.com": "东方财富",
+    "sina.com.cn": "新浪财经",
+    "fortunechina.com": "财富中文网",
+    "hbr.org": "哈佛商业评论",
+    "caixin.com": "财新",
+    "fortune.com": "财富",
+    "fastcompany.com": "Fast Company",
+    "cnbc.com": "CNBC",
+    "economist.com": "经济学人",
+    "businessinsider.com": "商业内幕",
+    "forbes.com": "福布斯",
+    "barrons.com": "巴伦周刊",
+    "stcn.com": "证券时报",
+    "21jingji.com": "21世纪经济报道",
+    "nbd.com.cn": "每日经济新闻",
+    "10jqka.com.cn": "同花顺",
+    "ce.cn": "中国经济网",
+    "cnstock.com": "上海证券报",
+    "cs.com.cn": "中证网",
 
-    # ── Info 其他信息 ──
-    "uscreditcardguide.com": ("美卡指南", "Info"),
-    "travelafterwork.com": ("酒店圈儿", "Info"),
+    "uscreditcardguide.com": "美卡指南",
+    "travelafterwork.com": "酒店圈儿",
 
     # ── 微信公众号 (域名为 mp.weixin.qq.com, 但会根据文章内容进一步识别) ──
     # 不在 KNOWN_DOMAINS 中注册 weixin 域名，因为不同公众号是不同的来源
@@ -159,25 +143,27 @@ _DOMAIN_EXCLUDE = {
     "reddit.com", "redd.it",
     "google.com", "bing.com", "baidu.com",
     "amazon.com", "apple.com",
-    "news.rayyu.me", "localhost", "127.0.0.1",
+    "rayyu.me", "localhost", "127.0.0.1",
 }
+
+
+_TLD_EXTRACTOR = tldextract.TLDExtract(suffix_list_urls=())
 
 
 def _root_domain(host: str) -> str | None:
     """Normalize a hostname to its matchable root domain."""
-    host = host.lower().strip()
-    # Strip leading "www." or "wwwN." patterns
-    host = re.sub(r'^www\d*\.', '', host)
-    # Extract root domain (last two parts for known multi-part TLDs)
-    parts = host.split(".")
-    if len(parts) >= 2:
-        # Handle com.cn / co.uk / com.tw etc.
-        if parts[-2] in ("com", "co", "org", "net", "gov", "edu", "ac") and len(parts) >= 3:
-            root = ".".join(parts[-3:])
-        else:
-            root = ".".join(parts[-2:])
-    else:
-        root = host
+    host = host.lower().strip().rstrip(".")
+    if ":" in host:
+        try:
+            host = urlsplit("//" + host).hostname or host
+        except ValueError:
+            pass
+    # WeChat hosts identify the publishing platform, not the official account.
+    # Check before registrable-domain reduction, which turns them into qq.com.
+    if host == "weixin.qq.com" or host.endswith(".weixin.qq.com"):
+        return None
+    extracted = _TLD_EXTRACTOR(host)
+    root = extracted.top_domain_under_public_suffix or host
     return None if root in _DOMAIN_EXCLUDE else root
 
 
@@ -222,7 +208,7 @@ def lookup_source_by_domain(domains: list[str]) -> tuple[str, str] | None:
     """
     for domain in domains:
         if domain in KNOWN_DOMAINS:
-            return KNOWN_DOMAINS[domain]
+            return KNOWN_DOMAINS[domain], UNCATEGORIZED
     return None
 
 
@@ -253,23 +239,46 @@ def local_short_source_name(source: str) -> str:
     text = re.sub(r"[\U0001F000-\U0010FFFF]", "", text).strip()
     text = re.sub(r"\s+", " ", text).strip()
 
-    known_sources = [
-        "包邮区", "金十数据", "投资界", "XP Digital Lab", "凤凰网财经",
-        "凤凰网科技", "财经早餐", "界面新闻", "联合早报", "MacRumors",
-    ]
-    for name in known_sources:
-        if name in text:
-            return name
-
-    # Common Telegram display-name cleanup: keep the representative brand words.
-    if "科技圈" in text and "在花" in text:
-        return "在花科技圈"
-
     return clamp_weighted(text or source, 20)
 
 
 def init_source_categories(conn: sqlite3.Connection) -> None:
     ensure_article_source_columns(conn)
+    definitions_existed = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'source_category_definitions'"
+    ).fetchone() is not None
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS source_category_definitions (
+            category TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            is_system INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    if not definitions_existed:
+        for index, (category, label) in enumerate(DEFAULT_CATEGORIES):
+            conn.execute(
+                "INSERT OR IGNORE INTO source_category_definitions "
+                "(category, label, sort_order) VALUES (?, ?, ?)",
+                (category, label, index),
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO source_category_definitions "
+            "(category, label, sort_order, is_system) VALUES (?, ?, ?, 1)",
+            (UNCATEGORIZED, "待分类", len(DEFAULT_CATEGORIES)),
+        )
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS publisher_domains (
+            domain TEXT PRIMARY KEY,
+            group_source TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            is_builtin INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS source_categories (
             source TEXT PRIMARY KEY,
@@ -279,10 +288,21 @@ def init_source_categories(conn: sqlite3.Connection) -> None:
             confidence REAL,
             reason TEXT,
             sample_titles TEXT,
+            suggested_category TEXT,
+            suggested_label TEXT,
+            suggested_confidence REAL,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)
+    category_columns = {row[1] for row in conn.execute("PRAGMA table_info(source_categories)")}
+    for name, definition in (
+        ("suggested_category", "TEXT"),
+        ("suggested_label", "TEXT"),
+        ("suggested_confidence", "REAL"),
+    ):
+        if name not in category_columns:
+            conn.execute(f"ALTER TABLE source_categories ADD COLUMN {name} {definition}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_source_categories_status ON source_categories(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_source_categories_category ON source_categories(category)")
     conn.execute("""
@@ -313,34 +333,127 @@ def init_source_categories(conn: sqlite3.Connection) -> None:
         )
     """)
 
-    article_table = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'articles'"
-    ).fetchone()
-    article_sources = set()
-    if article_table:
-        article_sources = {
-            row[0]
-            for row in conn.execute(
-                "SELECT DISTINCT COALESCE(NULLIF(feed_source, ''), source) "
-                "FROM articles "
-                "WHERE COALESCE(NULLIF(feed_source, ''), source) IS NOT NULL "
-                "AND TRIM(COALESCE(NULLIF(feed_source, ''), source)) != ''"
-            ).fetchall()
-        }
-
-    for category, sources in INITIAL_CATEGORY_MAP.items():
-        for source in sources:
-            if source not in article_sources:
-                continue
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO source_categories
-                    (source, category, label, status, reason)
-                VALUES (?, ?, ?, 'pending', 'seeded')
-                """,
-                (source, category, local_short_source_name(source)),
-            )
+    # The built-in registry records identity only. Per-deployment labels and
+    # categories stay in the database and can be edited independently.
+    for domain, source_name in KNOWN_DOMAINS.items():
+        conn.execute(
+            "INSERT OR IGNORE INTO publisher_domains "
+            "(domain, group_source, is_builtin) VALUES (?, ?, 1)",
+            (domain, source_name),
+        )
     conn.commit()
+
+
+def category_definitions(conn: sqlite3.Connection, include_disabled: bool = False) -> list[dict]:
+    _ensure_source_tables(conn)
+    where = "" if include_disabled else "WHERE enabled = 1"
+    rows = conn.execute(
+        f"SELECT category, label, sort_order, enabled, is_system "
+        f"FROM source_category_definitions {where} ORDER BY sort_order, category"
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def valid_category(conn: sqlite3.Connection, category: str) -> bool:
+    return any(row["category"] == category for row in category_definitions(conn))
+
+
+def save_category_definition(
+    conn: sqlite3.Connection,
+    category: str,
+    label: str,
+    sort_order: int,
+    enabled: bool = True,
+    migration_target: str | None = None,
+) -> dict:
+    category = (category or "").strip()
+    label = (label or "").strip()
+    if not category or len(category) > 40 or not label or len(label) > 40:
+        raise ValueError("invalid category or label")
+    if category == UNCATEGORIZED:
+        raise ValueError("system category cannot be edited")
+    if int(sort_order) < 0:
+        raise ValueError("invalid sort order")
+    existing = conn.execute(
+        "SELECT enabled FROM source_category_definitions WHERE category = ?", (category,)
+    ).fetchone()
+    if existing and existing[0] and not enabled:
+        if not migration_target or migration_target == category:
+            raise ValueError("choose a migration target before disabling this category")
+        target = conn.execute(
+            "SELECT enabled FROM source_category_definitions WHERE category = ?",
+            (migration_target,),
+        ).fetchone()
+        if not target or not target[0]:
+            raise ValueError("invalid migration target")
+        conn.execute(
+            "UPDATE source_categories SET category = ? WHERE category = ?",
+            (migration_target, category),
+        )
+        conn.execute(
+            "UPDATE user_source_categories SET category = ? WHERE category = ?",
+            (migration_target, category),
+        )
+    conn.execute(
+        "INSERT INTO source_category_definitions (category, label, sort_order, enabled) "
+        "VALUES (?, ?, ?, ?) ON CONFLICT(category) DO UPDATE SET "
+        "label=excluded.label, sort_order=excluded.sort_order, enabled=excluded.enabled, "
+        "updated_at=datetime('now')",
+        (category, label, int(sort_order), 1 if enabled else 0),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT category, label, sort_order, enabled, is_system "
+        "FROM source_category_definitions WHERE category = ?", (category,)
+    ).fetchone()
+    return dict(row)
+
+
+def delete_category_definition(conn: sqlite3.Connection, category: str, target: str) -> int:
+    if category == UNCATEGORIZED:
+        raise ValueError("system category cannot be deleted")
+    if category == target or not valid_category(conn, target):
+        raise ValueError("invalid migration target")
+    row = conn.execute(
+        "SELECT is_system FROM source_category_definitions WHERE category = ?", (category,)
+    ).fetchone()
+    if not row:
+        raise ValueError("category not found")
+    if row[0]:
+        raise ValueError("system category cannot be deleted")
+    conn.execute("UPDATE source_categories SET category = ? WHERE category = ?", (target, category))
+    conn.execute("UPDATE user_source_categories SET category = ? WHERE category = ?", (target, category))
+    conn.execute("DELETE FROM source_category_definitions WHERE category = ?", (category,))
+    conn.commit()
+    return conn.total_changes
+
+
+def save_publisher_domain(conn: sqlite3.Connection, domain: str, group_source: str, enabled: bool = True) -> dict:
+    root = _root_domain(domain)
+    group_source = (group_source or "").strip()
+    if not root or not group_source or len(group_source) > 100:
+        raise ValueError("invalid domain mapping")
+    conn.execute(
+        "INSERT INTO publisher_domains (domain, group_source, enabled, is_builtin) "
+        "VALUES (?, ?, ?, 0) ON CONFLICT(domain) DO UPDATE SET "
+        "group_source=excluded.group_source, enabled=excluded.enabled, is_builtin=0, "
+        "updated_at=datetime('now')",
+        (root, group_source, 1 if enabled else 0),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM publisher_domains WHERE domain = ?", (root,)).fetchone()
+    return dict(row)
+
+
+def publisher_source_for_domain(conn: sqlite3.Connection, domain: str) -> str | None:
+    root = _root_domain(domain)
+    if not root:
+        return None
+    row = conn.execute(
+        "SELECT group_source FROM publisher_domains WHERE domain = ? AND enabled = 1",
+        (root,),
+    ).fetchone()
+    return (row["group_source"] if isinstance(row, sqlite3.Row) else row[0]) if row else root
 
 
 def ensure_article_sources(conn: sqlite3.Connection) -> int:
@@ -354,16 +467,16 @@ def ensure_article_sources(conn: sqlite3.Connection) -> int:
             alias = row["alias_source"] if isinstance(row, sqlite3.Row) else row[0]
             target = row["target_source"] if isinstance(row, sqlite3.Row) else row[1]
             conn.execute(
-                "UPDATE articles SET feed_source = ?, source = ? "
-                "WHERE feed_source = ? OR (TRIM(feed_source) = '' AND source = ?) OR source = ?",
-                (target, target, alias, alias, alias),
+                "UPDATE articles SET group_source = ?, source = ? "
+                "WHERE group_source = ? OR (TRIM(group_source) = '' AND source = ?)",
+                (target, target, alias, alias),
             )
 
         rows = conn.execute(
-            "SELECT DISTINCT COALESCE(NULLIF(feed_source, ''), source) AS source "
+            "SELECT DISTINCT COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source) AS source "
             "FROM articles "
-            "WHERE COALESCE(NULLIF(feed_source, ''), source) IS NOT NULL "
-            "  AND TRIM(COALESCE(NULLIF(feed_source, ''), source)) != ''"
+            "WHERE COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source) IS NOT NULL "
+            "  AND TRIM(COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source)) != ''"
         ).fetchall()
         inserted = 0
         for row in rows:
@@ -372,9 +485,9 @@ def ensure_article_sources(conn: sqlite3.Connection) -> int:
                 """
                 INSERT OR IGNORE INTO source_categories
                     (source, category, label, status, reason)
-                VALUES (?, 'Info', ?, 'pending', 'discovered')
+                VALUES (?, ?, ?, 'pending', 'discovered')
                 """,
-                (source, local_short_source_name(source)),
+                (source, UNCATEGORIZED, local_short_source_name(source)),
             )
             inserted += cur.rowcount
         conn.commit()
@@ -390,10 +503,13 @@ def _ensure_source_tables(conn: sqlite3.Connection) -> None:
     Cheap no-op once they exist, so it's safe on the read path — unlike the full
     init_source_categories(), which also seeds rows and commits.
     """
-    table = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'source_categories'"
-    ).fetchone()
-    if not table:
+    required = {"source_categories", "source_category_definitions", "publisher_domains"}
+    tables = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    if not required.issubset(tables):
         init_source_categories(conn)
 
 
@@ -434,7 +550,7 @@ def cleanup_stale_source_categories(conn: sqlite3.Connection) -> int:
         """
         SELECT sc.source, sc.status, COUNT(a.id) AS article_count
         FROM source_categories sc
-        LEFT JOIN articles a ON COALESCE(NULLIF(a.feed_source, ''), a.source) = sc.source
+        LEFT JOIN articles a ON COALESCE(NULLIF(a.group_source, ''), NULLIF(a.feed_source, ''), a.source) = sc.source
         GROUP BY sc.source
         HAVING article_count = 0
         """
@@ -445,7 +561,7 @@ def cleanup_stale_source_categories(conn: sqlite3.Connection) -> int:
         cur = conn.execute(
             """
             DELETE FROM source_categories
-            WHERE source = ? AND status IN ('pending', 'failed')
+            WHERE source = ? AND status IN ('pending', 'failed', 'review')
             """,
             (source,),
         )
@@ -461,10 +577,10 @@ def cleanup_stale_source_categories(conn: sqlite3.Connection) -> int:
         """
         DELETE FROM user_source_categories
         WHERE source NOT IN (
-            SELECT DISTINCT COALESCE(NULLIF(feed_source, ''), source)
+            SELECT DISTINCT COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source)
             FROM articles
-            WHERE COALESCE(NULLIF(feed_source, ''), source) IS NOT NULL
-              AND TRIM(COALESCE(NULLIF(feed_source, ''), source)) != ''
+            WHERE COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source) IS NOT NULL
+              AND TRIM(COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source)) != ''
         )
           AND status IN ('pending', 'failed')
         """
@@ -562,7 +678,7 @@ def find_merge_target(conn: sqlite3.Connection, source: str, label: str) -> str 
         """
         SELECT sc.source, sc.status, COUNT(a.id) AS article_count
         FROM source_categories sc
-        LEFT JOIN articles a ON COALESCE(NULLIF(a.feed_source, ''), a.source) = sc.source
+        LEFT JOIN articles a ON COALESCE(NULLIF(a.group_source, ''), NULLIF(a.feed_source, ''), a.source) = sc.source
         WHERE sc.source != ?
           AND (sc.source = ? OR sc.label = ?)
         GROUP BY sc.source
@@ -678,9 +794,9 @@ def merge_source(conn: sqlite3.Connection, source: str, target_source: str,
         return dict(target)
 
     conn.execute(
-        "UPDATE articles SET feed_source = ?, source = ? "
-        "WHERE COALESCE(NULLIF(feed_source, ''), source) = ? OR source = ?",
-        (target_source, target_source, source, source),
+        "UPDATE articles SET group_source = ?, source = ? "
+        "WHERE COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source) = ?",
+        (target_source, target_source, source),
     )
     conn.execute(
         """
@@ -709,12 +825,12 @@ def source_rows(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         """
         WITH source_counts AS (
-            SELECT feed_source AS source,
+            SELECT group_source AS source,
                    COUNT(*) AS article_count,
                    MAX(timestamp) AS latest_timestamp
             FROM articles
-            WHERE feed_source IS NOT NULL AND feed_source != ''
-            GROUP BY feed_source
+            WHERE group_source IS NOT NULL AND group_source != ''
+            GROUP BY group_source
 
             UNION ALL
 
@@ -722,7 +838,7 @@ def source_rows(conn: sqlite3.Connection) -> list[dict]:
                    COUNT(*) AS article_count,
                    MAX(timestamp) AS latest_timestamp
             FROM articles
-            WHERE (feed_source IS NULL OR feed_source = '')
+            WHERE (group_source IS NULL OR group_source = '')
               AND source IS NOT NULL
               AND TRIM(source) != ''
             GROUP BY source
@@ -737,6 +853,7 @@ def source_rows(conn: sqlite3.Connection) -> list[dict]:
         )
         SELECT sc.source, sc.category, sc.label, sc.status, sc.confidence,
                sc.reason, sc.sample_titles, sc.updated_at,
+               sc.suggested_category, sc.suggested_label, sc.suggested_confidence,
                COALESCE(stats.article_count, 0) AS article_count,
                stats.latest_timestamp,
                0 AS is_unlinked
@@ -745,14 +862,15 @@ def source_rows(conn: sqlite3.Connection) -> list[dict]:
 
         UNION ALL
 
-        SELECT stats.source, 'Info', NULL, 'pending', NULL,
-               'unlinked', NULL, NULL,
+        SELECT stats.source, ?, NULL, 'pending', NULL,
+               'unlinked', NULL, NULL, NULL, NULL, NULL,
                stats.article_count, stats.latest_timestamp,
                1 AS is_unlinked
         FROM source_stats stats
         LEFT JOIN source_categories sc ON sc.source = stats.source
         WHERE sc.source IS NULL
-        """
+        """,
+        (UNCATEGORIZED,),
     ).fetchall()
     result = []
     for row in rows:
@@ -810,7 +928,7 @@ def effective_source_rows(conn: sqlite3.Connection, user_id: int | None = None) 
             target_row["article_count"] = (target_row.get("article_count") or 0) + (alias_row.get("article_count") or 0)
             by_source[alias] = {
                 **alias_row,
-                "category": target_row.get("category", "Info"),
+                "category": target_row.get("category", UNCATEGORIZED),
                 "label": target_row.get("label") or target,
                 "status": "manual",
                 "alias_target": target,
@@ -843,7 +961,7 @@ def recent_titles_for_source(conn: sqlite3.Connection, source: str, limit: int =
     rows = conn.execute(
         """
         SELECT title FROM articles
-        WHERE COALESCE(NULLIF(feed_source, ''), source) = ?
+        WHERE COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source) = ?
           AND title IS NOT NULL AND TRIM(title) != ''
         ORDER BY timestamp DESC
         LIMIT ?
@@ -864,7 +982,7 @@ def update_source_category(
     sample_titles: list[str] | None = None,
     user_id: int | None = None,
 ) -> dict:
-    if category not in CATEGORY_ORDER:
+    if not valid_category(conn, category):
         raise ValueError("invalid category")
     if status not in VALID_STATUSES:
         raise ValueError("invalid status")
@@ -903,6 +1021,9 @@ def update_source_category(
             confidence = excluded.confidence,
             reason = excluded.reason,
             sample_titles = excluded.sample_titles,
+            suggested_category = NULL,
+            suggested_label = NULL,
+            suggested_confidence = NULL,
             updated_at = excluded.updated_at
         """,
         (

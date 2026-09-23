@@ -738,17 +738,32 @@ body.body-scroll-lock{overflow:hidden!important}
           <p class="ai-hint">从文章底部最后一个 via 链接重新识别真正来源，用于修复历史文章中误识别的来源。</p>
           <div class="source-step-actions source-admin-only">
             <button class="ai-save-btn" id="sourceRedetectBtn" onclick="redetectArticleSources()" style="margin:0;width:auto;padding:8px 12px">重新识别来源</button>
-            <button class="ai-save-btn" id="sourceReinitBtn" onclick="reinitializeSourceLabels()" style="margin:0;width:auto;padding:8px 12px;background:var(--bg-card);color:var(--text);border:1px solid var(--border)">初始化订阅源标签</button>
           </div>
         </div>
         <div class="source-step">
           <div class="source-step-title">2. 订阅源分类与合并</div>
-          <p class="ai-hint">AI 会将已识别的来源缩写并归入四个分类；手动保存和合并优先，不会被 AI 覆盖。</p>
+          <p class="ai-hint">媒体来源由域名和明确署名识别。AI 只为来源建议分类，高置信度结果自动应用；人工设置优先。</p>
           <div class="source-step-actions source-admin-only">
             <button class="ai-save-btn" onclick="classifySources(false)" style="margin:0;width:auto;padding:8px 12px">AI处理待分类</button>
             <button class="ai-save-btn" onclick="classifySourcesAll(false)" style="margin:0;width:auto;padding:8px 12px">后台处理全部</button>
             <button class="ai-save-btn" onclick="classifySources(true)" style="margin:0;width:auto;padding:8px 12px;background:var(--bg-card);color:var(--text);border:1px solid var(--border)">重新分类非手动来源</button>
           </div>
+        </div>
+        <div class="source-step">
+          <div class="source-step-title">分类模板</div>
+          <p class="ai-hint">分类配置保存在本实例数据库中。新增、改名、排序或停用分类不会改变媒体来源身份。</p>
+          <div id="sourceCategoryDefinitions"></div>
+          <button class="ai-save-btn source-admin-only" onclick="addSourceCategory()" style="margin-top:8px;width:auto;padding:7px 10px">新增分类</button>
+        </div>
+        <div class="source-step">
+          <div class="source-step-title">媒体域名映射</div>
+          <p class="ai-hint">域名用于识别媒体身份，不绑定分类；未知域名会先按完整根域名归组。</p>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">
+            <input class="ai-input" id="publisherDomainInput" placeholder="例如 news.example.com" style="flex:1;min-width:160px">
+            <input class="ai-input" id="publisherNameInput" placeholder="规范媒体名" style="flex:1;min-width:140px">
+            <button class="ai-save-btn source-admin-only" onclick="savePublisherDomainFromForm()" style="width:auto;padding:7px 10px">保存域名</button>
+          </div>
+          <div id="publisherDomainList"></div>
         </div>
         <div id="sourceManagerStatus" class="ai-hint" style="margin-bottom:8px"></div>
         <input class="ai-input" id="sourceSearchInput" type="text" placeholder="🔍 搜索订阅源..." oninput="renderSourceManager(sourceRows)" style="margin-bottom:8px">
@@ -1080,18 +1095,16 @@ const PAGE_MEMORY_BUFFER_LIMIT = 3;
 const PAGE_COVER_PRELOAD_LIMIT = 8;
 const PAGE_SWITCH_TOP_THRESHOLD = 120;
 
-// Source category mapping. Seeded here as a fallback; normally loaded from /api/sources.
-let CATEGORY_MAP = {
-  'News': ['竹新社', '风向旗参考快讯', '界面新闻', '即刻精选', '联合早报'],
-  'Tech': ['凤凰网科技', 'cnBeta', '知识分子', '逛逛GitHub', '开源日记', '科技圈🎗在花频道📮', 'MacRumors', '少数派', '爱范儿', 'Chiphell', 'APPDO 数字生活指南', 'XP Digital Lab', 'RaysBlog', 'Yummy 😋', '阮一峰', '小声逼逼'],
-  'Biz': ['金十数据', '格隆汇', '财经早餐', '凤凰网财经', '晚点', '投资界', '创业最前线', 'WBusiness商业', '包邮区', '理想生活实验室'],
-  'Info': ['美卡指南', '蓝翼说', '酒店圈儿', '银探', '济南本地宝'],
-};
-const CATEGORY_ORDER = ['News', 'Tech', 'Biz', 'Info'];
-const CATEGORY_NAMES = { News: '政经新闻', Tech: '科技动态', Biz: '商业聚焦', Info: '其他信息' };
+// Category definitions come from the instance database. These defaults only
+// keep the drawer usable before metadata has loaded; they contain no sources.
+let CATEGORY_MAP = {};
+let CATEGORY_ORDER = ['News', 'Tech', 'Biz', 'Info', 'Uncategorized'];
+let CATEGORY_NAMES = { News: '政经新闻', Tech: '科技动态', Biz: '商业聚焦', Info: '其他信息', Uncategorized: '待分类' };
 let sourceMeta = {};
 let sourceRows = [];
 let rawSourceRows = [];
+let sourceCategoryDefinitions = [];
+let publisherDomainRows = [];
 let sourceFilterGroups = {};
 let sourceToFilterGroup = {};
 let lastNewsDiagnostics = null;
@@ -1673,8 +1686,16 @@ function cancelViewBoundRefreshWork() {
   cancelStartupEmptyRevalidation();
 }
 
-function rebuildCategoryMap(rows) {
-  const next = { News: [], Tech: [], Biz: [], Info: [] };
+function applySourceCategoryDefinitions(data) {
+  if (!data || !Array.isArray(data.categories)) return;
+  CATEGORY_ORDER = data.categories.slice();
+  CATEGORY_NAMES = { ...(data.category_names || {}) };
+  CATEGORY_MAP = Object.fromEntries(CATEGORY_ORDER.map(category => [category, []]));
+}
+
+function rebuildCategoryMap(rows, metadata = null) {
+  if (metadata) applySourceCategoryDefinitions(metadata);
+  const next = Object.fromEntries(CATEGORY_ORDER.map(category => [category, []]));
   sourceMeta = {};
   rawSourceRows = rows || [];
   // build source rows for the Settings tab (groups by label, filters aliases)
@@ -1705,7 +1726,7 @@ function rebuildCategoryMap(rows) {
   for (const row of rawSourceRows) {
     const source = row.source || '';
     if (!source || row.alias_target) continue;
-    const cat = CATEGORY_ORDER.includes(row.category) ? row.category : 'Info';
+    const cat = CATEGORY_ORDER.includes(row.category) ? row.category : 'Uncategorized';
     if (!next[cat].includes(source)) next[cat].push(source);
   }
   CATEGORY_MAP = next;
@@ -1718,6 +1739,7 @@ function sourceGroupKey(label) {
 function categoryRank(row) {
   if (!row) return 0;
   if (row.user_override || row.status === 'manual') return 4;
+  if (row.status === 'review') return 3.5;
   if (row.status === 'classified') return 3;
   if (row.status === 'failed') return 2;
   if (row.status === 'pending') return 1;
@@ -1740,11 +1762,12 @@ function chooseSourceGroupCategory(rows) {
       best = row;
     }
   }
-  return (best && CATEGORY_ORDER.includes(best.category)) ? best.category : 'Info';
+  return (best && CATEGORY_ORDER.includes(best.category)) ? best.category : 'Uncategorized';
 }
 
 function chooseSourceGroupStatus(rows) {
   if ((rows || []).some(row => row.user_override || row.status === 'manual')) return 'manual';
+  if ((rows || []).some(row => row.status === 'review')) return 'review';
   if ((rows || []).some(row => row.status === 'failed')) return 'failed';
   if ((rows || []).some(row => row.status === 'pending')) return 'pending';
   if ((rows || []).some(row => row.status === 'classified')) return 'classified';
@@ -2031,7 +2054,7 @@ async function loadSourceCategories({
     : null;
   if (!mayApply()) return;
   if (cached && cached.data && Array.isArray(cached.data.sources)) {
-    rebuildCategoryMap(cached.data.sources);
+    rebuildCategoryMap(cached.data.sources, cached.data);
   }
   if (!mayApply()) return;
   renderFilters();
@@ -2041,7 +2064,7 @@ async function loadSourceCategories({
     const data = await fetchSourceMetadata(networkTimeoutMs, externalSignal);
     if (!mayApply()) return;
     if (data && Array.isArray(data.sources)) {
-      rebuildCategoryMap(data.sources);
+      rebuildCategoryMap(data.sources, data);
       if (!mayApply()) return;
       renderFilters();
       notifyMetadataReady();
@@ -2101,7 +2124,7 @@ async function scheduleSourceMetadataRetry({
         );
         if (!mayApply()) return;
         if (data && Array.isArray(data.sources)) {
-          rebuildCategoryMap(data.sources);
+          rebuildCategoryMap(data.sources, data);
           if (!mayApply()) return;
           renderFilters();
           if (!mayApply()) return;
@@ -2130,7 +2153,7 @@ function sourceLabel(source) {
 }
 
 function feedSourceOf(item) {
-  return item.feed_source || item.source || '';
+  return item.group_source || item.source || item.feed_source || '';
 }
 
 function originSourceOf(item) {
@@ -2142,7 +2165,7 @@ function originSourceOf(item) {
 function sourceCategory(source) {
   const meta = sourceMeta[source];
   if (meta && CATEGORY_ORDER.includes(meta.category)) return meta.category;
-  return getCategory(source) || 'Info';
+  return getCategory(source) || 'Uncategorized';
 }
 
 function canonicalSource(source) {
@@ -2697,8 +2720,11 @@ async function loadSourcesTab() {
   try {
     const data = await apiFetch('/sources');
     if (!data || !Array.isArray(data.sources)) return;
-    rebuildCategoryMap(data.sources);
+    sourceCategoryDefinitions = data.category_definitions || [];
+    rebuildCategoryMap(data.sources, data);
     renderSourceManager(sourceRows);
+    renderSourceCategoryDefinitions();
+    await loadPublisherDomains();
     renderFilters();
     // Keep the cold-start cache warm — this admin fetch has no timeout, so it often
     // succeeds when the bootstrap request didn't, and would otherwise only fix the
@@ -2707,6 +2733,124 @@ async function loadSourcesTab() {
   } catch (e) {
     list.innerHTML = '<div class="fav-empty">订阅源加载失败</div>';
   }
+}
+
+function renderSourceCategoryDefinitions() {
+  const list = document.getElementById('sourceCategoryDefinitions');
+  if (!list) return;
+  list.innerHTML = sourceCategoryDefinitions.map((item, index) => `
+    <div style="display:flex;align-items:center;gap:6px;margin:5px 0">
+      <input class="ai-input" data-category-label="${esc(item.category)}" value="${esc(item.label)}" maxlength="40" ${item.is_system ? 'disabled' : ''} style="flex:1;min-width:100px;padding:6px">
+      <input class="ai-input" data-category-order="${esc(item.category)}" type="number" min="0" value="${Number(item.sort_order ?? index)}" ${item.is_system ? 'disabled' : ''} style="width:64px;padding:6px" aria-label="排序">
+      ${item.is_system ? '<span class="ai-hint">系统项</span>' : `
+        <label class="ai-hint" style="display:flex;align-items:center;gap:4px"><input data-category-enabled="${esc(item.category)}" type="checkbox" ${item.enabled ? 'checked' : ''}>启用</label>
+        <button class="ai-save-btn" onclick="saveSourceCategory(${index})" style="width:auto;padding:6px 8px">保存</button>
+        <button class="source-delete-btn" onclick="deleteSourceCategory(${index})" title="删除分类">×</button>`}
+    </div>`).join('');
+}
+
+async function saveSourceCategory(index) {
+  const category = sourceCategoryDefinitions[index]?.category;
+  if (!category) return;
+  const label = document.querySelector(`[data-category-label="${CSS.escape(category)}"]`)?.value.trim();
+  const order = Number(document.querySelector(`[data-category-order="${CSS.escape(category)}"]`)?.value || 0);
+  const enabled = document.querySelector(`[data-category-enabled="${CSS.escape(category)}"]`)?.checked ?? true;
+  let migration_target;
+  if (!enabled && sourceCategoryDefinitions[index]?.enabled) {
+    const targets = sourceCategoryDefinitions.filter(item => item.enabled && item.category !== category);
+    if (!targets.length) return showSettingsStatus('请先启用一个迁移目标分类', 'warn');
+    migration_target = prompt(`停用「${category}」并将其来源迁移到哪个分类？`, targets[0].category);
+    if (!migration_target) return;
+  }
+  try {
+    const data = await apiFetch('/sources/categories', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category, label, sort_order: order, enabled, migration_target }),
+    });
+    if (data?.error) throw new Error(data.error);
+    await refreshSourceDependentViews({ refreshSettings: true, reloadNews: true });
+  } catch (e) { showSettingsStatus('保存分类失败: ' + e.message, 'error'); }
+}
+
+async function addSourceCategory() {
+  const category = prompt('分类键（用于内部标识，创建后不变）');
+  if (!category) return;
+  const label = prompt('分类显示名称', category);
+  if (!label) return;
+  try {
+    const data = await apiFetch('/sources/categories', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category, label, sort_order: sourceCategoryDefinitions.length }),
+    });
+    if (data?.error) throw new Error(data.error);
+    await refreshSourceDependentViews({ refreshSettings: true, reloadNews: true });
+  } catch (e) { showSettingsStatus('新增分类失败: ' + e.message, 'error'); }
+}
+
+async function deleteSourceCategory(index) {
+  const category = sourceCategoryDefinitions[index]?.category;
+  if (!category) return;
+  const targets = sourceCategoryDefinitions.filter(item => item.enabled && item.category !== category);
+  if (!targets.length) return showSettingsStatus('请先启用一个迁移目标分类', 'warn');
+  const target = prompt(`删除「${category}」并将其来源迁移到哪个分类？\n${targets.map(item => `${item.category}: ${item.label}`).join('\n')}`, targets[0].category);
+  if (!target) return;
+  try {
+    const data = await apiFetch('/sources/categories', {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category, target }),
+    });
+    if (data?.error) throw new Error(data.error);
+    await refreshSourceDependentViews({ refreshSettings: true, reloadNews: true });
+  } catch (e) { showSettingsStatus('删除分类失败: ' + e.message, 'error'); }
+}
+
+async function loadPublisherDomains() {
+  const list = document.getElementById('publisherDomainList');
+  if (!list) return;
+  try {
+    const data = await apiFetch('/sources/domains');
+    publisherDomainRows = data?.domains || [];
+    list.innerHTML = publisherDomainRows.map((item, index) => `
+      <div style="display:flex;align-items:center;gap:6px;margin:4px 0">
+        <span style="flex:1;min-width:90px">${esc(item.domain)}</span>
+        <input class="ai-input" data-domain-source="${index}" value="${esc(item.group_source)}" style="flex:1;min-width:100px;padding:6px">
+        <label class="ai-hint" style="display:flex;align-items:center;gap:4px"><input data-domain-enabled="${index}" type="checkbox" ${item.enabled ? 'checked' : ''}>启用</label>
+        <button class="ai-save-btn" onclick="savePublisherDomain(${index})" style="width:auto;padding:6px 8px">保存</button>
+      </div>`).join('');
+  } catch (e) { list.innerHTML = '<div class="ai-hint">域名映射加载失败</div>'; }
+}
+
+async function savePublisherDomain(index) {
+  const item = publisherDomainRows[index];
+  if (!item) return;
+  const group_source = document.querySelector(`[data-domain-source="${index}"]`)?.value.trim();
+  const enabled = document.querySelector(`[data-domain-enabled="${index}"]`)?.checked ?? false;
+  try {
+    const data = await apiFetch('/sources/domains', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain: item.domain, group_source, enabled }),
+    });
+    if (data?.error) throw new Error(data.error);
+    await loadPublisherDomains();
+    showSettingsStatus('域名映射已保存；文章会在来源回填或重新识别时应用。', 'ok');
+  } catch (e) { showSettingsStatus('保存域名映射失败: ' + e.message, 'error'); }
+}
+
+async function savePublisherDomainFromForm() {
+  const domain = document.getElementById('publisherDomainInput')?.value.trim();
+  const group_source = document.getElementById('publisherNameInput')?.value.trim();
+  if (!domain || !group_source) return showSettingsStatus('请输入域名和规范媒体名', 'warn');
+  try {
+    const data = await apiFetch('/sources/domains', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain, group_source, enabled: true }),
+    });
+    if (data?.error) throw new Error(data.error);
+    document.getElementById('publisherDomainInput').value = '';
+    document.getElementById('publisherNameInput').value = '';
+    await loadPublisherDomains();
+    showSettingsStatus('域名映射已保存；文章会在来源回填或重新识别时应用。', 'ok');
+  } catch (e) { showSettingsStatus('保存域名映射失败: ' + e.message, 'error'); }
 }
 
 async function refreshSourceDependentViews({ refreshSettings = false, reloadNews = false } = {}) {
@@ -2746,12 +2890,18 @@ function renderSourceManager(rows) {
     });
   }
 
-  const pending = rows.filter(r => r.status === 'pending' || r.status === 'failed').length;
+  const allRows = rows.flatMap(row => row.raw_rows || [row]);
+  const pending = allRows.filter(r => r.status === 'pending' || r.status === 'failed').length;
+  const review = allRows.filter(r => r.status === 'review').length;
   const shown = filtered.length;
+  const statusSummary = [
+    pending ? `${pending} 个待 AI 处理` : '',
+    review ? `${review} 个待人工审核` : '',
+  ].filter(Boolean).join(' · ');
   if (status) status.textContent = canManageSources
     ? (query
-      ? `匹配 ${shown}/${rows.length} 个来源 · ${pending} 个待 AI 处理`
-      : (pending ? `${pending} 个来源待 AI 处理` : '所有来源已处理'))
+      ? `匹配 ${shown}/${rows.length} 个来源${statusSummary ? ` · ${statusSummary}` : ''}`
+      : (statusSummary || '所有来源已处理'))
     : '订阅源标签与分类由管理员统一维护';
   if (!filtered.length) {
     list.innerHTML = '<div class="fav-empty">' + (query ? '无匹配来源' : '暂无订阅源') + '</div>';
@@ -2761,7 +2911,7 @@ function renderSourceManager(rows) {
     // Find the original index in rows for save/detect actions
     const origIdx = rows.indexOf(row);
     const options = CATEGORY_ORDER.map(cat =>
-      `<option value="${cat}" ${row.category === cat ? 'selected' : ''}>${categoryDisplayName(cat)}</option>`
+      `<option value="${esc(cat)}" ${row.category === cat ? 'selected' : ''}>${esc(categoryDisplayName(cat))}</option>`
     ).join('');
     const label = esc(row.label || row.source || '');
     const source = esc(row.source || '');
@@ -2770,9 +2920,13 @@ function renderSourceManager(rows) {
       ? ` · 包含 ${row.source_count || row.sources.length} 个来源变体`
       : (row.label && row.label !== row.source ? ` · 原始：${row.source}` : '');
     const unlinkedWarn = row.reason === 'unlinked' ? ' ⚠️未关联' : '';
+    const statusLabel = ({
+      pending: '待 AI 处理', review: '待人工审核', failed: 'AI 处理失败',
+      classified: '已分类', manual: '手动设置',
+    })[row.status] || row.status || '待 AI 处理';
     const meta = row.alias_target
       ? `${row.article_count || 0} 篇 · 已合并到 ${row.alias_target}${sourceMeta}${unlinkedWarn}`
-      : `${row.article_count || 0} 篇 · ${row.status || 'pending'}${sourceMeta}${unlinkedWarn}`;
+      : `${row.article_count || 0} 篇 · ${statusLabel}${sourceMeta}${unlinkedWarn}`;
     // Show all source names in tooltip for grouped rows
     const allSources = (row.sources || [row.source]).map(s => esc(s)).join('\n');
     const adminDelete = canManageSources
@@ -2781,6 +2935,9 @@ function renderSourceManager(rows) {
     const editAttrs = canManageSources ? '' : 'disabled aria-readonly="true"';
     const labelHandler = canManageSources ? `oninput="scheduleSourceSave(${origIdx})"` : '';
     const categoryHandler = canManageSources ? `onchange="scheduleSourceSave(${origIdx}, true)"` : '';
+    const suggestion = row.suggested_category && row.suggested_category !== row.category
+      ? `<button class="ai-save-btn" onclick="acceptSourceSuggestion(${origIdx})" title="AI 建议 ${esc(row.suggested_category)}，置信度 ${Math.round((row.suggested_confidence || 0) * 100)}%">采纳建议</button>`
+      : '';
     const redetectButton = canManageSources
       ? `<button class="source-redetect-btn" onclick="redetectSourceArticles(${origIdx})" title="重新识别该来源下所有文章的来源标签">🔄</button>`
       : '<span></span>';
@@ -2792,11 +2949,25 @@ function renderSourceManager(rows) {
         </div>
         <input class="source-label-input" value="${label}" maxlength="20" aria-label="来源缩写" ${editAttrs} ${labelHandler}>
         <select class="source-cat-select" aria-label="来源分类" ${editAttrs} ${categoryHandler}>${options}</select>
+        ${suggestion}
         <span class="source-row-state" data-source-state="${origIdx}"></span>
         ${redetectButton}
         ${adminDelete}
       </div>`;
   }).join('');
+}
+
+function acceptSourceSuggestion(idx) {
+  if (!authUser || authUser.role !== 'admin') return;
+  const row = sourceRows[idx];
+  if (!row?.suggested_category || !CATEGORY_ORDER.includes(row.suggested_category)) return;
+  const container = document.querySelector(`[data-source-idx="${idx}"]`);
+  if (!container) return;
+  const category = container.querySelector('.source-cat-select');
+  const label = container.querySelector('.source-label-input');
+  if (category) category.value = row.suggested_category;
+  if (label && row.suggested_label) label.value = row.suggested_label;
+  scheduleSourceSave(idx, true);
 }
 
 function setSourceRowState(idx, text, cls) {
@@ -3086,27 +3257,6 @@ async function deleteSourceArticles(idx) {
     );
   } catch (e) {
     showSettingsStatus('删除失败: ' + e.message, 'error');
-  }
-}
-
-async function reinitializeSourceLabels() {
-  if (!confirm('将重建全局订阅源标签，并保留用户手工分类/合并。确定继续？')) return;
-  const status = document.getElementById('sourceManagerStatus');
-  if (status) status.textContent = '正在初始化订阅源标签...';
-  try {
-    const resp = await fetch('/sources/reinitialize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
-      body: JSON.stringify({ preserve_manual: true }),
-    });
-    const data = await parseJsonResponse(resp);
-    if (data.error) throw new Error(data.error);
-    showSettingsStatus(`订阅源标签已初始化：${data.sources || 0} 个来源，已保留手工设置`, 'ok');
-    await refreshSourceDependentViews({ refreshSettings: true });
-  } catch (e) {
-    showSettingsStatus('初始化失败: ' + e.message, 'error');
-  } finally {
-    if (status) status.textContent = '';
   }
 }
 
@@ -6514,7 +6664,7 @@ function articleMatchesFilter(item, activeFilter) {
   if (!item) return false;
   if (!activeFilter || activeFilter === 'all') return true;
   if (activeFilter.startsWith('cat:')) {
-    return sourceCategory(item.source || item.feed_source) === activeFilter.slice(4);
+    return sourceCategory(item.group_source || item.source || item.feed_source) === activeFilter.slice(4);
   }
   const group = sourceFilterGroups[activeFilter];
   if (!group) return false;
@@ -7097,7 +7247,7 @@ function rebuildSourceFilterGroups() {
   }
   const groups = Object.values(sourceFilterGroups).map(group => {
     group.sources = [...new Set(group.sources)];
-    group.baseCategory = chooseSourceGroupCategory(group.rows) || sourceCategory(group.sources[0]) || 'Info';
+    group.baseCategory = chooseSourceGroupCategory(group.rows) || sourceCategory(group.sources[0]) || 'Uncategorized';
     for (const source of group.sources) sourceToFilterGroup[source] = group.key;
     return group;
   });
@@ -7129,8 +7279,8 @@ function renderFilters() {
     const collapsedKey = 'raynews_cat_' + cat;
     const headerActive = filter === 'cat:' + cat ? ' active' : '';
     const expandBody = filter === 'cat:' + cat || localStorage.getItem(collapsedKey) !== '1';
-    html += `<div class="cat-header${headerActive}" data-cat="${cat}">${categoryDisplayName(cat)}<span class="arrow ${expandBody ? 'open' : ''}">▶</span></div>`;
-    html += `<div class="cat-body ${expandBody ? '' : 'collapsed'}" data-cat="${cat}">`;
+    html += `<div class="cat-header${headerActive}" data-cat="${esc(cat)}">${esc(categoryDisplayName(cat))}<span class="arrow ${expandBody ? 'open' : ''}">▶</span></div>`;
+    html += `<div class="cat-body ${expandBody ? '' : 'collapsed'}" data-cat="${esc(cat)}">`;
     html += catGroups.map(group => {
       const title = group.sources.length > 1
         ? `${group.label} · 包含 ${group.sources.length} 个来源变体`

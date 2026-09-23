@@ -116,7 +116,7 @@ def test_source_rows_bootstraps_tables_on_fresh_db():
     assert exists is not None
 
 
-def test_known_source_preset_is_seeded_only_when_an_article_exists():
+def test_known_source_identity_does_not_seed_personal_category():
     conn = _make_conn()
 
     sc.init_source_categories(conn)
@@ -131,7 +131,63 @@ def test_known_source_preset_is_seeded_only_when_an_article_exists():
         "FROM source_categories WHERE source = '少数派'"
     ).fetchone()
 
-    assert tuple(row) == ("Tech", "少数派", "pending", "seeded")
+    assert row is None  # source category discovery is explicit maintenance, no personal presets
+
+
+def test_custom_categories_and_domain_overrides_are_instance_configurable():
+    conn = _make_conn()
+    sc.init_source_categories(conn)
+    custom = sc.save_category_definition(conn, "Research", "研究", 10)
+    assert custom["category"] == "Research"
+    assert sc.valid_category(conn, "Research")
+
+    conn.execute(
+        "INSERT INTO source_categories (source, category, label, status) "
+        "VALUES ('南华早报', 'Research', '南早', 'manual')"
+    )
+    conn.commit()
+    sc.save_category_definition(conn, "Research", "研究", 10, enabled=False,
+                                migration_target="News")
+    assert not sc.valid_category(conn, "Research")
+    assert any(
+        item["category"] == "Research" and not item["enabled"]
+        for item in sc.category_definitions(conn, include_disabled=True)
+    )
+    assert conn.execute(
+        "SELECT category FROM source_categories WHERE source = '南华早报'"
+    ).fetchone()[0] == "News"
+
+    sc.save_publisher_domain(conn, "edition.example.co.uk", "Example Press")
+    assert sc.publisher_source_for_domain(conn, "www.example.co.uk") == "Example Press"
+
+
+def test_deleted_default_category_stays_deleted_after_reinitialization():
+    conn = _make_conn()
+    sc.init_source_categories(conn)
+    sc.delete_category_definition(conn, "News", "Info")
+    sc.init_source_categories(conn)
+    assert "News" not in {row["category"] for row in sc.category_definitions(conn, True)}
+
+
+def test_category_read_succeeds_while_another_wal_connection_writes(tmp_path):
+    path = tmp_path / "news.db"
+    setup = sqlite3.connect(path)
+    setup.row_factory = sqlite3.Row
+    setup.execute("PRAGMA journal_mode=WAL")
+    setup.execute("CREATE TABLE articles (id INTEGER PRIMARY KEY, source TEXT)")
+    sc.init_source_categories(setup)
+    setup.close()
+    writer = sqlite3.connect(path, timeout=0.01)
+    reader = sqlite3.connect(path, timeout=0.01)
+    reader.row_factory = sqlite3.Row
+    try:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("INSERT INTO articles (id, source) VALUES (1, '甲报')")
+        assert "News" in {row["category"] for row in sc.category_definitions(reader)}
+    finally:
+        writer.rollback()
+        writer.close()
+        reader.close()
 
 
 def test_delete_source_metadata_removes_group_and_all_connected_aliases():
@@ -216,7 +272,7 @@ def test_deleted_unknown_source_is_rediscovered_without_old_settings():
         "SELECT category, label, status, reason "
         "FROM source_categories WHERE source = 'Fresh Feed'"
     ).fetchone()
-    assert tuple(row) == ("Info", "Fresh Feed", "pending", "discovered")
+    assert tuple(row) == ("Uncategorized", "Fresh Feed", "pending", "discovered")
 
 
 def test_maintain_discovers_and_cleans(monkeypatch):
@@ -258,8 +314,8 @@ def test_cleanup_only_removes_stale_automatic_metadata():
     """Cleanup must not discard explicit metadata merely because its source is quiet.
 
     This catches a cleanup regression that deletes manual/classified source settings or
-    aliases whenever they have no current articles.  Only stale pending/failed category
-    records and aliases whose category target is gone may be removed.
+    aliases whenever they have no current articles. Only stale pending, failed, and
+    review category records plus aliases whose category target is gone may be removed.
     """
     conn = _make_conn()
     sc.init_source_categories(conn)
@@ -273,6 +329,7 @@ def test_cleanup_only_removes_stale_automatic_metadata():
             ("global-classified", "classified"),
             ("global-pending-stale", "pending"),
             ("global-failed-stale", "failed"),
+            ("global-review-stale", "review"),
             ("global-live-pending", "pending"),
             ("user-manual", "manual"),
             ("user-classified", "classified"),

@@ -1188,7 +1188,7 @@ def test_generation_failure_feeds_the_streak(news_db_free, monkeypatch, alerts):
         def __init__(self, **kwargs):
             pass
 
-        def daily_summary(self, articles):
+        def batch_digest_signals(self, articles):
             raise RuntimeError("502 upstream")
 
     monkeypatch.setattr(web_server, "get_system_ai_config",
@@ -1265,7 +1265,7 @@ def test_the_evening_retry_chain_alone_reaches_the_threshold(news_db_free, monke
         def __init__(self, **kwargs):
             pass
 
-        def daily_summary(self, articles):
+        def batch_digest_signals(self, articles):
             raise RuntimeError("401 invalid api key")
 
     monkeypatch.setattr(web_server, "get_system_ai_config",

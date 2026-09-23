@@ -30,6 +30,7 @@ from source_categories import (
     ensure_article_sources, init_source_categories,
     ensure_article_source_columns,
     extract_domain_from_url, extract_domains_from_html, lookup_source_by_domain,
+    publisher_source_for_domain,
 )
 
 # ─── Config (overridable via environment variables) ──────
@@ -152,15 +153,19 @@ def upsert_articles(
     cycle finishes, instead of repeating a full-table pass per batch.
     """
     sql = """INSERT INTO articles
-        (id, title, source, feed_source, origin_source, time, date, timestamp, thumb,
+        (id, title, source, feed_source, origin_source, group_source, publisher_domain,
+         source_detection_version, ingested_at, time, date, timestamp, thumb,
          has_full_content, telegraph_url, body_html, original_body_html, summary,
          original_title, title_updated_at, title_source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             source = excluded.source,
             feed_source = excluded.feed_source,
             origin_source = excluded.origin_source,
+            group_source = excluded.group_source,
+            publisher_domain = excluded.publisher_domain,
+            source_detection_version = excluded.source_detection_version,
             time = excluded.time,
             date = excluded.date,
             timestamp = excluded.timestamp,
@@ -191,12 +196,20 @@ def upsert_articles(
         article_id = int(e.get("id", 0) or 0)
         if article_id in deleted_ids:
             continue
+        domain = e.get("publisher_domain", "") or ""
+        group_source = e.get("group_source") or e.get("source") or e.get("feed_source", "")
+        if domain:
+            group_source = publisher_source_for_domain(conn, domain) or group_source
         rows.append((
             article_id,
             e.get("title", ""),
-            e.get("source", ""),
+            group_source,
             e.get("feed_source", e.get("source", "")),
-            e.get("origin_source", ""),
+            e.get("origin_source") or group_source,
+            group_source,
+            domain,
+            int(e.get("source_detection_version", 0) or 0),
+            int(e.get("ingested_at") or time.time()),
             e.get("time", ""),
             e.get("date", ""),
             e.get("timestamp", 0),
@@ -465,7 +478,10 @@ def migrate_news_json(conn: sqlite3.Connection):
         data = json.loads(OUTPUT_FILE.read_text(encoding="utf-8"))
         items = data.get("items", [])
         if items:
-            upsert_articles(conn, items)
+            upsert_articles(conn, [
+                {**item, "ingested_at": item.get("ingested_at") or item.get("timestamp")}
+                for item in items
+            ])
             log.info(f"Migrated {len(items)} articles from news.json to SQLite")
     except Exception as e:
         log.warning(f"Migration from news.json failed: {e}")
@@ -519,7 +535,9 @@ def parse_messages(html: str) -> list[dict]:
 
         # Message ID: data-post="your_channel/277214"
         data_post = msg.get("data-post", "")
-        msg_id = data_post.replace(f"{TELEGRAM_CHANNEL}/", "").strip()
+        post_parts = data_post.rsplit("/", 1)
+        feed_channel = post_parts[0] if len(post_parts) == 2 else TELEGRAM_CHANNEL
+        msg_id = post_parts[-1].strip()
         if not msg_id or not msg_id.isdigit():
             continue
 
@@ -583,6 +601,7 @@ def parse_messages(html: str) -> list[dict]:
 
         messages.append({
             "id": int(msg_id),
+            "feed_source": f"@{feed_channel.lstrip('@')}",
             "datetime": datetime_str,
             "text": content_text,
             "html": content_html,
@@ -695,28 +714,40 @@ def detect_source(content: str, extra_html: str = "", *, extra_url: str = "") ->
     return "未分类"
 
 
-def detect_feed_source(content: str, link_preview_title: str = "") -> str:
-    """Extract the stable subscription/feed source for sidebar filtering.
+def detect_feed_source(content: str = "", link_preview_title: str = "", channel: str = "") -> str:
+    """Return the Telegram/RSS feed identity, never an article publisher."""
+    value = (channel or TELEGRAM_CHANNEL or "").strip().lstrip("@")
+    return f"@{value}" if value else "Unknown Feed"
 
-    This intentionally avoids article-link domains and Telegraph metadata; those
-    describe the original publisher and belong in origin_source.
-    """
-    via_source = detect_source_from_attribution(content)
-    if via_source:
-        return via_source
 
-    tg = re.search(r't\.me/([a-zA-Z0-9_]+)', content)
-    if tg:
-        name = _clean_source_name(tg.group(1))
-        if name:
-            return f"@{name}"
+def detect_group_source(content: str, preview_url: str = "", channel: str = "") -> tuple[str, str]:
+    """Return deterministic publisher group identity and its strongest domain evidence."""
+    via_domain = None
+    chunks = re.split(r"<br\s*/?>", content or "", flags=re.IGNORECASE)
+    for chunk in reversed(chunks):
+        if not re.search(r"(?i)(^|\s)via\b", clean_html(chunk)):
+            continue
+        via_match = re.search(r"(?i)\bvia\b", chunk)
+        if not via_match:
+            continue
+        after_via = BeautifulSoup(chunk[via_match.end():], "html.parser")
+        link = after_via.find("a", href=True)
+        if link:
+            via_domain = extract_domain_from_url(link.get("href", ""))
+        if via_domain:
+            break
 
-    title = _clean_source_name(link_preview_title or "")
-    if title and 1 < len(title) <= 30:
-        return title
+    candidates = [via_domain, extract_domain_from_url(preview_url)]
+    bottom_domains = extract_domains_from_html(_extract_bottom_html(content or "", ratio=0.15))
+    candidates.extend(bottom_domains)
+    domain = next((item for item in candidates if item), "")
+    if domain:
+        return lookup_source_by_domain([domain])[0] if lookup_source_by_domain([domain]) else domain, domain
 
-    channel = (TELEGRAM_CHANNEL or "").strip().lstrip("@")
-    return f"@{channel}" if channel else "Unknown Feed"
+    attribution = detect_source_from_attribution(content or "")
+    if attribution:
+        return attribution, ""
+    return detect_feed_source(channel=channel), ""
 
 
 def detect_source_from_attribution(content: str) -> str | None:
@@ -948,6 +979,7 @@ def fetch_telegraph(url: str) -> dict | None:
 
         # ── Extract source from Telegraph metadata BEFORE cleanup ──
         telegraph_source = ""
+        telegraph_domain = ""
 
         # 1) <address> tag below title — often the original author/source name
         address = article.find("address")
@@ -958,6 +990,7 @@ def fetch_telegraph(url: str) -> dict | None:
                 addr_html = str(address)
                 addr_domains = extract_domains_from_html(addr_html)
                 domain_match = lookup_source_by_domain(addr_domains)
+                telegraph_domain = addr_domains[0] if addr_domains else ""
                 if domain_match:
                     telegraph_source = domain_match[0]
                 else:
@@ -979,6 +1012,8 @@ def fetch_telegraph(url: str) -> dict | None:
                 # Check if this looks like a source attribution link
                 domains = extract_domains_from_html(f'<a href="{href}">link</a>')
                 domain_match = lookup_source_by_domain(domains)
+                if domains:
+                    telegraph_domain = domains[0]
                 if domain_match:
                     telegraph_source = domain_match[0]
                     log.info(f"  Telegraph source from bottom attribution link ({href[:60]}): {telegraph_source}")
@@ -1026,6 +1061,8 @@ def fetch_telegraph(url: str) -> dict | None:
         }
         if telegraph_source:
             result["detected_source"] = telegraph_source
+        if telegraph_domain:
+            result["detected_domain"] = telegraph_domain
         return result
     except Exception as e:
         log.error(f"  Telegraph fetch failed: {e}")
@@ -1139,17 +1176,23 @@ def process_message(msg: dict, orig_msg_id: int) -> dict:
     text = msg["text"]
     title = extract_title(text)
     telegraph_url = extract_telegraph_url(content)
-    feed_source = detect_feed_source(content, msg.get("link_preview_title", "") or "")
+    feed_source = detect_feed_source(
+        content, msg.get("link_preview_title", "") or "", msg.get("feed_source", "")
+    )
     link_preview_url = msg.get("link_preview_url", "") or ""
-    origin_source = detect_source(content, extra_url=link_preview_url)
+    group_source, publisher_domain = detect_group_source(content, link_preview_url, feed_source)
+    origin_source = group_source
     thumb = msg["images"][0] if msg["images"] else ""
     time_info = parse_datetime(msg["datetime"])
 
     entry = {
         "id": orig_msg_id,  # Use stable Telegram message ID
         "title": title,
-        "source": feed_source,
+        "source": group_source,
         "feed_source": feed_source,
+        "group_source": group_source,
+        "publisher_domain": publisher_domain,
+        "source_detection_version": 1,
         "origin_source": origin_source,
         "time": time_info.get("time", ""),
         "date": time_info.get("date", ""),
@@ -1172,7 +1215,16 @@ def process_message(msg: dict, orig_msg_id: int) -> dict:
             # detection is weak (plain "未分类" or just an @channel name).
             ts = result.get("detected_source", "")
             if ts:
-                origin_source = ts
+                domain = result.get("detected_domain", "")
+                if domain:
+                    publisher_domain = domain
+                    group_source = lookup_source_by_domain([domain])[0] if lookup_source_by_domain([domain]) else domain
+                else:
+                    group_source = ts
+                origin_source = group_source
+                entry["source"] = group_source
+                entry["group_source"] = group_source
+                entry["publisher_domain"] = publisher_domain
                 entry["origin_source"] = origin_source
                 log.info(f"  ✓ {title[:40]}... ({result['char_count']} chars, from Telegraph, origin → {origin_source})")
             else:
@@ -1226,19 +1278,13 @@ def is_from_today(datetime_str: str) -> bool:
 
 
 def fetch_all_new_messages(state: dict) -> tuple[list[dict], int]:
-    """Fetch new messages since last seen ID, scoped to today (Beijing time) only.
+    """Fetch new messages since last seen ID; keep first-run history bounded.
 
-    Scope is fixed regardless of whether this is the very first successful fetch or a
-    routine incremental one: only id > last_seen_id (incremental) AND is_from_today()
-    (today-only) messages are kept. Anything from before today is discarded — including
-    backlog accumulated while periodic refresh was failing — rather than being pulled
-    in wholesale on the next successful run.
+    Routine incremental runs retain late arrivals from previous dates for the
+    next digest. A first run without a cursor only imports today's history.
 
-    Returns (messages, highest_observed_id). highest_observed_id is the highest id seen
-    among *any* message with id > last_seen_id, whether it was kept (today) or discarded
-    (pre-today) — not just the ones in `messages`. This lets run() advance the cursor
-    even when every new message turned out to be pre-today and got discarded, so that
-    backlog isn't re-fetched, re-parsed, and re-discarded again on every subsequent run.
+    Returns (messages, highest_observed_id). The latter includes every ID newer
+    than the cursor, including history skipped during a first-run bootstrap.
     """
     last_id = state.get("last_seen_id", 0)
     all_msgs: list[dict] = []
@@ -1264,17 +1310,18 @@ def fetch_all_new_messages(state: dict) -> tuple[list[dict], int]:
         if new_ids:
             highest_observed_id = max(highest_observed_id, max(new_ids))
 
-        # Filter to new (id > last_id), not-yet-collected, today-only messages.
+        # First bootstrap stays today-only; incremental runs retain all new IDs.
         seen_ids = {m["id"] for m in all_msgs}
-        today_new = [
+        new_messages = [
             m for m in msgs
-            if m["id"] > last_id and m["id"] not in seen_ids and is_from_today(m["datetime"])
+            if m["id"] > last_id and m["id"] not in seen_ids
+            and (last_id > 0 or is_from_today(m["datetime"]))
         ]
-        if today_new:
-            log.info(f"  Page {pages_fetched}: {len(today_new)} new today's msgs (IDs {today_new[0]['id']}~{today_new[-1]['id']})")
-            all_msgs.extend(today_new)
+        if new_messages:
+            log.info(f"  Page {pages_fetched}: {len(new_messages)} new msgs (IDs {new_messages[0]['id']}~{new_messages[-1]['id']})")
+            all_msgs.extend(new_messages)
         else:
-            log.info(f"  Page {pages_fetched}: no new today's messages")
+            log.info(f"  Page {pages_fetched}: no eligible new messages")
 
         # Stop condition 1: every message on this page is already at/behind the
         # incremental cursor — we've caught up, no need to page further back.
@@ -1282,10 +1329,8 @@ def fetch_all_new_messages(state: dict) -> tuple[list[dict], int]:
             log.info("  Caught up — stopping")
             break
 
-        # Stop condition 2: the newest message on this page (msgs are oldest-first)
-        # already predates today — paging further back can only find older messages,
-        # so anything beyond this point is out of scope and gets discarded.
-        if not is_from_today(msgs[-1]["datetime"]):
+        # On first bootstrap, stop when the newest message predates today.
+        if last_id == 0 and not is_from_today(msgs[-1]["datetime"]):
             log.info("  Newest message on page is from before today — stopping")
             break
 
@@ -1332,9 +1377,8 @@ def run():
 
     if not messages:
         if highest_observed_id > state.get("last_seen_id", 0):
-            # Everything new turned out to be pre-today backlog and got discarded —
-            # still advance the cursor past it, otherwise the exact same backlog gets
-            # re-fetched, re-parsed, and re-discarded again on every subsequent run.
+            # First-run bootstrap may have skipped older messages. Advance the
+            # cursor so this history is not scanned again on the next run.
             state["last_seen_id"] = highest_observed_id
             save_state(state)
             log.info(
@@ -1482,8 +1526,8 @@ def run():
             "so they can be retried on next fetch"
         )
     else:
-        # highest_observed_id already covers every id seen this cycle (kept or
-        # discarded as pre-today); max() with the kept messages is defensive in case
+        # highest_observed_id already covers every id seen this cycle (including
+        # bootstrap messages outside today); max() with kept messages is defensive in case
         # a future change ever decouples the two. messages is id-only here (reduced
         # after the futures were submitted).
         max_id = max(highest_observed_id, max(messages))
@@ -1552,7 +1596,7 @@ def _load_recent_articles_for_mirror(
     """Load a stable, bounded recent-article snapshot for the legacy JSON mirror."""
     rows = conn.execute(
         """SELECT id, title, source, feed_source, origin_source, time, date,
-                  timestamp, thumb, has_full_content, telegraph_url, body_html,
+                  timestamp, ingested_at, thumb, has_full_content, telegraph_url, body_html,
                   original_body_html, summary, original_title, title_updated_at,
                   title_source
              FROM articles

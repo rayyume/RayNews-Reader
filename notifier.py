@@ -116,6 +116,36 @@ def render_notification_email_body(body: str, fmt: str = "plain") -> str:
     return str(soup)
 
 
+def _render_daily_summary_email_body(summary_text: str) -> str:
+    """Give digest items explicit numbers that remain visible in email clients."""
+    soup = BeautifulSoup(
+        render_notification_email_body(summary_text, fmt="markdown"), "html.parser"
+    )
+    for ordered_list in soup.find_all("ol"):
+        table = soup.new_tag("table", attrs={
+            "role": "presentation", "cellpadding": "0", "cellspacing": "0",
+            "width": "100%", "style": "border-collapse:collapse",
+        })
+        for number, item in enumerate(ordered_list.find_all("li", recursive=False), 1):
+            row = soup.new_tag("tr")
+            number_cell = soup.new_tag("td", attrs={
+                "width": "36", "valign": "top",
+                "style": "padding:4px 8px 4px 0;color:#e8e8ed;font-size:15px;white-space:nowrap",
+            })
+            number_cell.string = f"{number}."
+            content_cell = soup.new_tag("td", attrs={
+                "valign": "top",
+                "style": "padding:4px 0;color:#e8e8ed;font-size:15px;line-height:1.8",
+            })
+            for child in list(item.contents):
+                content_cell.append(child.extract())
+            row.append(number_cell)
+            row.append(content_cell)
+            table.append(row)
+        ordered_list.replace_with(table)
+    return str(soup)
+
+
 class EmailDeliveryError(Exception):
     """Base class for delivery errors with a known certainty category."""
 
@@ -189,13 +219,14 @@ def send_daily_summary_email(api_key: str, to_email: str,
                              idempotency_key: str | None = None) -> dict:
     """Send a formatted daily summary email via Resend.
     Converts Markdown summary_text to HTML before embedding.
-    stats is a dict with keys: total_articles, articles_after_dedup,
-    articles_selected_for_ai, selected_articles_with_summary.
+    stats includes the input counts and the number of items in the final digest.
     """
-    summary_html = render_notification_email_body(summary_text, fmt="markdown")
+    summary_html = _render_daily_summary_email_body(summary_text)
     total = stats.get("total_articles", 0)
     deduped = stats.get("articles_after_dedup", 0)
-    selected = stats.get("articles_selected_for_ai", deduped)
+    selected = stats.get("digest_item_count", stats.get(
+        "articles_selected_for_summary", stats.get("articles_selected_for_ai", deduped)
+    ))
     with_summary = stats.get("selected_articles_with_summary", stats.get("articles_with_summary", 0))
     public_url = os.environ.get("RAYNEWS_PUBLIC_URL", "").rstrip("/")
     footer_link = f'<a href="{public_url}">打开 RayNews</a>' if public_url else "RayNews"

@@ -35,7 +35,8 @@ from news_schema import (
 )
 from source_categories import (
     CATEGORY_NAMES, CATEGORY_ORDER, ensure_article_source_columns,
-    maintain_source_categories, source_rows,
+    maintain_source_categories, source_rows, category_definitions, valid_category,
+    UNCATEGORIZED,
 )
 
 REFRESH_INTERVAL = 900  # 15 minutes
@@ -1128,7 +1129,7 @@ def api_news_list(params: dict) -> bytes:
     conn = None
     try:
         conn = get_db()
-        source_expr = "COALESCE(NULLIF(feed_source, ''), source)"
+        source_expr = "COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source)"
         clauses = []
         args = []
         if query:
@@ -1148,13 +1149,12 @@ def api_news_list(params: dict) -> bytes:
             clauses.append(f"{source_expr} IN ({placeholders})")
             args.extend(sources)
         if category:
-            if category not in CATEGORY_ORDER:
+            if not valid_category(conn, category):
                 return json.dumps({"error": "invalid category"}).encode()
-            if category == "Info":
+            if category == UNCATEGORIZED:
                 clauses.append(
-                    f"({source_expr} IN "
-                    "(SELECT source FROM source_categories WHERE category = ?) "
-                    f"OR {source_expr} NOT IN (SELECT source FROM source_categories))"
+                    f"{source_expr} IN "
+                    "(SELECT source FROM source_categories WHERE category = ?)"
                 )
             else:
                 clauses.append(
@@ -1169,8 +1169,8 @@ def api_news_list(params: dict) -> bytes:
             since_where = f"{where_sql}{' AND' if where_sql else ' WHERE'} timestamp >= ?"
             since_args = (*args, since_ts)
             rows = conn.execute(
-                "SELECT id, title, original_title, COALESCE(NULLIF(feed_source, ''), source) AS source, "
-                "       COALESCE(NULLIF(feed_source, ''), source) AS feed_source, origin_source, "
+                "SELECT id, title, original_title, COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source) AS source, "
+                "       feed_source, group_source, publisher_domain, origin_source, "
                 "       time, date, timestamp, thumb, has_full_content, telegraph_url, summary "
                 f"FROM articles{since_where} ORDER BY timestamp DESC LIMIT ?",
                 (*since_args, size),
@@ -1182,8 +1182,8 @@ def api_news_list(params: dict) -> bytes:
         else:
             offset = (page - 1) * size
             base_select = (
-                "SELECT id, title, original_title, COALESCE(NULLIF(feed_source, ''), source) AS source, "
-                "       COALESCE(NULLIF(feed_source, ''), source) AS feed_source, origin_source, "
+                "SELECT id, title, original_title, COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source) AS source, "
+                "       feed_source, group_source, publisher_domain, origin_source, "
                 "       time, date, timestamp, thumb, has_full_content, telegraph_url, summary "
                 "FROM articles"
             )
@@ -1292,9 +1292,10 @@ def _build_news_detail_response(article_id: int) -> bytes:
         if not row:
             return json.dumps({"error": "not found"}).encode()
         item = dict(row)
+        item["group_source"] = item.get("group_source") or item.get("source") or ""
         item["feed_source"] = item.get("feed_source") or item.get("source") or ""
         item["origin_source"] = item.get("origin_source") or ""
-        item["source"] = item["feed_source"]
+        item["source"] = item["group_source"]
         # /api/news/<id> is intentionally unauthenticated. Shared translated
         # HTML is delivered only by the authenticated /ai/result endpoint.
         item["body_html"] = (
@@ -1364,9 +1365,11 @@ def api_sources() -> bytes:
     try:
         conn = get_db()
         rows = source_rows(conn)
+        definitions = category_definitions(conn)
         return json.dumps({
-            "categories": CATEGORY_ORDER,
-            "category_names": CATEGORY_NAMES,
+            "categories": [row["category"] for row in definitions],
+            "category_names": {row["category"]: row["label"] for row in definitions},
+            "category_definitions": definitions,
             "sources": rows,
         }, ensure_ascii=False).encode()
     except Exception:

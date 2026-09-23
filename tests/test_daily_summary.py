@@ -85,6 +85,7 @@ class DailySummaryTests(unittest.TestCase):
         self.assertNotIn("请补充需要摘要的文章全文", selection_prompt)
         self.assertIn("央行开展公开市场操作稳定流动性", selection_prompt)
         self.assertEqual(result["stats"]["daily_target_items"], 4)
+        self.assertEqual(result["stats"]["articles_selected_for_summary"], 4)
         self.assertIs(result["stats"]["selection_ai_used"], True)
 
     def test_fallback_is_dynamic_and_does_not_fill_categories(self):
@@ -145,6 +146,32 @@ class DailySummaryTests(unittest.TestCase):
         selection_prompt = "\n".join(m["content"] for m in svc.calls[0]["messages"])
         summary_line = re.search(r"内容摘要：(.+)", selection_prompt).group(1)
         self.assertEqual(summary_line, "OpenAI platform update expands enterprise")
+
+    def test_short_but_complete_looking_ai_output_is_not_cached_as_full_digest(self):
+        env = {
+            "AI_DAILY_TARGET_ITEMS": "4",
+            "AI_DAILY_MIN_ITEMS": "3",
+            "AI_DAILY_MAX_ITEMS": "5",
+            "AI_DAILY_MAX_CANDIDATES": "8",
+        }
+        articles = [
+            _article(i, f"央行政策新闻 {i}", f"央行发布政策措施 {i}，影响市场预期。")
+            for i in range(1, 6)
+        ]
+        one_item = (
+            "## 政经新闻\n"
+            "1. **央行政策：** 央行发布政策措施。 "
+            "[🔗](https://news.rayyu.me/#/article/26-06-10-1)\n"
+        )
+        with patch.dict(os.environ, env, clear=False):
+            svc = FakeDailyAI(replies=['{"selected_ids":[1,2,3,4]}', one_item, ""])
+            result = svc.daily_summary(articles)
+
+        self.assertEqual(len(svc.calls), 3)  # selection, final, continuation
+        self.assertGreaterEqual(
+            len(re.findall(r"^\d+\.\s+\*\*", result["summary"], flags=re.M)), 3
+        )
+        self.assertEqual(result["stats"]["fallback_reason"], "AI output looked truncated")
 
 
 if __name__ == "__main__":

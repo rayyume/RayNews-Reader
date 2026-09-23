@@ -217,3 +217,30 @@ def test_daily_summary_send_sanitizes_markdown_html(monkeypatch):
     assert "onclick" not in lowered
     assert "javascript:" not in lowered
     assert "<p>安全段落</p>" in rendered
+
+
+def test_daily_summary_email_keeps_two_digit_item_numbers_visible(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        notifier, "send_email",
+        lambda _key, _to, _subject, body, **_kwargs: captured.setdefault("html", body),
+    )
+    summary = "## 科技动态\n" + "\n".join(
+        f"{number}. **新闻 {number}：** 内容 [🔗](https://example.com/{number})"
+        for number in range(1, 13)
+    )
+
+    notifier.send_daily_summary_email(
+        "key", "reader@example.com", summary,
+        {"articles_selected_for_ai": 120, "articles_selected_for_summary": 40,
+         "digest_item_count": 12},
+    )
+
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(captured["html"], "html.parser")
+    numbers = [row.find("td").get_text(strip=True)
+               for row in soup.select(".summary table tr")]
+    assert numbers == [f"{number}." for number in range(1, 13)]
+    assert not soup.select(".summary ol")
+    assert soup.select_one('.summary a[href="https://example.com/10"]')
+    assert "入选 12 篇" in captured["html"]

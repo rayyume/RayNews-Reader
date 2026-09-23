@@ -446,6 +446,9 @@ def test_admin_source_overrides_promote_to_shared_settings():
     assert rows["Original Feed"]["label"] == "Shared Tech"
     assert conn.execute(
         "SELECT feed_source FROM articles WHERE id = 2"
+    ).fetchone()[0] == "Old Alias"
+    assert conn.execute(
+        "SELECT group_source FROM articles WHERE id = 2"
     ).fetchone()[0] == "Original Feed"
     assert conn.execute(
         "SELECT COUNT(*) FROM user_source_categories WHERE user_id = 1"
@@ -477,6 +480,20 @@ def test_source_mutation_routes_are_admin_only_and_shared():
     assert '"sources": source_rows(conn)' in server
     assert "update_source_category(\n            conn, source, category, label" in server
     assert "user_id=g.user_id" not in server[server.index("def save_source"):server.index("def classify_sources")]
+
+
+def test_dynamic_category_metadata_is_escaped_in_html_contexts():
+    html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    assert '`<option value="${esc(cat)}"' in html
+    assert '${esc(categoryDisplayName(cat))}' in html
+    assert 'data-cat="${esc(cat)}">${esc(categoryDisplayName(cat))}' in html
+
+
+def test_source_manager_distinguishes_ai_work_from_manual_review():
+    html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    assert "review: '待人工审核'" in html
+    assert "${review} 个待人工审核" in html
+    assert "r.status === 'review'" in html
 
 
 def test_mobile_edge_swipe_claims_navigation_at_touch_start():
@@ -1014,7 +1031,7 @@ def test_cached_source_metadata_is_rendered_before_network_fetch():
     block = html[start:html.index("async function scheduleSourceMetadataRetry", start)]
     # The network fetch now lives in a helper; the cache must still be applied first.
     source_fetch = "await fetchSourceMetadata(networkTimeoutMs, externalSignal)"
-    assert block.index("rebuildCategoryMap(cached.data.sources);") < block.index(source_fetch)
+    assert block.index("rebuildCategoryMap(cached.data.sources, cached.data);") < block.index(source_fetch)
     assert block.index("renderFilters();") < block.index(source_fetch)
 
 
@@ -1473,7 +1490,7 @@ def test_sources_settings_tab_is_admin_only():
 def test_source_delete_removes_the_group_even_when_it_has_no_articles():
     html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     start = html.index("async function deleteSourceArticles(idx)")
-    end = html.index("async function reinitializeSourceLabels()", start)
+    end = html.index("async function classifySources(", start)
     block = html[start:end]
 
     assert "if (!count) return;" not in block

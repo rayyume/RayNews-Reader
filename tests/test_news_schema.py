@@ -23,8 +23,12 @@ def _current_schema_without_feed_source_index(tmp_path):
     conn = sqlite3.connect(tmp_path / "news.db")
     conn.execute("CREATE TABLE deleted_articles (article_id INTEGER PRIMARY KEY)")
     conn.execute(
-        "CREATE TABLE articles (id INTEGER PRIMARY KEY, body_html TEXT, "
+        "CREATE TABLE articles (id INTEGER PRIMARY KEY, source TEXT NOT NULL DEFAULT '', body_html TEXT, "
         "original_body_html TEXT, feed_source TEXT NOT NULL DEFAULT '', "
+        "group_source TEXT NOT NULL DEFAULT '', publisher_domain TEXT NOT NULL DEFAULT '', "
+        "source_detection_version INTEGER NOT NULL DEFAULT 0, "
+        "source_detection_last_attempt_at INTEGER NOT NULL DEFAULT 0, "
+        "ingested_at INTEGER NOT NULL DEFAULT 0, "
         "origin_source TEXT NOT NULL DEFAULT '', original_title TEXT, "
         "title_updated_at TEXT, title_source TEXT)"
     )
@@ -35,6 +39,9 @@ def _current_schema_without_feed_source_index(tmp_path):
 def test_current_article_schema_skips_begin_and_ddl(tmp_path):
     conn = _current_schema_without_feed_source_index(tmp_path)
     conn.execute("CREATE INDEX idx_feed_source ON articles(feed_source)")
+    conn.execute("CREATE INDEX idx_group_source ON articles(group_source)")
+    conn.execute("CREATE INDEX idx_publisher_domain ON articles(publisher_domain)")
+    conn.execute("CREATE INDEX idx_ingested_at ON articles(ingested_at)")
     conn.commit()
 
     class Spy:

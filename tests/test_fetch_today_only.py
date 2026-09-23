@@ -1,7 +1,4 @@
-"""Verifies fetch_all_new_messages()'s scope is fixed to "incremental AND today-only"
-regardless of whether this is the very first successful fetch or a routine one —
-see docs/plans/today-only-fetch-and-admin-ui-plan.md item 1.
-"""
+"""Bootstrap fetches today's messages; later incremental runs retain late arrivals."""
 from datetime import datetime, timedelta, timezone
 
 import fetcher
@@ -48,7 +45,7 @@ def _mock_pages(monkeypatch, pages_by_before):
     return calls
 
 
-def test_incremental_run_discards_pre_today_messages_on_a_mixed_page(monkeypatch):
+def test_incremental_run_keeps_pre_today_messages_on_a_mixed_page(monkeypatch):
     # Oldest-first page: id=105 is yesterday, 106/107 are today.
     page1 = [_msg(105, _yesterday_at(20)), _msg(106, _today_at(8)), _msg(107, _today_at(9))]
     # Next page (before=105) is entirely yesterday's — newest on it predates today.
@@ -57,11 +54,10 @@ def test_incremental_run_discards_pre_today_messages_on_a_mixed_page(monkeypatch
 
     result, highest_observed_id = fetcher.fetch_all_new_messages({"last_seen_id": 100})
 
-    assert [m["id"] for m in result] == [106, 107]
+    assert sorted(m["id"] for m in result) == [102, 103, 104, 105, 106, 107]
     assert highest_observed_id == 107
-    # Stops after page 2 (newest message on it is from before today) — never pages
-    # further back to look for yet more historical backlog.
-    assert calls == ["", "105"]
+    # Continues until the cursor is reached, even across a date boundary.
+    assert calls == ["", "105", "102"]
 
 
 def test_incremental_run_stops_immediately_once_caught_up(monkeypatch):
@@ -107,16 +103,13 @@ def test_same_page_new_and_duplicate_ids_are_not_double_counted(monkeypatch):
 
 # ─── P2 fix: cursor still advances past backlog that's entirely discarded ──
 
-def test_only_pre_today_backlog_reports_highest_observed_id_despite_empty_result(monkeypatch):
-    # Every new message (id > last_seen_id) is from yesterday, so nothing is kept —
-    # but the caller still needs to know how far the scan actually got, so it can
-    # advance the cursor and never re-fetch this exact backlog again.
+def test_only_pre_today_backlog_is_kept_for_next_digest(monkeypatch):
     page1 = [_msg(101, _yesterday_at(20)), _msg(102, _yesterday_at(21)), _msg(103, _yesterday_at(22))]
     _mock_pages(monkeypatch, {"": page1})
 
     result, highest_observed_id = fetcher.fetch_all_new_messages({"last_seen_id": 100})
 
-    assert result == []
+    assert [m["id"] for m in result] == [101, 102, 103]
     assert highest_observed_id == 103
 
 

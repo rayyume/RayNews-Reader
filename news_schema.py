@@ -18,6 +18,14 @@ _TITLE_COLUMNS = {
     "title_source": "TEXT",
 }
 
+_SOURCE_COLUMNS = {
+    "group_source": "TEXT NOT NULL DEFAULT ''",
+    "publisher_domain": "TEXT NOT NULL DEFAULT ''",
+    "source_detection_version": "INTEGER NOT NULL DEFAULT 0",
+    "source_detection_last_attempt_at": "INTEGER NOT NULL DEFAULT 0",
+    "ingested_at": "INTEGER NOT NULL DEFAULT 0",
+}
+
 
 def enable_wal_mode(conn: sqlite3.Connection, *, attempts: int = 8, delay: float = 0.05) -> None:
     """Enable WAL after schema migration without masking unrelated failures.
@@ -66,12 +74,13 @@ def _schema_already_current(
     if "body_html" in columns and "original_body_html" not in columns:
         return False
     if include_source_columns:
-        if not {"feed_source", "origin_source"}.issubset(columns):
+        if not {"feed_source", "origin_source", *_SOURCE_COLUMNS}.issubset(columns):
             return False
-        if not conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_feed_source'"
-        ).fetchone():
-            return False
+        for index in ("idx_feed_source", "idx_group_source", "idx_publisher_domain", "idx_ingested_at"):
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?", (index,)
+            ).fetchone():
+                return False
     if include_title_columns and not set(_TITLE_COLUMNS).issubset(columns):
         return False
     return True
@@ -159,11 +168,33 @@ def ensure_article_schema(
                 _add_column_if_missing(
                     conn, columns, "origin_source", "TEXT NOT NULL DEFAULT ''"
                 )
+                for name, definition in _SOURCE_COLUMNS.items():
+                    _add_column_if_missing(conn, columns, name, definition)
+                if "timestamp" in columns:
+                    conn.execute(
+                        "UPDATE articles SET ingested_at = timestamp "
+                        "WHERE ingested_at = 0 AND timestamp > 0"
+                    )
+                # Preserve historical source labels while making the new grouping
+                # key available immediately. A later background pass can refine it.
+                if "source" in columns:
+                    conn.execute(
+                        "UPDATE articles SET group_source = "
+                        "COALESCE(NULLIF(feed_source, ''), NULLIF(source, ''), '') "
+                        "WHERE TRIM(group_source) = ''"
+                    )
+                    conn.execute(
+                        "UPDATE articles SET source = group_source "
+                        "WHERE TRIM(group_source) != '' AND source != group_source"
+                    )
             if include_title_columns:
                 for name, definition in _TITLE_COLUMNS.items():
                     _add_column_if_missing(conn, columns, name, definition)
             if include_source_columns:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_feed_source ON articles(feed_source)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_group_source ON articles(group_source)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_publisher_domain ON articles(publisher_domain)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_ingested_at ON articles(ingested_at)")
         if owns_transaction:
             conn.commit()
     except Exception:

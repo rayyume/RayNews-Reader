@@ -478,8 +478,88 @@ class AIService:
         ]
         return self.chat(messages)
 
+    @staticmethod
+    def _digest_json(raw: str) -> dict:
+        match = re.search(r"\{.*\}", raw or "", flags=re.S)
+        if not match:
+            raise ValueError("AI did not return JSON")
+        data = json.loads(match.group(0))
+        if not isinstance(data, dict):
+            raise ValueError("AI returned invalid JSON")
+        return data
+
+    def summarize_with_signals(self, article_text: str, title: str = "") -> tuple[str, dict]:
+        """Produce the cached article summary and digest signals in one request."""
+        body = _token_aware_truncate(article_text)
+        raw = self.chat([
+            {"role": "system", "content": (
+                "你是新闻编辑。只输出 JSON。摘要不超过200字；事件字段必须描述具体主体和动作，"
+                "不可只写宽泛主题。impact 为0-5，novelty和evidence为0-3。"
+                "material_update仅在同一事件出现实质性新进展时为true。"
+            )},
+            {"role": "user", "content": (
+                f"标题：{title}\n正文：{body}\n"
+                '返回 {"summary":"...","signals":{"event":"...","entities":[],'
+                '"action":"...","topics":[],"impact":2,"novelty":1,'
+                '"evidence":1,"material_update":false}}'
+            )},
+        ], max_tokens=900)
+        data = self._digest_json(raw)
+        summary = data.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            raise ValueError("AI returned an empty article summary")
+        return summary.strip(), data.get("signals") if isinstance(data.get("signals"), dict) else {}
+
+    def batch_digest_signals(self, articles: list[dict]) -> dict[int, dict]:
+        """Backfill event signals for existing summaries in bounded batches."""
+        if not articles:
+            return {}
+        payload = [{"id": item["id"], "title": item.get("title", ""),
+                    "summary": (item.get("summary") or item.get("body_html") or "")[:450]}
+                   for item in articles[:20]]
+        raw = self.chat([
+            {"role": "system", "content": (
+                "逐篇提取具体新闻事件线索，只输出 JSON。不要把相同领域的不同事件混为一谈。"
+                "impact 0-5、novelty/evidence 0-3。无法判断时给保守分数。"
+            )},
+            {"role": "user", "content": (
+                json.dumps(payload, ensure_ascii=False) + '\n返回 {"items":[{"id":数字,'
+                '"event":"主体及动作","entities":[],"action":"动作",'
+                '"topics":[],"impact":2,"novelty":1,"evidence":1,'
+                '"material_update":false}]}'
+            )},
+        ], max_tokens=3500)
+        data = self._digest_json(raw)
+        valid_ids = {item["id"] for item in payload}
+        return {item["id"]: item for item in data.get("items", [])
+                if isinstance(item, dict) and item.get("id") in valid_ids}
+
+    def write_digest_events(self, events: list[dict]) -> dict[int, dict]:
+        """Write short copy; the server owns selection, headings and numbering."""
+        if not events:
+            return {}
+        payload = [{"id": group["representative"]["id"],
+                    "title": group["representative"].get("title", ""),
+                    "summary": (group["representative"].get("summary") or "")[:450],
+                    "event": group["signal"]["event"],
+                    "sources": group["publisher_count"]}
+                   for group in events[:10]]
+        raw = self.chat([
+            {"role": "system", "content": (
+                "为每条已选新闻写准确、简短的中文标题和一句事实摘要。只输出JSON；"
+                "不得增添未提供的事实，保持每个ID一项。"
+            )},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)
+             + '\n返回 {"items":[{"id":数字,"headline":"...","sentence":"..."}]}'},
+        ], max_tokens=2200)
+        data = self._digest_json(raw)
+        valid_ids = {item["id"] for item in payload}
+        return {item["id"]: item for item in data.get("items", [])
+                if isinstance(item, dict) and item.get("id") in valid_ids}
+
     def classify_source(self, source: str, titles: list[str] | None = None,
-                        domains: list[str] | None = None) -> dict:
+                        domains: list[str] | None = None,
+                        categories: list[dict] | None = None) -> dict:
         """Classify a source and shorten its display name using the user's AI API.
 
         Args:
@@ -488,7 +568,14 @@ class AIService:
             domains: Domain names extracted from article links for stronger signal.
         """
         titles = [t for t in (titles or []) if t][:8]
-        category_lines = "\n".join(f"- {key}: {CATEGORY_NAMES[key]}" for key in CATEGORY_ORDER)
+        categories = categories or [
+            {"category": key, "label": CATEGORY_NAMES[key]} for key in CATEGORY_ORDER
+        ]
+        category_lines = "\n".join(
+            f"- {item['category']}: {item.get('label') or item['category']}"
+            for item in categories
+        )
+        valid_categories = {item["category"] for item in categories}
         title_lines = "\n".join(f"{idx + 1}. {title}" for idx, title in enumerate(titles)) or "无"
         domain_lines = ", ".join(domains[:10]) if domains else "无"
         fallback_label = local_short_source_name(source)
@@ -511,10 +598,10 @@ class AIService:
                     f"最近文章标题：\n{title_lines}\n\n"
                     f"可选分类：\n{category_lines}\n\n"
                     "输出 JSON 格式：\n"
-                    "{\"category\":\"News|Tech|Biz|Info\",\"label\":\"缩写后的来源名\",\"confidence\":0.0,\"reason\":\"简短原因\"}\n\n"
+                    "{\"category\":\"可选分类键\",\"label\":\"来源显示名\",\"confidence\":0.0,\"reason\":\"简短原因\"}\n\n"
                     "规则：\n"
-                    "1. category 必须是 News、Tech、Biz、Info 之一。\n"
-                    "2. 域名是判断分类的最强信号。例如 zaobao.com → News，github.com → Tech，gelonghui.com → Biz。\n"
+                    f"1. category 必须是以下键之一：{', '.join(sorted(valid_categories))}。\n"
+                    "2. 只根据稳定来源身份、域名和近期标题判断类别。\n"
                     "3. label 是缩写，不是改写；如果原名已经简洁，保持原名。\n"
                     "4. label 按 ASCII=1、中文和其他非 ASCII=2 计算，长度必须不超过 20。\n"
                     "5. 示例：竹新社 - Telegram Channel -> 竹新社。\n"
@@ -533,13 +620,17 @@ class AIService:
             raise ValueError("AI source classification did not return JSON")
         data = json.loads(match.group(0))
         category = data.get("category")
-        if category not in CATEGORY_ORDER:
-            category = "Info"
+        if category not in valid_categories:
+            category = ""
         label = clamp_weighted(data.get("label") or fallback_label, 20)
+        try:
+            confidence = float(data.get("confidence"))
+        except (TypeError, ValueError):
+            confidence = 0.0
         return {
             "category": category,
             "label": label or fallback_label,
-            "confidence": data.get("confidence"),
+            "confidence": max(0.0, min(1.0, confidence)),
             "reason": data.get("reason") or "",
         }
 
@@ -901,11 +992,13 @@ class AIService:
                     lines.append(f"{idx}. **{title}：** {text} [🔗]({e.get('url', '')})")
             return "\n".join(lines) if lines else "今日无高质量新闻可总结。"
 
-        def summary_looks_truncated(text: str) -> bool:
+        def summary_looks_truncated(text: str, expected_items: int = 0) -> bool:
             stripped = (text or "").strip()
             if not stripped:
                 return True
             linked_items = len(re.findall(r"^\s*\d+\.\s+.*?\[🔗\]\(", stripped, flags=re.M))
+            if expected_items and linked_items < min(expected_items, min_items):
+                return True
             if linked_items >= min_items and stripped.count("**") % 2 == 0:
                 return False
             if "…" in stripped or "..." in stripped:
@@ -1032,6 +1125,8 @@ class AIService:
                 "articles_after_dedup": len(articles),
                 "articles_after_source_cap": 0,
                 "articles_selected_for_ai": 0,
+                "articles_selected_for_summary": 0,
+                "digest_item_count": 0,
                 "total_batches": 0,
                 "articles_with_summary": 0,
                 "articles_without_summary": 0,
@@ -1131,7 +1226,7 @@ class AIService:
                 final_prompt,
                 max_tokens=self._provider_output_cap(4200, "daily_final"),
             )
-            if summary_looks_truncated(final_summary):
+            if summary_looks_truncated(final_summary, len(selected_for_final)):
                 continuation_prompt = final_prompt + [
                     {"role": "assistant", "content": final_summary},
                     {"role": "user", "content": "你的输出被截断了。请只从最后一条未完成的位置继续输出，保持相同 Markdown 格式，不要重复已经完成的条目。"},
@@ -1154,7 +1249,7 @@ class AIService:
         if "[🔗](" not in final_summary:
             final_summary = fallback_daily_summary(selected_for_final)
             fallback_reason = fallback_reason or "AI output missing links"
-        elif summary_looks_truncated(final_summary):
+        elif summary_looks_truncated(final_summary, len(selected_for_final)):
             final_summary = fallback_daily_summary(selected_for_final)
             fallback_reason = fallback_reason or "AI output looked truncated"
 
@@ -1165,6 +1260,10 @@ class AIService:
                 "articles_after_dedup": len(articles),
                 "articles_after_source_cap": articles_after_source_cap,
                 "articles_selected_for_ai": articles_selected_for_ai,
+                "articles_selected_for_summary": len(selected_for_final),
+                "digest_item_count": len(re.findall(
+                    r"^\s*\d+\.\s+.*?\[🔗\]\(", final_summary, flags=re.M
+                )),
                 "total_batches": 2 if selection_ai_used else 1,
                 "articles_with_summary": total_articles_with_summary,
                 "articles_without_summary": total_articles_without_summary,

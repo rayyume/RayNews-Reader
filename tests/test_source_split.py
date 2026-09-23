@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import fetcher
 
 
-def test_process_message_keeps_feed_source_separate_from_origin():
+def test_process_message_keeps_feed_source_separate_from_publisher_group():
     original_fetch_telegraph = fetcher.fetch_telegraph
     try:
         fetcher.fetch_telegraph = lambda _url: {
@@ -17,6 +17,7 @@ def test_process_message_keeps_feed_source_separate_from_origin():
         }
         msg = {
             "id": 1,
+            "feed_source": "@techfeed",
             "datetime": "2026-06-05T00:00:00+00:00",
             "text": "Siri in iOS 27",
             "html": (
@@ -31,11 +32,38 @@ def test_process_message_keeps_feed_source_separate_from_origin():
 
         entry = fetcher.process_message(msg, 1001)
 
-        assert entry["source"] == "Tech Feed"
-        assert entry["feed_source"] == "Tech Feed"
+        assert entry["source"] == "MacRumors"
+        assert entry["group_source"] == "MacRumors"
+        assert entry["feed_source"] == "@techfeed"
         assert entry["origin_source"] == "MacRumors"
     finally:
         fetcher.fetch_telegraph = original_fetch_telegraph
+
+
+def test_raysrss_example_groups_by_publisher_domain():
+    content = (
+        '<article>Markets move</article><br>via '
+        '<a href="https://www.scmp.com/business/article/123">South China Morning Post</a>'
+    )
+    group, domain = fetcher.detect_group_source(content, "https://telegra.ph/story", "@raysrss")
+    assert (group, domain) == ("南华早报", "scmp.com")
+
+
+def test_unknown_publishers_group_by_registrable_domain_without_network():
+    group, domain = fetcher.detect_group_source(
+        '<br>via <a href="https://edition.example.co.uk/story">Publisher</a>',
+        "",
+        "@raysrss",
+    )
+    assert (group, domain) == ("example.co.uk", "example.co.uk")
+
+
+def test_wechat_via_uses_account_name_instead_of_qq_platform():
+    group, domain = fetcher.detect_group_source(
+        '<br>via <a href="https://mp.weixin.qq.com/s/abc">知识分子</a>',
+        "https://mp.weixin.qq.com/s/abc", "@raysrss",
+    )
+    assert (group, domain) == ("知识分子", "")
 
 
 if __name__ == "__main__":

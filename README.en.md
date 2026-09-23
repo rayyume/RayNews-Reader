@@ -33,10 +33,12 @@ The responsive PWA supports system, light, and dark themes.
 
 - Incremental refresh from a public Telegram channel every 15 minutes, plus manual refresh
 - Full-article extraction for Telegraph, WeChat Official Accounts, and regular web pages
-- Article filtering by source and four fixed categories
+- Article filtering by publisher and configurable categories; the Telegram/RSS intake feed is stored separately from the publisher
 - Search across article titles, sources, and summaries
 - Account-based favorites synchronized across devices
 - Admin tools for source detection, categorization, merging, and article deletion; the **Resource Usage** page shows live resource and storage details
+- Publishers are grouped by publication domain: built-in mappings can be overridden in the admin UI, and unknown publishers use their registrable domain; existing articles are backfilled automatically in resumable batches after an upgrade
+- Source categories are independent of publisher identity. AI only assists with category suggestions; high-confidence results are applied automatically and lower-confidence suggestions await admin review
 - Deletion tombstones prevent removed articles from returning after a later refresh
 
 ### AI
@@ -73,6 +75,10 @@ AI results are stored in the database to avoid duplicate calls. Administrators s
 - Administrators manage user roles, global sources, and global article deletion
 - Resend can deliver invitation codes, registration notices, test messages, scheduled daily digests, and historical-purge result emails
 - The daily digest is generated server-side exactly once per day at 21:00 Beijing time using the admin-configured server API; it cannot be triggered manually.
+  Each run covers news ingested from the previous 21:00 through the current 21:00; later arrivals enter the next digest.
+  Article summaries yield event signals, which are grouped into concrete events and ranked by impact and independent publisher coverage.
+  Up to 60 events appear under the administrator's source categories. Administrators can inspect scores and selection reasons at
+  `GET /admin/daily-digest/events?date=YYYY-MM-DD`.
   Every user gets an in-app copy by default (avatar menu -> My Notifications); the email copy is opted into separately under Settings -> Notifications
 - After 3 consecutive system-AI call failures (counted across auto summary/translation/title/source classification and the
   daily digest), every admin gets one email + in-app alert naming the affected jobs and the reason; recovery sends one more.
