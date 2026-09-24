@@ -109,6 +109,19 @@ a:hover{text-decoration:underline}
 @keyframes summaryPulse{0%,100%{opacity:1}50%{opacity:0.55}}
 @keyframes refreshSweep{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
 
+.update-banner{position:fixed;top:calc(56px + var(--topcat-h) + env(safe-area-inset-top,0px) + 10px);left:50%;z-index:160;width:min(920px,calc(100% - 32px));display:none;align-items:center;gap:12px;padding:12px 14px;transform:translateX(-50%);border:1px solid var(--border-hover);border-left:3px solid var(--accent);border-radius:12px;background:var(--bg-card);box-shadow:0 12px 36px rgba(0,0,0,.22)}
+.update-banner.open{display:flex}
+.update-banner-icon{display:grid;place-items:center;flex:none;width:34px;height:34px;border-radius:9px;background:var(--accent-dim);color:var(--accent);font-size:19px;font-weight:700}
+.update-banner-copy{flex:1;min-width:0}
+.update-banner-copy strong{display:block;font-size:13px;line-height:1.3}
+.update-banner-copy span{display:block;margin-top:2px;color:var(--text-2);font-size:11px;line-height:1.4}
+.update-banner-actions{display:flex;align-items:center;gap:8px;flex:none}
+.update-banner-actions button{min-height:34px;padding:6px 12px;border-radius:8px;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+.update-later{border:1px solid transparent;background:transparent;color:var(--text-2)}
+.update-now{border:1px solid var(--accent);background:var(--accent);color:#fff}
+.update-banner-actions button:disabled{opacity:.6;cursor:wait}
+@media(max-width:520px){.update-banner{align-items:flex-start;flex-wrap:wrap;gap:8px;padding:11px 12px}.update-banner-copy{flex-basis:calc(100% - 50px)}.update-banner-actions{width:100%;justify-content:flex-end}}
+
 /* ═══ Filters ═════════════════════════════════════ */
 .filters{display:flex;gap:6px;padding:14px 0;overflow-x:auto;scrollbar-width:none}
 .filters::-webkit-scrollbar{display:none}
@@ -1090,6 +1103,18 @@ body.body-scroll-lock{overflow:hidden!important}
 
 <button class="scroll-top-btn" id="scrollTopBtn" onclick="scrollToTopAndCheckLatest()" title="回到顶部，检查新文章">↑</button>
 
+<div class="update-banner" id="updateBanner" role="status" aria-live="polite">
+  <span class="update-banner-icon" aria-hidden="true">↻</span>
+  <div class="update-banner-copy">
+    <strong>发现新版本</strong>
+    <span>更新页面缓存，即可使用最新版本。</span>
+  </div>
+  <div class="update-banner-actions">
+    <button class="update-later" type="button" onclick="dismissUpdateBanner()">稍后</button>
+    <button class="update-now" id="updateNowButton" type="button" onclick="applyAppUpdate()">更新并刷新</button>
+  </div>
+</div>
+
 <script>
 const PAGE_SIZE = 30;
 const SEARCH_REQUEST_TIMEOUT_MS = 8000;
@@ -2005,17 +2030,26 @@ async function fetchSourceMetadata(networkTimeoutMs, externalSignal = null) {
     else externalSignal.addEventListener('abort', abortFromExternal, { once: true });
   }
   const timeout = setTimeout(() => controller.abort(), networkTimeoutMs);
+  const fetchPublicSources = async () => {
+    const resp = await fetch('/api/sources', { signal: controller.signal, cache: 'no-store' });
+    if (!resp.ok || isSwFallbackResponse(resp)) {
+      throw new Error('公开来源信息暂不可用');
+    }
+    const data = await resp.json();
+    if (!data || !Array.isArray(data.sources) || !Array.isArray(data.categories)) {
+      throw new Error('公开来源信息格式错误');
+    }
+    return data;
+  };
   try {
     if (!isRestrictedUser()) {
       const data = await apiFetch('/sources', { signal: controller.signal });
       if (data && data.error === 'auth_expired') {
-        const resp = await fetch('/api/sources', { signal: controller.signal });
-        return await resp.json();
+        return await fetchPublicSources();
       }
       return data;
     }
-    const resp = await fetch('/api/sources', { signal: controller.signal });
-    return await resp.json();
+    return await fetchPublicSources();
   } finally {
     clearTimeout(timeout);
     if (externalSignal) externalSignal.removeEventListener('abort', abortFromExternal);
@@ -9724,6 +9758,99 @@ window.addEventListener('focus', onReturnToForeground);
 })();
 
 </script>
-<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js',{scope:'/'})}</script>
+<script>
+let appUpdateRegistration = null;
+let appUpdateRequested = false;
+let lastAppUpdateCheck = 0;
+let appControllerSeen = 'serviceWorker' in navigator && !!navigator.serviceWorker.controller;
+
+function showUpdateBanner() {
+  if (!appUpdateRequested) {
+    document.getElementById('updateBanner').classList.add('open');
+  }
+}
+
+function dismissUpdateBanner() {
+  document.getElementById('updateBanner').classList.remove('open');
+}
+
+async function clearAppNewsCacheForUpdate() {
+  let db;
+  try {
+    db = await openNewsCache();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(NEWS_CACHE_STORE, 'readwrite');
+      tx.objectStore(NEWS_CACHE_STORE).clear();
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (error) {
+    console.warn('Could not clear news cache before updating', error);
+  } finally {
+    if (db) db.close();
+  }
+}
+
+async function applyAppUpdate() {
+  if (appUpdateRequested) return;
+  appUpdateRequested = true;
+  const button = document.getElementById('updateNowButton');
+  button.disabled = true;
+  button.textContent = '更新中…';
+  await Promise.race([
+    clearAppNewsCacheForUpdate(),
+    new Promise(resolve => setTimeout(resolve, 2000)),
+  ]);
+  const waiting = appUpdateRegistration && appUpdateRegistration.waiting;
+  if (waiting) {
+    waiting.postMessage({ type: 'SKIP_WAITING' });
+    // A browser may miss controllerchange while resuming from the background.
+    setTimeout(() => location.reload(), 8000);
+  } else {
+    location.reload();
+  }
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (appUpdateRequested) location.reload();
+    else if (appControllerSeen) showUpdateBanner();
+    appControllerSeen = true;
+  });
+  navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' }).then(registration => {
+    appUpdateRegistration = registration;
+    const offerWaitingUpdate = () => {
+      if (registration.waiting && navigator.serviceWorker.controller) showUpdateBanner();
+    };
+    let observedInstalling = null;
+    const watchInstallingWorker = () => {
+      const installing = registration.installing;
+      if (!installing || installing === observedInstalling) return;
+      observedInstalling = installing;
+      const checkInstalled = () => {
+        if (installing.state === 'installed') offerWaitingUpdate();
+      };
+      installing.addEventListener('statechange', checkInstalled);
+      checkInstalled();
+    };
+    registration.addEventListener('updatefound', watchInstallingWorker);
+    offerWaitingUpdate();
+    watchInstallingWorker();
+    const checkForUpdate = () => {
+      offerWaitingUpdate();
+      watchInstallingWorker();
+      if (document.hidden || Date.now() - lastAppUpdateCheck < 5 * 60 * 1000) return;
+      lastAppUpdateCheck = Date.now();
+      registration.update().then(() => {
+        watchInstallingWorker();
+        offerWaitingUpdate();
+      }).catch(() => {});
+    };
+    window.addEventListener('focus', checkForUpdate);
+    document.addEventListener('visibilitychange', checkForUpdate);
+    setInterval(checkForUpdate, 5 * 60 * 1000);
+  }).catch(() => {});
+}
+</script>
 </body>
 </html>

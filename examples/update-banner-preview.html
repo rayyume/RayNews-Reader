@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RayNews · 新版本提示预览</title>
+  <style>
+    :root{--bg:#0a0a0c;--card:#111114;--surface:#1a1a1f;--text:#e8e8ed;--muted:#8b8b9e;--accent:#6e8efb;--accent-dim:rgba(110,142,251,.12);--border:rgba(255,255,255,.12)}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Noto Sans SC","Microsoft YaHei",sans-serif}
+    header{height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 max(20px,calc((100vw - 920px)/2));border-bottom:1px solid var(--border);background:rgba(10,10,12,.92)}
+    .brand{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:800}.logo{width:28px;height:28px;display:grid;place-items:center;border-radius:8px;background:var(--accent);color:white;font-size:15px}.header-right{display:flex;align-items:center;gap:14px;color:var(--muted);font-size:12px}.dot{width:6px;height:6px;display:inline-block;margin-right:5px;border-radius:50%;background:#22c55e}
+    nav{height:44px;display:flex;align-items:center;gap:8px;max-width:960px;margin:auto;padding:0 20px;border-bottom:1px solid var(--border);overflow:auto;white-space:nowrap}nav span{padding:5px 13px;border-radius:100px;background:var(--surface);color:var(--muted);font-size:12px;font-weight:700}nav .selected{background:var(--accent-dim);color:var(--accent);border:1px solid var(--accent)}
+    main{max-width:960px;margin:92px auto 0;padding:0 20px}.preview-note{color:var(--muted);font-size:12px;margin-bottom:18px}.item{padding:19px 20px;border:1px solid var(--border);border-bottom:0;background:var(--card)}.item:first-of-type{border-radius:12px 12px 0 0}.item:last-of-type{border-bottom:1px solid var(--border);border-radius:0 0 12px 12px}.item h2{margin:0 0 12px;font-size:15px}.item p{margin:0;color:var(--muted);font-size:12px}
+    .update-banner{position:fixed;top:110px;left:50%;z-index:10;width:min(920px,calc(100% - 32px));display:flex;align-items:center;gap:12px;padding:12px 14px;transform:translateX(-50%);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:12px;background:var(--card);box-shadow:0 12px 36px rgba(0,0,0,.22)}
+    .update-banner[hidden]{display:none}.update-banner-icon{display:grid;place-items:center;flex:none;width:34px;height:34px;border-radius:9px;background:var(--accent-dim);color:var(--accent);font-size:19px;font-weight:700}.update-banner-copy{flex:1;min-width:0}.update-banner-copy strong{display:block;font-size:13px;line-height:1.3}.update-banner-copy span{display:block;margin-top:2px;color:var(--muted);font-size:11px;line-height:1.4}.update-banner-actions{display:flex;align-items:center;gap:8px;flex:none}.update-banner-actions button,.demo-button{min-height:34px;padding:6px 12px;border-radius:8px;font:inherit;font-size:12px;font-weight:700;cursor:pointer}.update-later{border:1px solid transparent;background:transparent;color:var(--muted)}.update-now{border:1px solid var(--accent);background:var(--accent);color:#fff}.demo-button{margin-top:20px;border:1px solid var(--border);background:var(--surface);color:var(--text)}
+    @media(max-width:520px){.update-banner{align-items:flex-start;flex-wrap:wrap;gap:8px;padding:11px 12px}.update-banner-copy{flex-basis:calc(100% - 50px)}.update-banner-actions{width:100%;justify-content:flex-end}.header-right .live{display:none}}
+  </style>
+</head>
+<body>
+  <header><div class="brand"><span class="logo">R</span>RayNews</div><div class="header-right"><span class="live"><i class="dot"></i>实时更新</span><span>登录</span></div></header>
+  <nav><span class="selected">全部</span><span>政经新闻</span><span>科技动态</span><span>商业聚焦</span><span>其他信息</span></nav>
+  <div class="update-banner" id="banner" role="status" aria-live="polite">
+    <span class="update-banner-icon" aria-hidden="true">↻</span>
+    <div class="update-banner-copy"><strong>发现新版本</strong><span>更新页面缓存，即可使用最新版本。</span></div>
+    <div class="update-banner-actions"><button class="update-later" type="button" onclick="banner.hidden=true">稍后</button><button class="update-now" type="button" onclick="banner.hidden=true;document.getElementById('note').textContent='预览效果：正式页面会清理新闻缓存并重新加载。'">更新并刷新</button></div>
+  </div>
+  <main>
+    <p class="preview-note" id="note">这是独立预览页。调整浏览器宽度可查看手机布局。</p>
+    <article class="item"><h2>全球科技与市场动态：今日重点报道</h2><p>科技动态 · 示例来源 · 10 分钟前</p></article>
+    <article class="item"><h2>多地发布最新产业观察与研究</h2><p>商业聚焦 · 示例来源 · 25 分钟前</p></article>
+    <article class="item"><h2>本周新闻摘要与深度分析</h2><p>政经新闻 · 示例来源 · 1 小时前</p></article>
+    <button class="demo-button" type="button" onclick="banner.hidden=false;document.getElementById('note').textContent='这是独立预览页。调整浏览器宽度可查看手机布局。'">再次显示提示条</button>
+  </main>
+</body>
+</html>

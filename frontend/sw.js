@@ -69,8 +69,14 @@ self.addEventListener('install', event => {
       return Promise.allSettled(
         PRECACHE.map(url => cache.add(url).catch(() => {}))
       );
-    }).then(() => self.skipWaiting())
+    })
   );
+});
+
+self.addEventListener('message', event => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    event.waitUntil(self.skipWaiting());
+  }
 });
 
 self.addEventListener('activate', event => {
@@ -107,6 +113,13 @@ self.addEventListener('fetch', event => {
 
   // Auth/session mutations must always hit the network.
   if (url.pathname.startsWith('/auth/')) {
+    return;
+  }
+
+  // Source categories are edited by administrators at runtime. Let the page
+  // handle its own short-lived IndexedDB fallback instead of serving an old
+  // API response as if it were fresh after a network timeout.
+  if (url.pathname === '/api/sources') {
     return;
   }
 
