@@ -423,7 +423,7 @@ def source_between(start, end):
     return HTML[HTML.index(start):HTML.index(end, HTML.index(start))]
 
 
-def run_node(source, body):
+def run_node(source, body, setup=""):
     script = f"""
 const assert = require('assert');
 const vm = require('vm');
@@ -436,6 +436,7 @@ context.scheduleNetworkRecoveryRetry = () => {{}};
 context.listLoadDegraded = false;
 context.activeRefreshDiscoverySink = null;
 vm.createContext(context);
+{setup}
 vm.runInContext({json.dumps(source)}, context);
 (async () => {{
 {body}
@@ -2780,6 +2781,172 @@ assert.deepEqual(events, [
 ]);
 """,
     )
+
+
+def test_guest_source_metadata_rejects_stale_service_worker_fallback():
+    source = source_between("function persistSourceMetadata(", "// Guards against multiple bootstrap paths")
+    run_node(
+        source,
+        """
+context.isRestrictedUser = () => true;
+context.isSwFallbackResponse = resp => !!resp.headers.get('X-SW-Fallback');
+context.setTimeout = () => 1;
+context.clearTimeout = () => {};
+let requestOptions;
+context.fetch = async (url, options) => {
+  assert.equal(url, '/api/sources');
+  requestOptions = options;
+  return {
+    ok: true,
+    headers: { get: name => name === 'X-SW-Fallback' ? '1' : null },
+    json: async () => { throw new Error('stale response must not be parsed'); },
+  };
+};
+await assert.rejects(context.fetchSourceMetadata(1000), /暂不可用/);
+assert.equal(requestOptions.cache, 'no-store');
+context.fetch = async () => ({
+  ok: true,
+  headers: { get: () => null },
+  json: async () => ({ categories: ['Tech'], sources: [{ source: 'Feed', category: 'Tech' }] }),
+});
+const data = await context.fetchSourceMetadata(1000);
+assert.equal(data.sources[0].category, 'Tech');
+""",
+    )
+
+
+def test_service_worker_does_not_cache_public_source_metadata():
+    sw = (ROOT / "frontend" / "sw.js").read_text(encoding="utf-8")
+    assert "if (url.pathname === '/api/sources') {\n    return;\n  }" in sw
+    assert sw.index("if (url.pathname === '/api/sources')") < sw.index("if (url.pathname.startsWith('/api/'))")
+
+
+def test_app_update_banner_appears_only_after_new_worker_waits_and_refreshes_on_click():
+    source = source_between("let appUpdateRegistration = null;", "</script>")
+    run_node(
+        source,
+        """
+await new Promise(resolve => setImmediate(resolve));
+handlers.controllerchange(); // First installation is silent.
+assert.equal(open, false);
+context.navigator.serviceWorker.controller = {};
+registration.installing = {
+  state: 'installing',
+  addEventListener: (name, callback) => { handlers[name] = callback; },
+};
+handlers.updatefound();
+registration.waiting = { postMessage: value => { message = value; } };
+registration.installing.state = 'installed';
+handlers.statechange();
+assert.equal(open, true);
+await context.applyAppUpdate();
+assert.equal(clears, 1);
+assert.equal(message.type, 'SKIP_WAITING');
+assert.equal(button.disabled, true);
+handlers.controllerchange();
+assert.equal(reloads, 1);
+""",
+        setup="""
+const handlers = {};
+let open = false;
+let clears = 0;
+let reloads = 0;
+let message = null;
+const banner = { classList: { add: () => { open = true; }, remove: () => { open = false; } } };
+const button = { disabled: false, textContent: '', focus: () => {} };
+const registration = {
+  waiting: null,
+  installing: null,
+  update: async () => {},
+  addEventListener: (name, callback) => { handlers[name] = callback; },
+};
+context.document = {
+  hidden: false,
+  getElementById: id => id === 'updateBanner' ? banner : button,
+  addEventListener: () => {},
+};
+context.window = { addEventListener: () => {} };
+context.location = { reload: () => { reloads++; } };
+context.navigator = {
+  serviceWorker: {
+    controller: null,
+    addEventListener: (name, callback) => { handlers[name] = callback; },
+    register: async () => registration,
+  },
+};
+context.setInterval = () => 1;
+context.setTimeout = () => 1;
+context.NEWS_CACHE_STORE = 'entries';
+context.openNewsCache = async () => ({
+  transaction: () => {
+    const tx = { objectStore: () => ({ clear: () => { clears++; } }) };
+    queueMicrotask(() => tx.oncomplete());
+    return tx;
+  },
+  close: () => {},
+});
+""",
+    )
+
+
+def test_app_update_detects_worker_already_installing_and_later_waiting():
+    source = source_between("let appUpdateRegistration = null;", "</script>")
+    run_node(
+        source,
+        """
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(typeof statechange, 'function');
+registration.installing.state = 'installed';
+registration.waiting = { postMessage: () => {} };
+statechange();
+assert.equal(open, true);
+context.dismissUpdateBanner();
+assert.equal(open, false);
+registration.waiting = null;
+registration.installing = null;
+registration.waiting = { postMessage: () => {} };
+intervalCheck();
+assert.equal(open, true);
+""",
+        setup="""
+let open = false;
+let statechange = null;
+let intervalCheck = null;
+const registration = {
+  waiting: null,
+  installing: {
+    state: 'installing',
+    addEventListener: (name, callback) => { if (name === 'statechange') statechange = callback; },
+  },
+  addEventListener: () => {},
+  update: async () => {},
+};
+context.navigator = {
+  serviceWorker: {
+    controller: {},
+    addEventListener: () => {},
+    register: async () => registration,
+  },
+};
+context.document = {
+  hidden: false,
+  getElementById: () => ({ classList: {
+    add: () => { open = true; },
+    remove: () => { open = false; },
+  } }),
+  addEventListener: () => {},
+};
+context.window = { addEventListener: () => {} };
+context.setInterval = callback => { intervalCheck = callback; };
+""",
+    )
+
+
+def test_new_service_worker_waits_for_user_to_accept_update():
+    sw = (ROOT / "frontend" / "sw.js").read_text(encoding="utf-8")
+    install = sw[sw.index("self.addEventListener('install'"):sw.index("self.addEventListener('activate'")]
+    assert ".then(() => self.skipWaiting())" not in install
+    assert "event.data.type === 'SKIP_WAITING'" in install
 
 
 def test_cached_source_metadata_network_failure_uses_quiet_nonblocking_hint():
