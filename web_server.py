@@ -4820,7 +4820,7 @@ def _save_digest_signals_batch(items: list[tuple[int, dict]]) -> bool:
 
 
 def _fetch_unsummarized_articles(limit: int = AUTO_SUMMARY_BATCH_LIMIT) -> list[dict]:
-    """Fetch new arrivals and retry previously failed summaries after recovery."""
+    """Fetch recent arrivals, retrying failures only within the same 24-hour window."""
     import sqlite3
     if not os.path.exists(NEWS_DB):
         return []
@@ -4835,15 +4835,12 @@ def _fetch_unsummarized_articles(limit: int = AUTO_SUMMARY_BATCH_LIMIT) -> list[
                 "a.origin_source, a.summary, a.body_html "
                 "FROM articles a "
                 "LEFT JOIN ai_results r ON r.article_id = a.id "
-                # Failed articles must remain eligible after the 24-hour new
-                # arrival window; otherwise repeated 6-hour backoffs strand them.
-                "WHERE (a.ingested_at >= ? OR r.summary_error_at IS NOT NULL) "
+                "WHERE a.ingested_at >= ? "
                 "AND (r.summary IS NULL OR r.summary = '') "
                 "AND (r.summary_error_at IS NULL OR datetime(r.summary_error_at, '+6 hours') < datetime('now')) "
                 "AND (a.body_html != '' OR a.summary != '') "
-                "ORDER BY CASE WHEN a.ingested_at >= ? THEN 0 ELSE 1 END, "
-                "a.ingested_at ASC LIMIT ?",
-                (recent_start, recent_start, limit),
+                "ORDER BY a.ingested_at ASC LIMIT ?",
+                (recent_start, limit),
             ).fetchall()
         return [dict(r) for r in rows]
     except Exception:
