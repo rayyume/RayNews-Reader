@@ -1219,13 +1219,15 @@ def _generate_article_summary(article_id: int, config: dict,
     else:
         summary, signals = svc.summarize(article_text=text, title=title), None
     if save_shared_cache:
-        _save_ai_result(
+        saved = _save_ai_result(
             article_id,
             summary=summary,
             summary_provider=config.get("provider") or config.get("provider_type"),
             summary_model=config.get("model"),
             summary_by_user_id=config.get("user_id"),
         )
+        if not saved:
+            raise RuntimeError("Could not save article AI summary")
         if signals:
             _save_digest_signals(article_id, normalize_signals(article, signals))
     return summary, False
@@ -4818,7 +4820,7 @@ def _save_digest_signals_batch(items: list[tuple[int, dict]]) -> bool:
 
 
 def _fetch_unsummarized_articles(limit: int = AUTO_SUMMARY_BATCH_LIMIT) -> list[dict]:
-    """Fetch recent arrivals without cached AI summaries, including late news."""
+    """Fetch recent arrivals, retrying failures only within the same 24-hour window."""
     import sqlite3
     if not os.path.exists(NEWS_DB):
         return []

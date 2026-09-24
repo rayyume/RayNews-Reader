@@ -227,6 +227,7 @@ AI Endpoint、API Key、模型和供应商由用户在网页的“设置 → AI�
 |------|--------|------|
 | `AI_REQUEST_TIMEOUT_SECONDS` | `300` | AI 请求超时，单位秒 |
 | `AI_SOURCE_CLASSIFY_MAX_TOKENS` | `2048` | 订阅源分类的最大输出 token；推理模型返回空内容时可适当增大 |
+| `AI_SUMMARY_MAX_TOKENS` | `4096` | 单篇文章自动摘要与事件信号的最大输出 token |
 | `AI_TITLE_MAX_TOKENS` | `4096` | 标题翻译和精简的最大输出 token |
 | `AUTO_SUMMARY_BATCH_LIMIT` | `20` | 每轮自动生成文章摘要的文章数 |
 | `AUTO_SUMMARY_INTERVAL_SECONDS` | `30` | 自动摘要轮询间隔，单位秒 |

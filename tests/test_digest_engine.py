@@ -297,6 +297,52 @@ def test_article_summary_produces_signals_in_one_ai_call(monkeypatch):
     assert len(calls) == 1
 
 
+def test_article_summary_falls_back_when_model_ignores_json(monkeypatch):
+    service = AIService("key", "https://example.com", "test")
+    calls = []
+
+    def fake_chat(messages, **kwargs):
+        calls.append(kwargs["max_tokens"] if "max_tokens" in kwargs else None)
+        return "普通文本" if len(calls) == 1 else "可用的文章摘要"
+
+    monkeypatch.setattr(service, "chat", fake_chat)
+    summary, signals = service.summarize_with_signals("文章正文", "标题")
+    assert (summary, signals) == ("可用的文章摘要", {})
+    assert len(calls) == 2
+    assert calls[0] >= 2000
+    assert calls[1] is None
+
+
+def test_failed_article_summary_retries_only_within_recent_window(tmp_path, monkeypatch):
+    db_path = tmp_path / "news.db"
+    monkeypatch.setattr(fetcher, "DB_FILE", db_path)
+    monkeypatch.setattr(web_server, "NEWS_DB", str(db_path))
+    now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+    conn = fetcher.init_db()
+    for article_id, ingested_at in (
+        (1, now - 2 * 86400),  # Old failure: never backfill it.
+        (2, now - 2 * 86400),  # Old article without a failure is also excluded.
+        (3, now - 7200),      # Recent, not yet summarized.
+        (4, now - 3600),      # Recent failure past the retry backoff.
+        (5, now - 1800),      # Recent failure still in backoff.
+    ):
+        conn.execute(
+            "INSERT INTO articles (id, title, source, group_source, ingested_at, body_html) "
+            "VALUES (?, '标题', '来源', '来源', ?, '<p>正文</p>')",
+            (article_id, ingested_at),
+        )
+    conn.commit()
+    conn.close()
+    assert web_server._init_ai_results_table()
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO ai_results (article_id, summary_error, summary_error_at) "
+            "VALUES (?, 'temporary failure', datetime('now', ?))",
+            ((1, '-7 hours'), (4, '-7 hours'), (5, '-1 hour')),
+        )
+    assert [row["id"] for row in web_server._fetch_unsummarized_articles()] == [3, 4]
+
+
 def test_empty_batch_signal_response_is_an_ai_failure(monkeypatch):
     service = AIService("key", "https://example.com", "test")
     monkeypatch.setattr(service, "chat", lambda *_args, **_kwargs: '{"items":[]}')
