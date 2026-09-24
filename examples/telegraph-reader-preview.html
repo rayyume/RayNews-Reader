@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>RayNews 阅读排版示例 · AI 自治恶意软件</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0a0c;
+      --bg-card: #111114;
+      --bg-surface: #1a1a1f;
+      --text: #e8e8ed;
+      --text-2: #8b8b9e;
+      --text-3: #55556a;
+      --accent: #6e8efb;
+      --border: rgba(255,255,255,.06);
+      --header-bg: rgba(10,10,12,.82);
+      --font: "SF Pro Display",-apple-system,"Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+    }
+    html[data-theme="light"] {
+      color-scheme: light;
+      --bg: #f5f7fb;
+      --bg-card: #fff;
+      --bg-surface: #eef2f8;
+      --text: #171923;
+      --text-2: #5a6275;
+      --text-3: #8a93a6;
+      --accent: #4769f5;
+      --border: rgba(23,25,35,.09);
+      --header-bg: rgba(245,247,251,.86);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    a { color: var(--accent); text-underline-offset: 3px; }
+    a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    button { font-family: var(--font); cursor: pointer; }
+    .overlay-header {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: var(--header-bg);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+    }
+    .overlay-header-inner {
+      max-width: 720px;
+      min-height: 48px;
+      margin: auto;
+      padding: 0 20px;
+      display: flex;
+      align-items: center;
+    }
+    .back-btn, .share-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 0;
+      background: none;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .back-btn { min-height: 44px; padding: 0 8px 0 0; color: var(--accent); }
+    .share-btn { padding: 4px 12px; border-radius: 6px; color: var(--text-2); }
+    .share-btn:hover { background: var(--bg-card); color: var(--accent); }
+    .share-btn.on { color: #fbbf24; }
+    .share-btn.on svg { fill: #fbbf24; stroke: #fbbf24; }
+    .toolbar-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+    .article-wrap { max-width: 720px; margin: auto; padding: 32px 20px 80px; }
+    .article-wrap h1 {
+      margin: 0 0 12px;
+      font-size: 27px;
+      font-weight: 800;
+      line-height: 1.38;
+      letter-spacing: -.01em;
+      overflow-wrap: anywhere;
+    }
+    .article-meta {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 36px;
+      margin-bottom: 26px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-2);
+      font-size: 13px;
+    }
+    .badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 100px; background: #26a5e41c; color: #26a5e4; font-size: 10px; font-weight: 700; letter-spacing: .04em; white-space: nowrap; }
+    .ai-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+    .article-ai-btn { padding: 3px 10px; border: 1px solid var(--border); border-radius: 100px; background: var(--bg-surface); color: var(--accent); font-size: 11px; font-weight: 700; }
+    .article-ai-btn:hover { border-color: var(--accent); }
+    .ai-summary {
+      display: none;
+      margin-bottom: 16px;
+      padding: 14px 16px;
+      border: 1px solid var(--accent);
+      border-radius: 12px;
+      background: rgba(110,142,251,.08);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    .ai-summary.open { display: block; }
+    .ai-summary-title { margin-bottom: 6px; color: var(--accent); font-size: 11px; font-weight: 700; }
+    .article-body { font-size: 17.5px; line-height: 1.72; overflow-wrap: break-word; }
+    .article-body p { margin: 0 0 13px; }
+    .article-body figure { margin: 22px 0 24px; }
+    .article-body img { display: block; max-width: 100%; height: auto; border-radius: 6px; }
+    .preview-theme { position: fixed; right: 14px; bottom: 14px; z-index: 3; padding: 9px 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-surface); color: var(--text-2); box-shadow: 0 8px 24px rgba(0,0,0,.18); font-size: 12px; }
+    @media (max-width: 640px) {
+      .overlay-header-inner { padding: 0 20px; }
+      .share-btn { padding: 4px 7px; }
+      .article-wrap h1 { font-size: 23px; }
+      .article-meta { gap: 8px; flex-wrap: wrap; }
+      .ai-actions { gap: 5px; }
+      .article-body { font-size: 17px; line-height: 1.72; }
+    }
+  </style>
+</head>
+<body>
+  <header class="overlay-header">
+    <div class="overlay-header-inner">
+      <button class="back-btn" type="button" id="backButton" title="独立预览页">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>返回
+      </button>
+      <div class="toolbar-actions">
+        <button class="share-btn" type="button" id="favoriteButton" aria-pressed="false" title="收藏">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg><span>收藏</span>
+        </button>
+        <button class="share-btn" type="button" id="shareButton" title="分享">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>分享
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="article-wrap">
+    <article>
+      <h1>研究人员发现“AI自治恶意软件”：同时调用四大聊天机器人 自主决定攻击行动</h1>
+      <div class="article-meta">
+        <span class="badge">cnBeta全文版</span>
+        <time datetime="2026-09-24T08:34:20+08:00">26/09/24 08:34</time>
+        <span class="ai-actions">
+          <button class="article-ai-btn" type="button" id="summaryButton" aria-expanded="false" aria-controls="aiSummaryTop">摘要</button>
+          <button class="article-ai-btn" type="button" id="translateButton" title="正式版调用 RayNews 翻译功能">翻译</button>
+        </span>
+      </div>
+      <div class="ai-summary" id="aiSummaryTop">
+        <div class="ai-summary-title">📝 AI 摘要</div>
+        研究人员发现名为 CLOSEDQUORUM 的恶意软件，它会同时调用四个大型语言模型，自主决定后续攻击行动。Cisco Talos 表示，其主要目标是窃取账号密码和加密货币资产；目前尚未确认它是否已用于真实攻击。
+      </div>
+
+      <div class="article-body">
+        <p>网络安全研究人员近日发现一种不同寻常的新型 Windows 恶意软件。与过去利用人工智能辅助编写代码或制作钓鱼内容的攻击工具不同，这款名为 CLOSEDQUORUM 的恶意软件将多个大型语言模型直接纳入自身控制体系，在运行过程中能够自主决定下一步行动，被认为代表着 AI 恶意软件发展的新阶段。</p>
+
+        <figure>
+          <img src="https://static.cnbetacdn.com/article/2026/0923/a5bc7022d4a589a.jpg" alt="文章配图：AI 与网络安全主题" loading="eager">
+        </figure>
+
+        <p>这项发现来自思科旗下安全团队 Cisco Talos。研究人员表示，CLOSEDQUORUM 会同时与 DeepSeek、通义千问（Qwen）、Mistral 以及 Google Gemini 四个大型语言模型进行交互，在受感染设备上执行任务前，先向这些模型发送请求并收集反馈，然后根据结果决定后续行为。</p>
+        <p>这种设计赋予了恶意软件一定程度的冗余能力。即便其中某个 AI 服务无法访问，程序仍然能够继续向其他模型发起请求并维持运行，因此比传统依赖单一控制服务器的恶意软件更具韧性。</p>
+        <p>更引人关注的是，研究人员没有在样本中发现传统意义上的人工远程控制入口。换句话说，一旦程序启动运行，它并不需要持续接收黑客发出的具体指令，而是通过多个大型语言模型的反馈自主规划后续操作。</p>
+        <p>根据分析结果，CLOSEDQUORUM 的主要目标是窃取用户账号密码以及加密货币资产。研究团队同时发现，该恶意软件与可追溯至 2025 年的信用卡欺诈网络活动存在一定关联。不过截至目前，研究人员尚无法确认具体开发者身份，也无法确定该工具是否已经在真实攻击行动中投入使用。</p>
+        <p>这项发现源于 Cisco Talos 一项新研究计划。为了应对越来越多人工智能被纳入攻击工具的趋势，研究人员开发了名为 CAIRN（认知人工制品情报研究网络）的开源框架，用于识别和追踪依赖 AI 服务运行的恶意软件。</p>
+        <p>研究团队认为，人工智能与恶意软件结合后会留下特殊的技术痕迹，就像数字指纹一样。这些痕迹可以帮助安全分析人员识别样本、建立分类体系，并追踪攻击者如何将大型语言模型整合进攻击工具。</p>
+        <p>CAIRN 会分析恶意软件中的元数据以及与 AI 服务相关的技术特征，并为样本生成独特标识。随后系统会将具有相似特征的恶意软件归类，从而帮助研究人员识别新的攻击模式以及潜在发展趋势。</p>
+        <p>安全专家指出，过去一年间出现的大多数 AI 相关恶意软件仍主要把大模型当作辅助工具使用。例如帮助生成代码、撰写钓鱼邮件、自动化攻击流程或者提供远程决策支持。而 CLOSEDQUORUM 与这些案例最大的区别在于，它将大型语言模型直接融入命令与控制机制本身。</p>
+        <p>此前，乌克兰网络安全机构曾披露过名为 LAMEHUG 的恶意软件，该程序通过 Hugging Face 平台访问通义千问模型获取执行命令。但研究人员表示，像 CLOSEDQUORUM 这样同时调用多个模型，并以“集体决策”方式驱动攻击流程的案例仍然十分罕见。</p>
+        <p>尽管目前已知的 AI 恶意软件数量依然有限，但安全界普遍认为，这类工具的发展方向值得高度关注。过去，大模型更多承担提高黑客生产效率的角色；而如今，研究人员已经开始看到人工智能从“辅助工具”逐步转变为攻击基础设施本身的趋势。</p>
+        <p>业内人士认为，随着大型语言模型能力不断提升，未来恶意软件可能拥有更强的自主决策能力、更复杂的环境适应能力以及更灵活的攻击路径选择能力。此次发现虽然仍处于早期阶段，但已经让安全研究人员提前窥见下一代智能化网络攻击可能呈现的形态。</p>
+      </div>
+    </article>
+  </main>
+  <button class="preview-theme" type="button" id="themeButton">预览浅色</button>
+
+  <script>
+    const articleUrl = 'https://telegra.ph/研究人员发现AI自治恶意软件同时调用四大聊天机器人-自主决定攻击行动-09-24';
+    const summaryButton = document.getElementById('summaryButton');
+    const summary = document.getElementById('aiSummaryTop');
+    summaryButton.addEventListener('click', () => {
+      const visible = summary.classList.toggle('open');
+      summaryButton.setAttribute('aria-expanded', String(visible));
+    });
+    const favoriteButton = document.getElementById('favoriteButton');
+    favoriteButton.addEventListener('click', () => {
+      const on = favoriteButton.classList.toggle('on');
+      favoriteButton.setAttribute('aria-pressed', String(on));
+      favoriteButton.title = on ? '取消收藏' : '收藏';
+    });
+    document.getElementById('shareButton').addEventListener('click', async () => {
+      if (navigator.share) {
+        try { await navigator.share({ title: document.title, url: articleUrl }); } catch (_) {}
+      } else {
+        window.open(articleUrl, '_blank', 'noopener,noreferrer');
+      }
+    });
+    document.getElementById('backButton').addEventListener('click', () => history.back());
+    document.getElementById('translateButton').addEventListener('click', () => {
+      window.alert('这是排版示例；正式版的翻译仍使用 RayNews 原有功能。');
+    });
+    const themeButton = document.getElementById('themeButton');
+    themeButton.addEventListener('click', () => {
+      const light = document.documentElement.dataset.theme !== 'light';
+      document.documentElement.dataset.theme = light ? 'light' : 'dark';
+      themeButton.textContent = light ? '预览深色' : '预览浅色';
+    });
+  </script>
+</body>
+</html>

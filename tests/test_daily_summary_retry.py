@@ -460,4 +460,5 @@ def test_panel_shows_a_retry_button_only_in_the_failure_states():
 def test_inline_pinch_zoom_is_suppressed_so_only_fullscreen_zooms():
     html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     assert "['gesturestart', 'gesturechange', 'gestureend']" in html
-    assert "touch-action:manipulation}" in html.split(".article-body img{")[1][:400]
+    image_rule = html.split(".article-body img{", 1)[1].split("}", 1)[0]
+    assert "touch-action:manipulation" in image_rule

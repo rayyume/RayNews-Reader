@@ -200,19 +200,23 @@ a:hover{text-decoration:underline}
 .share-btn{display:flex;align-items:center;gap:6px;background:none;border:none;color:var(--text-2);font-size:13px;font-weight:600;cursor:pointer;font-family:var(--font);padding:4px 12px;border-radius:6px;transition:all 0.15s}
 .share-btn:hover{background:var(--bg-card);color:var(--accent)}
 .article-wrap{width:100%;max-width:720px;min-width:0;margin:0 auto;padding:32px 20px 80px;overflow-x:hidden}
-.article-wrap h1{max-width:100%;font-size:24px;font-weight:800;line-height:1.35;letter-spacing:-0.01em;margin-bottom:12px;overflow-wrap:anywhere;word-break:break-word}
-.article-meta{display:flex;align-items:center;gap:12px;margin-bottom:28px;font-size:13px;color:var(--text-2);padding-bottom:20px;border-bottom:1px solid var(--border)}
-.article-body{width:100%;min-width:0;max-width:100%;overflow-x:hidden;font-size:15.5px;line-height:1.85;overflow-wrap:anywhere;word-break:break-word}
+.article-wrap h1{max-width:100%;font-size:27px;font-weight:800;line-height:1.38;letter-spacing:-0.01em;margin-bottom:12px;overflow-wrap:anywhere;word-break:break-word}
+.article-meta{display:flex;align-items:center;gap:12px;min-height:36px;margin-bottom:26px;font-size:13px;color:var(--text-2);padding-bottom:18px;border-bottom:1px solid var(--border)}
+.article-body{width:100%;min-width:0;max-width:100%;overflow-x:hidden;font-size:17.5px;line-height:1.72;overflow-wrap:anywhere;word-break:break-word}
 .article-body *{min-width:0;max-width:100%;overflow-wrap:anywhere;word-break:break-word}
-.article-body p{margin-bottom:1.2em}
+.article-body p{margin-bottom:13px}
+.article-body p:empty{display:none}
+/* Telegraph images commonly sit alone inside a <p>; give that block one gap
+   instead of stacking the paragraph, image, and figure margins. */
+.article-body p:has(> img:only-child),.article-body p:has(> a:only-child > img:only-child){margin:22px 0 24px}
 /* touch-action:manipulation kills the double-tap-to-zoom on the image itself:
    enlarging happens in the fullscreen lightbox (one tap), never in place. */
-.article-body img{width:auto;height:auto;max-width:100%!important;border-radius:var(--radius);margin:1.2em 0;background:var(--bg-surface);cursor:zoom-in;touch-action:manipulation}
-.article-body figure{margin:1.2em 0}
+.article-body img{width:auto;height:auto;max-width:100%!important;border-radius:6px;margin:0;background:var(--bg-surface);cursor:zoom-in;touch-action:manipulation;display:block}
+.article-body figure{margin:22px 0 24px}
 .article-body figcaption{font-size:12px;color:var(--text-3);margin-top:4px;text-align:center}
-.article-body h2{display:block;font-size:18px;font-weight:700;margin:1.6em 0 0.6em}
-.article-body h3{display:block;font-size:17px;font-weight:700;margin:1.4em 0 0.5em}
-.article-body h4{display:block;font-size:16px;font-weight:700;margin:1.2em 0 0.4em}
+.article-body h2{display:block;font-size:22px;line-height:1.4;font-weight:700;margin:1.5em 0 0.5em}
+.article-body h3{display:block;font-size:20px;line-height:1.4;font-weight:700;margin:1.4em 0 0.5em}
+.article-body h4{display:block;font-size:18px;line-height:1.4;font-weight:700;margin:1.2em 0 0.4em}
 .article-body strong{font-weight:700}
 .article-body blockquote{border-left:3px solid var(--accent);padding:8px 0 8px 16px;margin:1.2em 0;color:var(--text-2);font-style:italic}
 .article-body a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
@@ -299,7 +303,13 @@ a:hover{text-decoration:underline}
   .item-thumb{width:90px;height:64px}
   .item-title{font-size:14px}
   .item-arrow{display:none}
-  .article-wrap h1{font-size:20px}
+  .article-wrap h1{font-size:23px}
+  .article-meta{gap:8px;flex-wrap:wrap}
+  .article-meta #aiActions{gap:5px!important}
+  .article-body{font-size:17px}
+  .article-body h2{font-size:21px}
+  .article-body h3{font-size:19px}
+  .article-body h4{font-size:17.5px}
   .hide-m{display:none}
   .header-right{gap:2px}
   .header-right .refresh-btn{padding:3px 8px;font-size:10px}
