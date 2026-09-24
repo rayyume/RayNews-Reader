@@ -4,7 +4,7 @@
 
 # RayNews 📡 🤖
 
-RayNews is a self-hosted news aggregator that uses a public Telegram channel as its content entry point. It incrementally fetches channel messages, extracts full articles from Telegraph ~~,WeChat no longer support~~, and other pages, and provides AI summaries, translation, daily digests, source management, favorites, and persistent image caching.
+RayNews is a self-hosted news aggregator that uses a public Telegram channel as its content entry point. It incrementally fetches channel messages, extracts full articles from Telegraph and other pages, and attempts WeChat article extraction when the source is accessible. It also provides AI summaries, translation, daily digests, source management, favorites, and persistent image caching.
 
 The responsive PWA supports system, light, and dark themes.
 
@@ -31,15 +31,14 @@ The responsive PWA supports system, light, and dark themes.
 
 ### Reading and organization
 
-- Incremental refresh from a public Telegram channel every 15 minutes, plus manual refresh
-  The first run imports only today's messages in Beijing time; later runs retain messages from previous dates. Recovery after an interruption may import a backlog, with a limit of 200 pages per run. Recovered articles enter digest windows by ingestion time; see the [release notes](release_note_unreleased.md).
-- Full-article extraction for Telegraph, WeChat Official Accounts, and regular web pages
+- Incremental refresh from a public Telegram channel every 15 minutes, plus manual refresh. The first run imports only today's messages in Beijing time; later runs use message IDs to recover cross-day arrivals, up to 200 pages per run. Recovered articles enter digest windows by ingestion time
+- Full-article extraction for Telegraph and other pages; best-effort WeChat extraction when a short message contains an article link, subject to source-site access
 - Article filtering by publisher and configurable categories; the Telegram/RSS intake feed is stored separately from the publisher
 - Search across article titles, sources, and summaries
 - Account-based favorites synchronized across devices
 - Admin tools for source detection, categorization, merging, and article deletion; the **Resource Usage** page shows live resource and storage details
 - Publishers are grouped by publication domain: built-in mappings can be overridden in the admin UI, and unknown publishers use their registrable domain; existing articles are backfilled automatically in resumable batches after an upgrade
-- Source categories are independent of publisher identity. AI only assists with category suggestions; high-confidence results are applied automatically and lower-confidence suggestions await admin review
+- Source categories are independent of publisher identity. Unregistered sources appear as Uncategorized; AI only assists with category suggestions, applying high-confidence results automatically and leaving lower-confidence suggestions for admin review
 - Deletion tombstones prevent removed articles from returning after a later refresh
 
 ### AI
@@ -94,6 +93,8 @@ AI results are stored in the database to avoid duplicate calls. Administrators s
 
 ## Architecture
 
+See the [current architecture notes](docs/architecture.md) for cross-component design and security boundaries.
+
 ```text
 News sources (RSS / Web / API)
           │
@@ -134,8 +135,8 @@ RSS-to-Telegram-Bot ──push──▶ Public Telegram channel
 ### 2. Clone
 
 ```bash
-git clone https://github.com/rayyume/RayNews.git
-cd RayNews
+git clone https://github.com/rayyume/RayNews-Reader.git
+cd RayNews-Reader
 ```
 
 ### 3. Configure
@@ -303,7 +304,7 @@ Source labels and categories are global. Every user sees the source structure ma
 ### Short-term
 
 - [x] **Source Categorization** — Group and filter articles by source and tag
-- [x] **WeChat Official Account Articles** — Identify and extract full-text content from WeChat Official Accounts
+- [x] **Best-effort WeChat Articles** — Attempt full-text extraction when eligible; retain the original message if the source blocks access
 - [x] **Favorites** — Bookmark articles and manage them in a dedicated favorites panel
 - [x] **Automatic English Translation** — Automatically translate English titles and articles into Chinese
 - [x] **Custom AI API** — Use a custom AI API for article summaries and daily digests

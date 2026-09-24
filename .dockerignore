@@ -1,0 +1,14 @@
+.git
+.env
+data/
+tmp-*.db*
+__pycache__/
+.pytest_cache/
+.superpowers/
+docs/
+examples/
+assets/
+tests/
+scripts/
+README*
+release_note*
