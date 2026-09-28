@@ -9304,6 +9304,8 @@ function cacheBustedImageSrc(src, attempt) {
   return src;
 }
 
+const IMAGE_RETRY_DELAYS_MS = [250, 1000, 3000, 8000];
+
 function recoverImageLoad(img) {
   if (!img || !(img instanceof HTMLImageElement)) return;
   const currentSrc = img.dataset.originalSrc || img.getAttribute('src') || img.currentSrc || '';
@@ -9311,7 +9313,7 @@ function recoverImageLoad(img) {
   img.dataset.originalSrc = currentSrc;
   img.dataset.imgFailed = '1';
   const attempts = Number(img.dataset.imgRetry || '0');
-  if (attempts >= 2) {
+  if (attempts >= IMAGE_RETRY_DELAYS_MS.length) {
     img.classList.add('image-load-failed');
     return;
   }
@@ -9319,8 +9321,10 @@ function recoverImageLoad(img) {
   img.dataset.imgRetry = String(nextAttempt);
   img.classList.remove('image-load-failed');
   setTimeout(() => {
+    if (!img.isConnected || document.hidden || img.dataset.imgRetry !== String(nextAttempt)
+        || img.dataset.imgFailed !== '1') return;
     img.src = cacheBustedImageSrc(currentSrc, nextAttempt);
-  }, nextAttempt === 1 ? 250 : 900);
+  }, IMAGE_RETRY_DELAYS_MS[attempts]);
 }
 
 function shouldRetryBrokenImage(img) {
@@ -9341,6 +9345,12 @@ function retryBrokenVisibleImages() {
 
 document.addEventListener('error', event => {
   if (event.target instanceof HTMLImageElement) recoverImageLoad(event.target);
+}, true);
+document.addEventListener('load', event => {
+  if (!(event.target instanceof HTMLImageElement)) return;
+  delete event.target.dataset.imgFailed;
+  delete event.target.dataset.imgRetry;
+  event.target.classList.remove('image-load-failed');
 }, true);
 document.addEventListener('visibilitychange', retryBrokenVisibleImages);
 window.addEventListener('online', retryBrokenVisibleImages);

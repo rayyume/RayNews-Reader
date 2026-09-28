@@ -455,6 +455,65 @@ vm.runInContext({json.dumps(source)}, context);
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+def test_article_image_recovers_in_place_after_several_transient_failures():
+    source = source_between("function cacheBustedImageSrc(", "// Dynamic badge color")
+    run_node(
+        source,
+        """
+const img = new context.HTMLImageElement();
+const original = '/img-cache?url=https%3A%2F%2Fexample.com%2Fphoto.jpg';
+img.src = original;
+for (let attempt = 1; attempt <= 3; attempt++) {
+  context.handlers.error({ target: img });
+  const timer = context.timers.shift();
+  assert.ok(timer, 'failed image schedules another attempt');
+  timer.callback();
+  assert.match(img.src, new RegExp('img_retry=.*-' + attempt));
+}
+context.handlers.load({ target: img });
+assert.equal(img.dataset.imgFailed, undefined);
+assert.equal(img.dataset.imgRetry, undefined);
+assert.equal(img.classList.contains('image-load-failed'), false);
+
+// A retry queued before the image succeeds must not replace its good source.
+context.handlers.error({ target: img });
+const staleTimer = context.timers.shift();
+context.handlers.load({ target: img });
+const loadedSrc = img.src;
+staleTimer.callback();
+assert.equal(img.src, loadedSrc);
+""",
+        setup="""
+context.handlers = {};
+context.timers = [];
+context.HTMLImageElement = class {
+  constructor() {
+    this.dataset = {};
+    this.isConnected = true;
+    this.complete = false;
+    this.naturalWidth = 0;
+    const classes = new Set();
+    this.classList = {
+      add: name => classes.add(name),
+      remove: name => classes.delete(name),
+      contains: name => classes.has(name),
+    };
+  }
+  getAttribute(name) { return name === 'src' ? this.src : null; }
+};
+context.document = {
+  hidden: false,
+  addEventListener: (event, handler) => { context.handlers[event] = handler; },
+  querySelectorAll: () => [],
+};
+context.window = { addEventListener: () => {} };
+context.location = { href: 'https://reader.example/', origin: 'https://reader.example' };
+context.URL = URL;
+context.setTimeout = (callback, delay) => { context.timers.push({ callback, delay }); };
+""",
+    )
+
+
 def select_filter_source():
     return source_between("function applyFilterSelectionState(", "function filteredNews()")
 
