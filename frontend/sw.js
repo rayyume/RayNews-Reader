@@ -2,6 +2,7 @@
 // Cache key includes VERSION + COMMIT_SHA — busted on every build
 const CACHE = 'raynews-v{{VERSION}}-{{COMMIT_SHA}}';
 const API_CACHE = 'raynews-api-v{{VERSION}}-{{COMMIT_SHA}}';
+const BUILD_ID = '{{FULL_BUILD_VERSION}}';
 
 // Files to pre-cache on install
 const PRECACHE = [
@@ -76,6 +77,8 @@ self.addEventListener('install', event => {
 self.addEventListener('message', event => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     event.waitUntil(self.skipWaiting());
+  } else if (event.data && event.data.type === 'GET_BUILD_ID' && event.ports[0]) {
+    event.ports[0].postMessage({ buildId: BUILD_ID });
   }
 });
 

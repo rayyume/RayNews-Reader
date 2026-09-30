@@ -2888,15 +2888,22 @@ def test_app_update_banner_appears_only_after_new_worker_waits_and_refreshes_on_
 await new Promise(resolve => setImmediate(resolve));
 handlers.controllerchange(); // First installation is silent.
 assert.equal(open, false);
-context.navigator.serviceWorker.controller = {};
+context.navigator.serviceWorker.controller = worker('{{FULL_BUILD_VERSION}}');
+await handlers.controllerchange();
+assert.equal(open, false); // Reclaiming control with the same build is silent.
 registration.installing = {
   state: 'installing',
   addEventListener: (name, callback) => { handlers[name] = callback; },
 };
 handlers.updatefound();
-registration.waiting = { postMessage: value => { message = value; } };
+registration.waiting = worker('{{FULL_BUILD_VERSION}}');
 registration.installing.state = 'installed';
 handlers.statechange();
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(open, false); // A waiting worker for this build is not an update.
+registration.waiting = worker('next-build');
+handlers.statechange();
+await new Promise(resolve => setImmediate(resolve));
 assert.equal(open, true);
 await context.applyAppUpdate();
 assert.equal(clears, 1);
@@ -2911,6 +2918,16 @@ let open = false;
 let clears = 0;
 let reloads = 0;
 let message = null;
+const worker = buildId => ({ postMessage: (value, ports) => {
+  if (value.type === 'GET_BUILD_ID') ports[0].reply({ buildId });
+  else message = value;
+} });
+context.MessageChannel = class {
+  constructor() {
+    this.port1 = { onmessage: null, close: () => {} };
+    this.port2 = { reply: data => this.port1.onmessage({ data }) };
+  }
+};
 const banner = { classList: { add: () => { open = true; }, remove: () => { open = false; } } };
 const button = { disabled: false, textContent: '', focus: () => {} };
 const registration = {
@@ -2935,6 +2952,7 @@ context.navigator = {
 };
 context.setInterval = () => 1;
 context.setTimeout = () => 1;
+context.clearTimeout = () => {};
 context.NEWS_CACHE_STORE = 'entries';
 context.openNewsCache = async () => ({
   transaction: () => {
@@ -2956,21 +2974,32 @@ def test_app_update_detects_worker_already_installing_and_later_waiting():
 await new Promise(resolve => setImmediate(resolve));
 assert.equal(typeof statechange, 'function');
 registration.installing.state = 'installed';
-registration.waiting = { postMessage: () => {} };
+registration.waiting = worker('new-build');
 statechange();
+await new Promise(resolve => setImmediate(resolve));
 assert.equal(open, true);
 context.dismissUpdateBanner();
 assert.equal(open, false);
 registration.waiting = null;
 registration.installing = null;
-registration.waiting = { postMessage: () => {} };
+registration.waiting = worker('new-build');
 intervalCheck();
+await new Promise(resolve => setImmediate(resolve));
 assert.equal(open, true);
 """,
         setup="""
 let open = false;
 let statechange = null;
 let intervalCheck = null;
+const worker = buildId => ({ postMessage: (value, ports) => {
+  if (value.type === 'GET_BUILD_ID') ports[0].reply({ buildId });
+} });
+context.MessageChannel = class {
+  constructor() {
+    this.port1 = { onmessage: null, close: () => {} };
+    this.port2 = { reply: data => this.port1.onmessage({ data }) };
+  }
+};
 const registration = {
   waiting: null,
   installing: {
@@ -2997,6 +3026,8 @@ context.document = {
 };
 context.window = { addEventListener: () => {} };
 context.setInterval = callback => { intervalCheck = callback; };
+context.setTimeout = () => 1;
+context.clearTimeout = () => {};
 """,
     )
 
@@ -3006,6 +3037,34 @@ def test_new_service_worker_waits_for_user_to_accept_update():
     install = sw[sw.index("self.addEventListener('install'"):sw.index("self.addEventListener('activate'")]
     assert ".then(() => self.skipWaiting())" not in install
     assert "event.data.type === 'SKIP_WAITING'" in install
+
+
+def test_service_worker_reports_its_build_before_offering_update():
+    sw = (ROOT / "frontend" / "sw.js").read_text(encoding="utf-8")
+    source = "const BUILD_ID = 'build-123';\n" + sw[
+        sw.index("self.addEventListener('message'"):sw.index("self.addEventListener('activate'")
+    ]
+    run_node(
+        source,
+        """
+let reply = null;
+messageHandler({ data: { type: 'GET_BUILD_ID' }, ports: [{ postMessage: data => { reply = data; } }] });
+assert.equal(reply.buildId, 'build-123');
+assert.equal(skipped, false);
+messageHandler({ data: { type: 'SKIP_WAITING' }, ports: [], waitUntil: value => { waited = value; } });
+assert.equal(skipped, true);
+assert.equal(waited, 'activation');
+""",
+        setup="""
+let messageHandler = null;
+let skipped = false;
+let waited = null;
+context.self = {
+  addEventListener: (name, callback) => { if (name === 'message') messageHandler = callback; },
+  skipWaiting: () => { skipped = true; return 'activation'; },
+};
+""",
+    )
 
 
 def test_cached_source_metadata_network_failure_uses_quiet_nonblocking_hint():

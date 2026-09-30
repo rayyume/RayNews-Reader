@@ -41,6 +41,7 @@ RUN VERSION=$(cat /app/VERSION) && \
     fi && \
     sed -i "s/{{VERSION}}/$VERSION/g" /usr/share/nginx/html/sw.js && \
     sed -i "s/{{COMMIT_SHA}}/$COMMIT_SHA/g" /usr/share/nginx/html/sw.js && \
+    sed -i "s/{{FULL_BUILD_VERSION}}/$FULL_BUILD_VERSION/g" /usr/share/nginx/html/sw.js && \
     sed -i "s/{{FULL_VERSION}}/$FULL_VERSION/g" /usr/share/nginx/html/index.html && \
     sed -i "s/{{FULL_BUILD_VERSION}}/$FULL_BUILD_VERSION/g" /usr/share/nginx/html/index.html
 

@@ -9773,6 +9773,30 @@ let appUpdateRegistration = null;
 let appUpdateRequested = false;
 let lastAppUpdateCheck = 0;
 let appControllerSeen = 'serviceWorker' in navigator && !!navigator.serviceWorker.controller;
+const APP_BUILD_ID = '{{FULL_BUILD_VERSION}}';
+
+function workerBuildId(worker) {
+  return new Promise(resolve => {
+    if (!worker || typeof MessageChannel !== 'function') return resolve(null);
+    const channel = new MessageChannel();
+    const timeout = setTimeout(() => {
+      channel.port1.close();
+      resolve(null);
+    }, 1000);
+    channel.port1.onmessage = event => {
+      clearTimeout(timeout);
+      channel.port1.close();
+      resolve(event.data && event.data.buildId || null);
+    };
+    try {
+      worker.postMessage({ type: 'GET_BUILD_ID' }, [channel.port2]);
+    } catch {
+      clearTimeout(timeout);
+      channel.port1.close();
+      resolve(null);
+    }
+  });
+}
 
 function showUpdateBanner() {
   if (!appUpdateRequested) {
@@ -9822,15 +9846,26 @@ async function applyAppUpdate() {
 }
 
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
+  navigator.serviceWorker.addEventListener('controllerchange', async () => {
     if (appUpdateRequested) location.reload();
-    else if (appControllerSeen) showUpdateBanner();
+    else if (appControllerSeen) {
+      const controller = navigator.serviceWorker.controller;
+      const buildId = await workerBuildId(controller);
+      if (controller === navigator.serviceWorker.controller && buildId && buildId !== APP_BUILD_ID) {
+        showUpdateBanner();
+      }
+    }
     appControllerSeen = true;
   });
   navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' }).then(registration => {
     appUpdateRegistration = registration;
-    const offerWaitingUpdate = () => {
-      if (registration.waiting && navigator.serviceWorker.controller) showUpdateBanner();
+    const offerWaitingUpdate = async () => {
+      const waiting = registration.waiting;
+      if (!waiting || !navigator.serviceWorker.controller) return;
+      const buildId = await workerBuildId(waiting);
+      if (waiting === registration.waiting && (!buildId || buildId !== APP_BUILD_ID)) {
+        showUpdateBanner();
+      }
     };
     let observedInstalling = null;
     const watchInstallingWorker = () => {
