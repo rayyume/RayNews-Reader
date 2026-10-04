@@ -262,7 +262,7 @@ def test_cold_start_retry_button_retries_the_list_several_times():
 def test_service_worker_bounds_its_own_network_wait():
     assert "function fetchWithTimeout(request" in SW
     # Every network-first handler that can strand the app on resume.
-    assert SW.count("fetchWithTimeout(event.request)") == 3
+    assert SW.count("fetchWithTimeout(event.request)") == 4
     run_node(
         SW[SW.index("const NETWORK_TIMEOUT_MS"):SW.index("self.addEventListener('install'")],
         """

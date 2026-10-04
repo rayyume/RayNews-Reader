@@ -473,6 +473,7 @@ for (let attempt = 1; attempt <= 3; attempt++) {
 context.handlers.load({ target: img });
 assert.equal(img.dataset.imgFailed, undefined);
 assert.equal(img.dataset.imgRetry, undefined);
+assert.equal(img.dataset.imgRetryToken, undefined);
 assert.equal(img.classList.contains('image-load-failed'), false);
 
 // A retry queued before the image succeeds must not replace its good source.
@@ -482,10 +483,58 @@ context.handlers.load({ target: img });
 const loadedSrc = img.src;
 staleTimer.callback();
 assert.equal(img.src, loadedSrc);
+
+const lightbox = new context.HTMLImageElement();
+lightbox.id = 'lbImg';
+lightbox.src = original;
+context.lightboxImage = lightbox;
+context.document.hidden = true;
+context.handlers.error({ target: lightbox });
+const hiddenTimer = context.timers.shift();
+hiddenTimer.callback(); // Its scheduled retry is skipped in the background.
+assert.equal(lightbox.src, original);
+context.document.hidden = false;
+context.retryBrokenVisibleImages();
+const resumedTimer = context.timers.shift();
+assert.ok(resumedTimer);
+resumedTimer.callback();
+assert.match(lightbox.src, /img_retry=/);
+
+context.handlers.error({ target: lightbox });
+const closedTimer = context.timers.shift();
+context.lightboxOpen = false;
+const srcAtClose = lightbox.src;
+closedTimer.callback();
+assert.equal(lightbox.src, srcAtClose);
+
+// A retry from image A must not replace image B after a quick close and reopen.
+context.lightboxOpen = true;
+lightbox.src = '/img-cache?url=image-a';
+delete lightbox.dataset.originalSrc;
+delete lightbox.dataset.imgFailed;
+delete lightbox.dataset.imgRetry;
+delete lightbox.dataset.imgRetryToken;
+context.handlers.error({ target: lightbox });
+const imageARetry = context.timers.shift();
+context.lightboxOpen = false;
+delete lightbox.dataset.originalSrc;
+delete lightbox.dataset.imgFailed;
+delete lightbox.dataset.imgRetry;
+delete lightbox.dataset.imgRetryToken;
+context.lightboxOpen = true;
+lightbox.src = '/img-cache?url=image-b';
+context.handlers.error({ target: lightbox });
+const imageBRetry = context.timers.shift();
+imageARetry.callback();
+assert.equal(lightbox.src, '/img-cache?url=image-b');
+imageBRetry.callback();
+assert.match(lightbox.src, /url=image-b&img_retry=/);
 """,
         setup="""
 context.handlers = {};
 context.timers = [];
+context.lightboxOpen = true;
+context.lightboxImage = null;
 context.HTMLImageElement = class {
   constructor() {
     this.dataset = {};
@@ -504,12 +553,72 @@ context.HTMLImageElement = class {
 context.document = {
   hidden: false,
   addEventListener: (event, handler) => { context.handlers[event] = handler; },
-  querySelectorAll: () => [],
+  querySelectorAll: selector => selector.includes('#lb.open #lbImg') && context.lightboxImage
+    ? [context.lightboxImage] : [],
+  getElementById: id => id === 'lb' ? { classList: {
+    contains: name => name === 'open' && context.lightboxOpen,
+  } } : null,
 };
 context.window = { addEventListener: () => {} };
 context.location = { href: 'https://reader.example/', origin: 'https://reader.example' };
 context.URL = URL;
 context.setTimeout = (callback, delay) => { context.timers.push({ callback, delay }); };
+""",
+    )
+
+
+def test_article_body_cache_evicts_old_entries_and_retains_recent_reopens():
+    source = source_between("function cachedArticleBody(id)", "let searchDebounceTimer")
+    run_node(
+        source,
+        """
+for (let id = 1; id <= 24; id++) context.rememberArticleBody(id, { id });
+assert.equal(context.cachedArticleBody(1).id, 1); // Reopening makes it recent.
+context.rememberArticleBody(25, { id: 25 });
+assert.equal(context.cachedArticleBody(2), null);
+assert.equal(context.cachedArticleBody(1).id, 1);
+assert.equal(Object.keys(context.articleBodyCache).length, 24);
+context.forgetArticleBody(1);
+assert.equal(context.cachedArticleBody(1), null);
+context.rememberArticleBody(26, { id: 26 });
+assert.equal(Object.keys(context.articleBodyCache).length, 24);
+""",
+        setup="""
+context.ARTICLE_BODY_CACHE_MAX_ITEMS = 24;
+context.articleBodyCache = {};
+context.articleBodyCacheRecency = new Map();
+""",
+    )
+
+
+def test_service_worker_api_cache_eviction_preserves_recent_offline_entries():
+    sw = (ROOT / "frontend" / "sw.js").read_text(encoding="utf-8")
+    source = sw[sw.index("function cacheApiResponse("):sw.index("function withSwFallbackMarker(")]
+    run_node(
+        source,
+        """
+const pending = [];
+const event = { waitUntil: promise => pending.push(promise) };
+for (let id = 1; id <= 100; id++) {
+  context.cacheApiResponse(event, '/api/news/' + id, { id });
+}
+await Promise.all(pending);
+assert.equal(context.entries.size, 96);
+assert.equal(context.entries.has('/api/news/1'), false);
+assert.equal(context.entries.has('/api/news/4'), false);
+assert.equal(context.entries.has('/api/news/5'), true);
+assert.equal(context.entries.has('/api/news/100'), true);
+""",
+        setup="""
+context.API_CACHE = 'test-api-cache';
+context.API_CACHE_MAX_ENTRIES = 96;
+context.apiCacheWriteQueue = Promise.resolve();
+context.entries = new Map();
+context.caches = { open: async () => ({
+  put: async (key, value) => { context.entries.set(key, value); },
+  keys: async () => Array.from(context.entries.keys()),
+  delete: async key => context.entries.delete(key),
+}) };
 """,
     )
 
@@ -2891,6 +3000,7 @@ assert.equal(open, false);
 context.navigator.serviceWorker.controller = worker('{{FULL_BUILD_VERSION}}');
 await handlers.controllerchange();
 assert.equal(open, false); // Reclaiming control with the same build is silent.
+context.navigator.serviceWorker.controller = worker('old-build');
 registration.installing = {
   state: 'installing',
   addEventListener: (name, callback) => { handlers[name] = callback; },
@@ -2901,6 +3011,7 @@ registration.installing.state = 'installed';
 handlers.statechange();
 await new Promise(resolve => setImmediate(resolve));
 assert.equal(open, false); // A waiting worker for this build is not an update.
+assert.equal(skipMessages, 1); // It activates even under an older controller.
 registration.waiting = worker('next-build');
 handlers.statechange();
 await new Promise(resolve => setImmediate(resolve));
@@ -2908,6 +3019,7 @@ assert.equal(open, true);
 await context.applyAppUpdate();
 assert.equal(clears, 1);
 assert.equal(message.type, 'SKIP_WAITING');
+assert.equal(skipMessages, 2);
 assert.equal(button.disabled, true);
 handlers.controllerchange();
 assert.equal(reloads, 1);
@@ -2918,9 +3030,10 @@ let open = false;
 let clears = 0;
 let reloads = 0;
 let message = null;
+let skipMessages = 0;
 const worker = buildId => ({ postMessage: (value, ports) => {
   if (value.type === 'GET_BUILD_ID') ports[0].reply({ buildId });
-  else message = value;
+  else { message = value; skipMessages++; }
 } });
 context.MessageChannel = class {
   constructor() {
