@@ -2,6 +2,9 @@
 // Cache key includes VERSION + COMMIT_SHA — busted on every build
 const CACHE = 'raynews-v{{VERSION}}-{{COMMIT_SHA}}';
 const API_CACHE = 'raynews-api-v{{VERSION}}-{{COMMIT_SHA}}';
+const BUILD_ID = '{{FULL_BUILD_VERSION}}';
+const API_CACHE_MAX_ENTRIES = 96;
+let apiCacheWriteQueue = Promise.resolve();
 
 // Files to pre-cache on install
 const PRECACHE = [
@@ -24,6 +27,26 @@ function normalizedApiRequest(request) {
     credentials: request.credentials,
     redirect: request.redirect,
   });
+}
+
+function cacheApiResponse(event, cacheRequest, cloned) {
+  const write = apiCacheWriteQueue.catch(() => {}).then(async () => {
+    const cache = await caches.open(API_CACHE);
+    await cache.put(cacheRequest, cloned);
+    const keys = await cache.keys();
+    for (const key of keys.slice(0, Math.max(0, keys.length - API_CACHE_MAX_ENTRIES))) {
+      await cache.delete(key);
+    }
+  });
+  apiCacheWriteQueue = write;
+  // Keep the worker alive until the response and its eviction are committed.
+  const completion = write.catch(err => console.warn('SW: API cache write failed', err));
+  try {
+    event.waitUntil(completion);
+  } catch {
+    // A late response must still reach the page even if its cache write cannot
+    // extend this worker's lifetime.
+  }
 }
 
 // Marks a cached response served in place of a failed network request. Without
@@ -76,6 +99,8 @@ self.addEventListener('install', event => {
 self.addEventListener('message', event => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     event.waitUntil(self.skipWaiting());
+  } else if (event.data && event.data.type === 'GET_BUILD_ID' && event.ports[0]) {
+    event.ports[0].postMessage({ buildId: BUILD_ID });
   }
 });
 
@@ -123,6 +148,13 @@ self.addEventListener('fetch', event => {
     return;
   }
 
+  // This endpoint is polled every 12 seconds. Its old responses do not help
+  // offline reading and should not displace cached article pages or details.
+  if (url.pathname === '/api/news/title-updates') {
+    event.respondWith(fetchWithTimeout(event.request));
+    return;
+  }
+
   // ── API list: network-first + background cache (no cold-start delay) ──
   if (url.pathname.startsWith('/api/')) {
     const cacheRequest = normalizedApiRequest(event.request);
@@ -138,11 +170,7 @@ self.addEventListener('fetch', event => {
         fetchWithTimeout(event.request).then(network => {
           if (network.ok) {
             const cloned = network.clone();
-            caches.open(API_CACHE).then(cache => {
-              cache.put(cacheRequest, cloned).catch(err => {
-                console.warn('SW: article cache.put failed', err);
-              });
-            });
+            cacheApiResponse(event, cacheRequest, cloned);
           }
           return network;
         }).catch(error => {
@@ -159,11 +187,7 @@ self.addEventListener('fetch', event => {
       fetchWithTimeout(event.request).then(network => {
         if (network.ok) {
           const cloned = network.clone();
-          caches.open(API_CACHE).then(cache => {
-            cache.put(cacheRequest, cloned).catch(err => {
-              console.warn('SW: cache.put failed', err);
-            });
-          });
+          cacheApiResponse(event, cacheRequest, cloned);
         }
         return network;
       }).catch(error => {

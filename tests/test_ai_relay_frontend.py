@@ -33,6 +33,18 @@ def _article_detail_block():
     return HTML[start:end]
 
 
+def _article_body_cache_helpers_block():
+    limit_start = HTML.index("const ARTICLE_BODY_CACHE_MAX_ITEMS =")
+    limit_end = HTML.index("\n", limit_start) + 1
+    start = HTML.index("function cachedArticleBody(id)")
+    end = HTML.index("let searchDebounceTimer", start)
+    return (
+        HTML[limit_start:limit_end]
+        + "let articleBodyCacheRecency = new Map(Object.keys(articleBodyCache).map(key => [key, true]));\n"
+        + HTML[start:end]
+    )
+
+
 def _display_title_block():
     start = HTML.index("function displayTitle(")
     end = HTML.index("\n}", start) + 2
@@ -533,7 +545,7 @@ const context = {{
   autoDisplaySummary: async id => calls.push('detail-shared-' + id),
 }};
 vm.createContext(context);
-vm.runInContext({json.dumps(_display_title_block() + _user_settings_sync_block())}, context);
+vm.runInContext({json.dumps(_article_body_cache_helpers_block() + _display_title_block() + _user_settings_sync_block())}, context);
 (async () => {{
   await context.synchronizeShareAccessState({{
     share_active: false,
@@ -685,7 +697,7 @@ const context = {{
   _articleWrap: articleWrap,
 }};
 vm.createContext(context);
-vm.runInContext({json.dumps(_translation_update_block())}, context);
+vm.runInContext({json.dumps(_article_body_cache_helpers_block() + _translation_update_block())}, context);
 (async () => {{
 {body}
 }})().catch(error => {{ console.error(error && error.stack ? error.stack : error); process.exitCode = 1; }});
@@ -1017,7 +1029,7 @@ context.fetch = (_url, options) => new Promise((_resolve, reject) => {{
   if (options.signal) options.signal.addEventListener('abort', () => reject(new Error('aborted')));
 }});
 vm.createContext(context);
-vm.runInContext({json.dumps(_translation_update_block())}, context);
+vm.runInContext({json.dumps(_article_body_cache_helpers_block() + _translation_update_block())}, context);
 (async () => {{
   let watchdog;
   try {{
@@ -1072,7 +1084,7 @@ context.fetch = async (url, options) => {{
   return {{ ok: true, json: async () => ({{ body_html: '<p>current</p>' }}) }};
 }};
 vm.createContext(context);
-vm.runInContext({json.dumps(_article_detail_block() + _translation_update_block())}, context);
+vm.runInContext({json.dumps(_article_body_cache_helpers_block() + _article_detail_block() + _translation_update_block())}, context);
 (async () => {{
   assert.deepEqual(await context.fetchArticleDetail(42), {{ body_html: '<p>current</p>' }});
   assert.match(calls[0].url, /^\/ai\/translation-updates\?since=/);
@@ -1117,7 +1129,7 @@ context.fetch = url => {{
   return Promise.resolve({{ ok: true, json: async () => ({{ body_html: '<p>current</p>' }}) }});
 }};
 vm.createContext(context);
-vm.runInContext({json.dumps(_article_detail_block() + _translation_update_block())}, context);
+vm.runInContext({json.dumps(_article_body_cache_helpers_block() + _article_detail_block() + _translation_update_block())}, context);
 (async () => {{
   let watchdog;
   let baselineSettled = false;
@@ -1177,7 +1189,7 @@ context.fetch = url => {{
   return Promise.resolve({{ ok: true, json: async () => ({{ body_html: '<p>English cached</p>' }}) }});
 }};
 vm.createContext(context);
-vm.runInContext({json.dumps(_article_detail_block() + _translation_update_block())}, context);
+vm.runInContext({json.dumps(_article_body_cache_helpers_block() + _article_detail_block() + _translation_update_block())}, context);
 (async () => {{
   let watchdog;
   let baselineSettled = false;
@@ -1242,7 +1254,7 @@ context.fetch = url => {{
   return Promise.resolve({{ ok: true, json: async () => ({{ body_html: `<p>detail ${{id}}</p>` }}) }});
 }};
 vm.createContext(context);
-vm.runInContext({json.dumps(_article_detail_block() + _translation_update_block())}, context);
+vm.runInContext({json.dumps(_article_body_cache_helpers_block() + _article_detail_block() + _translation_update_block())}, context);
 (async () => {{
   let baselineSettled = false;
   let watchdog;
@@ -1323,7 +1335,7 @@ context.fetch = async () => {{
   return {{ ok: true, json: async () => ({{ items: [], cursor: '2026-07-19 10:00:00.000|9' }}) }};
 }};
 vm.createContext(context);
-vm.runInContext({json.dumps(_translation_update_block())}, context);
+vm.runInContext({json.dumps(_article_body_cache_helpers_block() + _translation_update_block())}, context);
 (async () => {{
   await context.pollTranslationUpdates();
   assert.deepEqual(context.articleBodyCache[42], {{ body_html: '<p>English cached</p>' }});
@@ -1369,7 +1381,7 @@ const context = {{
 }};
 context.fetch = (url, options) => new Promise(resolve => requests.push({{ url, options, resolve }}));
 vm.createContext(context);
-vm.runInContext({json.dumps(_article_detail_block() + _translation_update_block())}, context);
+vm.runInContext({json.dumps(_article_body_cache_helpers_block() + _article_detail_block() + _translation_update_block())}, context);
 (async () => {{
   const stale = context.fetchArticleDetail(42);
   assert.equal(requests.length, 1);

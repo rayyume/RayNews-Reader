@@ -1128,6 +1128,7 @@ const NEWS_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const IDLE_LATEST_DELAY_MS = 5 * 60 * 1000;
 const PAGE_MEMORY_BUFFER_LIMIT = 3;
 const PAGE_COVER_PRELOAD_LIMIT = 8;
+const ARTICLE_BODY_CACHE_MAX_ITEMS = 24;
 const PAGE_SWITCH_TOP_THRESHOLD = 120;
 
 // Category definitions come from the instance database. These defaults only
@@ -1187,11 +1188,39 @@ let restoringListHistory = false;
 let articleReturnInProgress = false;
 // In-memory cache for article bodies — avoids re-fetching on re-open
 let articleBodyCache = {};
+let articleBodyCacheRecency = new Map();
 let articleBodyPromises = {};
 let articleBodyControllers = {};
 let articleBodyRequestGenerations = {};
 let articleDetailRetryInProgress = new Set();
 let activeArticleRequestId = 0;
+
+function cachedArticleBody(id) {
+  const key = String(id);
+  const data = articleBodyCache[key];
+  if (!data) return null;
+  articleBodyCacheRecency.delete(key);
+  articleBodyCacheRecency.set(key, true);
+  return data;
+}
+
+function rememberArticleBody(id, data) {
+  const key = String(id);
+  articleBodyCache[key] = data;
+  articleBodyCacheRecency.delete(key);
+  articleBodyCacheRecency.set(key, true);
+  while (articleBodyCacheRecency.size > ARTICLE_BODY_CACHE_MAX_ITEMS) {
+    const oldest = articleBodyCacheRecency.keys().next().value;
+    articleBodyCacheRecency.delete(oldest);
+    delete articleBodyCache[oldest];
+  }
+}
+
+function forgetArticleBody(id) {
+  const key = String(id);
+  articleBodyCacheRecency.delete(key);
+  delete articleBodyCache[key];
+}
 let searchDebounceTimer = null;
 let searchRetryTimer = null;
 let searchRetryCount = 0;
@@ -1462,6 +1491,7 @@ function logout() {
     try { controller.abort(); } catch (e) {}
   });
   articleBodyCache = {};
+  articleBodyCacheRecency = new Map();
   articleBodyPromises = {};
   articleBodyControllers = {};
   articleBodyRequestGenerations = {};
@@ -3225,7 +3255,7 @@ async function deleteArticlesByIds(ids) {
   news = news.filter(item => !ids.includes(Number(item.id)));
   currentTotal = Math.max(0, currentTotal - deleted);
   for (const id of ids) {
-    delete articleBodyCache[id];
+    forgetArticleBody(id);
     delete articleBodyPromises[id];
   }
   document.getElementById('count').textContent = currentTotal + ' 条新闻';
@@ -4015,7 +4045,7 @@ async function loadUserSettings() {
 
 function findOpenArticleShareData(articleId) {
   const numericId = Number(articleId);
-  return articleBodyCache[numericId]
+  return cachedArticleBody(numericId)
     || news.find(item => Number(item.id) === numericId)
     || searchItems.find(item => Number(item.id) === numericId)
     || (sourceArticlesState.items || []).find(item => Number(item.id) === numericId)
@@ -7619,7 +7649,7 @@ function invalidateArticleBody(id) {
   const controller = articleBodyControllers[id];
   if (controller) controller.abort();
   articleBodyRequestGenerations[id] = (articleBodyRequestGenerations[id] || 0) + 1;
-  delete articleBodyCache[id];
+  forgetArticleBody(id);
   delete articleBodyPromises[id];
 }
 
@@ -8300,7 +8330,7 @@ async function retryArticleDetail(id) {
   try {
     const controller = articleBodyControllers[id];
     if (controller) controller.abort();
-  delete articleBodyCache[id];
+  forgetArticleBody(id);
   delete articleBodyPromises[id];
     await delay(750);
   openArticle(id);
@@ -8418,7 +8448,6 @@ function openArticle(id) {
     const requestId = ++activeArticleRequestId;
     // Try cache first
     const renderFull = (data) => {
-      articleBodyCache[id] = data;
       const coverSrc = data.thumb ? proxyImgSrc(data.thumb) : '';
       const coverImg = coverSrc
         ? `<div style="margin-bottom:20px"><img src="${coverSrc}" alt="" decoding="async" style="max-width:100%;border-radius:var(--radius);background:var(--bg-surface)"></div>`
@@ -8504,7 +8533,8 @@ function openArticle(id) {
 }
 
 function fetchArticleDetail(id, timeoutMs = 8000) {
-  if (articleBodyCache[id]) return Promise.resolve(articleBodyCache[id]);
+  const cached = cachedArticleBody(id);
+  if (cached) return Promise.resolve(cached);
   if (articleBodyPromises[id]) return articleBodyPromises[id];
   const generation = articleBodyRequestGenerations[id] || 0;
   let controller = null;
@@ -8527,7 +8557,7 @@ function fetchArticleDetail(id, timeoutMs = 8000) {
     if ((articleBodyRequestGenerations[id] || 0) !== generation) {
       throw new Error('article detail request superseded');
     }
-    articleBodyCache[id] = data;
+    rememberArticleBody(id, data);
     return data;
   })()
     .finally(() => {
@@ -8708,7 +8738,15 @@ function closeLightbox(focusTarget = null) {
   lb.setAttribute('aria-hidden', 'true');
   lb.setAttribute('inert', '');
   resetLightboxGesture();
-  document.getElementById('lbImg').removeAttribute('src');
+  const lbImg = document.getElementById('lbImg');
+  lbImg.removeAttribute('src');
+  if (lbImg.dataset) {
+    delete lbImg.dataset.originalSrc;
+    delete lbImg.dataset.imgFailed;
+    delete lbImg.dataset.imgRetry;
+    delete lbImg.dataset.imgRetryToken;
+  }
+  lbImg.classList.remove('image-load-failed');
   unlockBodyScroll();
   const trigger = lightboxTrigger;
   lightboxTrigger = null;
@@ -8784,6 +8822,13 @@ function openImageViewer(image) {
   resetLightboxGesture();
   const lb = document.getElementById('lb');
   const lbImg = document.getElementById('lbImg');
+  if (lbImg.dataset) {
+    delete lbImg.dataset.originalSrc;
+    delete lbImg.dataset.imgFailed;
+    delete lbImg.dataset.imgRetry;
+    delete lbImg.dataset.imgRetryToken;
+  }
+  lbImg.classList.remove('image-load-failed');
   lbImg.src = image.currentSrc || image.src;
   lbImg.alt = image.alt || '';
   lb.removeAttribute('inert');
@@ -9304,23 +9349,33 @@ function cacheBustedImageSrc(src, attempt) {
   return src;
 }
 
+const IMAGE_RETRY_DELAYS_MS = [250, 1000, 3000, 8000];
+let imageRetryTokenSequence = 0;
+
 function recoverImageLoad(img) {
   if (!img || !(img instanceof HTMLImageElement)) return;
+  if (img.id === 'lbImg' && !document.getElementById('lb').classList.contains('open')) return;
   const currentSrc = img.dataset.originalSrc || img.getAttribute('src') || img.currentSrc || '';
   if (!currentSrc) return;
   img.dataset.originalSrc = currentSrc;
   img.dataset.imgFailed = '1';
   const attempts = Number(img.dataset.imgRetry || '0');
-  if (attempts >= 2) {
+  if (attempts >= IMAGE_RETRY_DELAYS_MS.length) {
     img.classList.add('image-load-failed');
     return;
   }
   const nextAttempt = attempts + 1;
+  const retryToken = String(++imageRetryTokenSequence);
   img.dataset.imgRetry = String(nextAttempt);
+  img.dataset.imgRetryToken = retryToken;
   img.classList.remove('image-load-failed');
   setTimeout(() => {
+    if (!img.isConnected || document.hidden || img.dataset.imgRetryToken !== retryToken
+        || img.dataset.imgRetry !== String(nextAttempt)
+        || img.dataset.imgFailed !== '1') return;
+    if (img.id === 'lbImg' && !document.getElementById('lb').classList.contains('open')) return;
     img.src = cacheBustedImageSrc(currentSrc, nextAttempt);
-  }, nextAttempt === 1 ? 250 : 900);
+  }, IMAGE_RETRY_DELAYS_MS[attempts]);
 }
 
 function shouldRetryBrokenImage(img) {
@@ -9332,7 +9387,7 @@ function shouldRetryBrokenImage(img) {
 
 function retryBrokenVisibleImages() {
   if (document.hidden) return;
-  document.querySelectorAll('#list img, #overlay img, #favBody img, #sourceArticlesBody img').forEach(img => {
+  document.querySelectorAll('#list img, #overlay img, #favBody img, #sourceArticlesBody img, #lb.open #lbImg').forEach(img => {
     if (!shouldRetryBrokenImage(img)) return;
     img.dataset.imgRetry = '0';
     recoverImageLoad(img);
@@ -9341,6 +9396,14 @@ function retryBrokenVisibleImages() {
 
 document.addEventListener('error', event => {
   if (event.target instanceof HTMLImageElement) recoverImageLoad(event.target);
+}, true);
+document.addEventListener('load', event => {
+  if (!(event.target instanceof HTMLImageElement)) return;
+  delete event.target.dataset.originalSrc;
+  delete event.target.dataset.imgFailed;
+  delete event.target.dataset.imgRetry;
+  delete event.target.dataset.imgRetryToken;
+  event.target.classList.remove('image-load-failed');
 }, true);
 document.addEventListener('visibilitychange', retryBrokenVisibleImages);
 window.addEventListener('online', retryBrokenVisibleImages);
@@ -9763,6 +9826,36 @@ let appUpdateRegistration = null;
 let appUpdateRequested = false;
 let lastAppUpdateCheck = 0;
 let appControllerSeen = 'serviceWorker' in navigator && !!navigator.serviceWorker.controller;
+const APP_BUILD_ID = '{{FULL_BUILD_VERSION}}';
+
+// The worker answers this in microseconds when it is alive; the long budget is
+// only for iOS PWA resume, where a freshly thawed worker can be slow to take the
+// message. Timing out here aborts the update prompt for that visit, so allow more
+// than the ~1s a responsive worker needs while still failing fast if it is gone.
+const WORKER_BUILD_ID_TIMEOUT_MS = 2500;
+
+function workerBuildId(worker) {
+  return new Promise(resolve => {
+    if (!worker || typeof MessageChannel !== 'function') return resolve(null);
+    const channel = new MessageChannel();
+    const timeout = setTimeout(() => {
+      channel.port1.close();
+      resolve(null);
+    }, WORKER_BUILD_ID_TIMEOUT_MS);
+    channel.port1.onmessage = event => {
+      clearTimeout(timeout);
+      channel.port1.close();
+      resolve(event.data && event.data.buildId || null);
+    };
+    try {
+      worker.postMessage({ type: 'GET_BUILD_ID' }, [channel.port2]);
+    } catch {
+      clearTimeout(timeout);
+      channel.port1.close();
+      resolve(null);
+    }
+  });
+}
 
 function showUpdateBanner() {
   if (!appUpdateRequested) {
@@ -9812,15 +9905,32 @@ async function applyAppUpdate() {
 }
 
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
+  navigator.serviceWorker.addEventListener('controllerchange', async () => {
     if (appUpdateRequested) location.reload();
-    else if (appControllerSeen) showUpdateBanner();
+    else if (appControllerSeen) {
+      const controller = navigator.serviceWorker.controller;
+      const buildId = await workerBuildId(controller);
+      if (controller === navigator.serviceWorker.controller && buildId && buildId !== APP_BUILD_ID) {
+        showUpdateBanner();
+      }
+    }
     appControllerSeen = true;
   });
   navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' }).then(registration => {
     appUpdateRegistration = registration;
-    const offerWaitingUpdate = () => {
-      if (registration.waiting && navigator.serviceWorker.controller) showUpdateBanner();
+    const offerWaitingUpdate = async () => {
+      const waiting = registration.waiting;
+      if (!waiting || !navigator.serviceWorker.controller) return;
+      const buildId = await workerBuildId(waiting);
+      if (waiting !== registration.waiting) return;
+      if (buildId === APP_BUILD_ID) {
+        // New HTML can arrive while an older worker still controls the page.
+        // This waiting worker already matches the page, so activate it quietly.
+        dismissUpdateBanner();
+        try { waiting.postMessage({ type: 'SKIP_WAITING' }); } catch {}
+      } else {
+        showUpdateBanner();
+      }
     };
     let observedInstalling = null;
     const watchInstallingWorker = () => {
