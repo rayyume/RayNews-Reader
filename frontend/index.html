@@ -9828,6 +9828,12 @@ let lastAppUpdateCheck = 0;
 let appControllerSeen = 'serviceWorker' in navigator && !!navigator.serviceWorker.controller;
 const APP_BUILD_ID = '{{FULL_BUILD_VERSION}}';
 
+// The worker answers this in microseconds when it is alive; the long budget is
+// only for iOS PWA resume, where a freshly thawed worker can be slow to take the
+// message. Timing out here aborts the update prompt for that visit, so allow more
+// than the ~1s a responsive worker needs while still failing fast if it is gone.
+const WORKER_BUILD_ID_TIMEOUT_MS = 2500;
+
 function workerBuildId(worker) {
   return new Promise(resolve => {
     if (!worker || typeof MessageChannel !== 'function') return resolve(null);
@@ -9835,7 +9841,7 @@ function workerBuildId(worker) {
     const timeout = setTimeout(() => {
       channel.port1.close();
       resolve(null);
-    }, 1000);
+    }, WORKER_BUILD_ID_TIMEOUT_MS);
     channel.port1.onmessage = event => {
       clearTimeout(timeout);
       channel.port1.close();
