@@ -4984,6 +4984,7 @@ async function aiTranslate(articleId) {
       bodyEl.innerHTML = bodyEl.dataset.translatedHtml;
       if (h1 && bodyEl.dataset.translatedTitle) h1.textContent = bodyEl.dataset.translatedTitle;
       bodyEl.dataset.showingTranslation = 'true';
+      delete bodyEl.dataset.deferAutoTranslation;
       if (btn) btn.textContent = '原文';
     }
     return;
@@ -5006,6 +5007,7 @@ async function aiTranslate(articleId) {
     bodyEl.dataset.translatedHtml = translatedHtml;
     bodyEl.dataset.translatedTitle = translatedTitle || '';
     bodyEl.dataset.showingTranslation = 'true';
+    delete bodyEl.dataset.deferAutoTranslation;
     bodyEl.innerHTML = translatedHtml;
     if (h1 && translatedTitle) h1.textContent = translatedTitle;
     if (btn) { btn.textContent = '原文'; btn.disabled = false; }
@@ -5406,7 +5408,8 @@ async function autoDisplaySummary(articleId, prefetched = null) {
   sharedResultStatus(context, '正在读取共享结果…');
   try {
     if (prefetched?.sharedContext && !sharedContextCurrent(prefetched.sharedContext)) prefetched = null;
-    const data = await (prefetched || readSharedResult(context));
+    const data = prefetched && typeof prefetched.then !== 'function'
+      ? prefetched : await (prefetched || readSharedResult(context));
     if (!sharedContextCurrent(context)) return;
     if (data.access && sharedPermissionKey(data.access) !== sharedPermissionKey()) {
       await synchronizeShareAccessState({ ...userAutoSettings, ...data.access });
@@ -5450,7 +5453,8 @@ async function autoDisplaySummary(articleId, prefetched = null) {
       const bodyEl = document.getElementById('articleBody');
       if (!bodyEl) return;
       const t = data.translation.trim();
-      const keepOriginal = bodyEl.dataset.showingTranslation === 'false';
+      const keepOriginal = bodyEl.dataset.showingTranslation === 'false'
+        || bodyEl.dataset.deferAutoTranslation === 'true';
       // New format with title: JSON {"title": "...", "html": "..."}
       if (t.startsWith('{')) {
         let cachedData;
@@ -5467,7 +5471,12 @@ async function autoDisplaySummary(articleId, prefetched = null) {
           : '';
         bodyEl.dataset.translatedTitle = cachedTitle;
         bodyEl.dataset.sharedTranslation = 'true';
-        if (keepOriginal) return;
+        if (keepOriginal) {
+          const btn = document.querySelector('.ai-translate-btn');
+          if (btn) btn.textContent = '译文';
+          if (bodyEl.dataset.deferAutoTranslation === 'true') sharedResultStatus(context, '译文已就绪，点击“译文”查看');
+          return;
+        }
         bodyEl.dataset.showingTranslation = 'true';
         bodyEl.innerHTML = bodyEl.dataset.translatedHtml;
         if (h1El && cachedTitle) h1El.textContent = cachedTitle;
@@ -5481,7 +5490,12 @@ async function autoDisplaySummary(articleId, prefetched = null) {
         // Save original before replacing for toggle support
         if (!bodyEl.dataset.originalHtml) bodyEl.dataset.originalHtml = bodyEl.innerHTML;
         bodyEl.dataset.translatedHtml = proxyImages(sanitizeTranslatedHtml(t));
-        if (keepOriginal) return;
+        if (keepOriginal) {
+          const btn = document.querySelector('.ai-translate-btn');
+          if (btn) btn.textContent = '译文';
+          if (bodyEl.dataset.deferAutoTranslation === 'true') sharedResultStatus(context, '译文已就绪，点击“译文”查看');
+          return;
+        }
         bodyEl.dataset.showingTranslation = 'true';
         bodyEl.innerHTML = bodyEl.dataset.translatedHtml;
         const btn = document.querySelector('.ai-translate-btn');
@@ -8865,6 +8879,39 @@ function restoreArticleReturnState(onComplete) {
   });
 }
 
+function hasUsableSharedTranslation(data) {
+  const translation = data?.translation?.trim();
+  if (!translation) return false;
+  if (translation.startsWith('<')) return true;
+  if (!translation.startsWith('{')) return false;
+  try { return !!JSON.parse(translation).html; } catch { return false; }
+}
+
+async function waitForInitialSharedTranslation(prefetched) {
+  if (!prefetched || !authToken || !userAutoSettings?.share_active
+      || !userAutoSettings?.share_view_translation) return null;
+  let timer;
+  try {
+    return await Promise.race([
+      prefetched.catch(() => null),
+      new Promise(resolve => { timer = setTimeout(() => resolve(null), 500); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function showInitialSharedArticleResult(id, prefetched, initialShared) {
+  const body = document.getElementById('articleBody');
+  if (body && (!userAutoSettings?.share_active || !userAutoSettings?.share_view_translation
+      || (initialShared?.access && sharedPermissionKey(initialShared.access) !== sharedPermissionKey())
+      || !hasUsableSharedTranslation(initialShared))) {
+    // Once the original is shown, do not replace it underneath the reader.
+    body.dataset.deferAutoTranslation = 'true';
+  }
+  autoDisplaySummary(id, initialShared || prefetched);
+}
+
 function openArticle(id) {
   cancelViewBoundRefreshWork();
   const n = news.find(x => x.id === id);
@@ -8904,7 +8951,7 @@ function openArticle(id) {
     const sharedPrefetch = authToken ? readSharedResult(sharedArticleContext(id)) : null;
     if (sharedPrefetch) sharedPrefetch.catch(() => {});
     // Try cache first
-    const renderFull = (data) => {
+    const renderFull = (data, initialShared) => {
       const coverSrc = data.thumb ? proxyImgSrc(data.thumb) : '';
       const coverImg = coverSrc
         ? `<div style="margin-bottom:20px"><img src="${coverSrc}" alt="" decoding="async" style="max-width:100%;border-radius:var(--radius);background:var(--bg-surface)"></div>`
@@ -8924,14 +8971,15 @@ function openArticle(id) {
         </div>
       `;
       renderArticleBody(wrap, data, id);
-      autoDisplaySummary(id, sharedPrefetch);
+      showInitialSharedArticleResult(id, sharedPrefetch, initialShared);
       if (!isRestrictedUser()) checkFavoriteStatus(id);
       syncArticleHistory(id, data.date || '');
     };
     fetchArticleDetail(id)
-      .then(data => {
+      .then(async data => {
+        const initialShared = await waitForInitialSharedTranslation(sharedPrefetch);
         if (requestId !== activeArticleRequestId || document.getElementById('overlay').dataset.articleId != id) return;
-        renderFull(data);
+        renderFull(data, initialShared);
       })
       .catch((e) => {
         if (requestId !== activeArticleRequestId || document.getElementById('overlay').dataset.articleId != id) return;
@@ -8950,7 +8998,7 @@ function openArticle(id) {
     ? `<div style="margin-bottom:20px"><img src="${coverSrc}" alt="" decoding="async" style="max-width:100%;border-radius:var(--radius);background:var(--bg-surface)"></div>`
     : '';
   wrap.innerHTML = `
-    <h1>${esc(displayTitle(n))}</h1>
+    <h1>${userAutoSettings?.share_active && userAutoSettings?.share_view_translation ? '加载中...' : esc(displayTitle(n))}</h1>
     <div class="article-meta" style="position:relative">
       <span class="badge" style="${badgeStyle(displaySourceForArticle(feedSourceOf(n)))}" title="${esc(sourceBadgeTitle(feedSourceOf(n)))}">${esc(sourceLabel(displaySourceForArticle(feedSourceOf(n))))}</span>
       <span>${formatTime(n.date, n.time)}</span>
@@ -8980,13 +9028,18 @@ function openArticle(id) {
   const sharedPrefetch = authToken ? readSharedResult(sharedArticleContext(id)) : null;
   if (sharedPrefetch) sharedPrefetch.catch(() => {});
   fetchArticleDetail(id)
-    .then(data => {
+    .then(async data => {
+      const initialShared = await waitForInitialSharedTranslation(sharedPrefetch);
       if (requestId !== activeArticleRequestId || document.getElementById('overlay').dataset.articleId != id) return;
+      const title = wrap.querySelector('h1');
+      if (title) title.textContent = displayTitle(data);
       renderArticleBody(wrap, data, id);
-      autoDisplaySummary(id, sharedPrefetch);
+      showInitialSharedArticleResult(id, sharedPrefetch, initialShared);
     })
     .catch((e) => {
       if (requestId !== activeArticleRequestId || document.getElementById('overlay').dataset.articleId != id) return;
+      const title = wrap.querySelector('h1');
+      if (title) title.textContent = displayTitle(n);
       const bodyEl = document.getElementById('articleBody');
       renderArticleRetry(bodyEl, id, e, false);
     });

@@ -103,6 +103,10 @@ def test_body_first_live_updates_original_toggle_and_logout(browser, viewport, t
         result['translation'] = json.dumps({'title':'Translated title','html':'<p>Translated body one</p>'})
         revision = 2
         page.evaluate('pollAIResultUpdates(true)')
+        expect(page.locator('#articleBody')).to_contain_text('Readable original body 1')
+        expect(page.locator('#sharedResultStatus')).to_contain_text('译文已就绪')
+        expect(page.locator('.ai-translate-btn')).to_have_text('译文')
+        page.locator('.ai-translate-btn').click()
         expect(page.locator('#articleBody')).to_have_text('Translated body one')
         page.locator('.ai-translate-btn').click()
         expect(page.locator('#articleBody')).to_contain_text('Readable original body 1')
@@ -120,6 +124,88 @@ def test_body_first_live_updates_original_toggle_and_logout(browser, viewport, t
         assert errors == []
         timings = page.evaluate("performance.getEntriesByType('measure').filter(e=>e.name.startsWith('raynews-')).map(e=>({name:e.name,duration:e.duration}))")
         assert {e['name'] for e in timings} >= {'raynews-body-visible','raynews-shared-visible'}
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize('delayed_shared', [False, True])
+def test_shared_translation_does_not_replace_visible_reading_body(browser, delayed_shared, tmp_path):
+    context = browser.new_context(viewport={'width':390,'height':844}, service_workers='block')
+    context.add_init_script("localStorage.setItem('raynews_token','local-mock-token');localStorage.setItem('raynews_user',JSON.stringify(%s));" % json.dumps(USER))
+    pending_shared = []
+    translation = {'translation':json.dumps({'title':'中文标题','html':'<p>中文译文正文</p>'})}
+    def route(request_route):
+        path = urlsplit(request_route.request.url).path
+        if path == '/':
+            request_route.fulfill(body=(ROOT/'frontend/index.html').read_text(), content_type='text/html')
+            return
+        if path.endswith(('.png', '.ico')):
+            asset = ROOT / 'frontend' / path.lstrip('/')
+            request_route.fulfill(body=asset.read_bytes(), content_type='image/png')
+            return
+        if path == '/api/news':
+            data = {'items':ARTICLES,'total':2,'page':1,'size':30,'total_pages':1}
+        elif path == '/api/news/1':
+            data = ARTICLES[0]
+        elif path == '/auth/me':
+            data = {'user':USER}
+        elif path == '/settings':
+            data = {'share_active':True,'share_view_translation':True,'share_view_title':True}
+        elif path == '/ai/result/1':
+            if delayed_shared:
+                pending_shared.append(request_route)
+                return
+            data = translation
+        elif path in ('/ai/result-updates','/ai/translation-updates'):
+            data = {'cursor':'local|0','has_more':False,'items':[]}
+        elif path in ('/sources','/api/sources'):
+            data = {'sources':[],'categories':[]}
+        else:
+            data = {}
+        request_route.fulfill(json=data)
+    context.route('**/*', route)
+    page = context.new_page()
+    try:
+        page.goto('http://raynews.test/')
+        page.wait_for_function('news.length === 2 && userAutoSettings?.share_view_translation')
+        page.evaluate("""() => {
+          window.firstReadableArticleBody = null;
+          window.firstReadableArticleTitle = null;
+          const check = () => {
+            const body = document.getElementById('articleBody');
+            const text = body?.innerText?.trim() || '';
+            if (text && text !== '加载中...') {
+              window.firstReadableArticleBody = text;
+              window.firstReadableArticleTitle = document.querySelector('#articleWrap h1')?.innerText;
+            }
+            else requestAnimationFrame(check);
+          };
+          requestAnimationFrame(check);
+        }""")
+        page.locator('#list .item[data-id="1"]').click()
+        page.wait_for_function('window.firstReadableArticleBody !== null')
+        if delayed_shared:
+            assert page.evaluate('window.firstReadableArticleBody') == 'Readable original body 1'
+            assert page.evaluate('window.firstReadableArticleTitle') == 'Original article 1'
+            assert pending_shared
+            for pending in pending_shared:
+                pending.fulfill(json=translation)
+            expect(page.locator('#sharedResultStatus')).to_contain_text('译文已就绪')
+            expect(page.locator('#articleBody')).to_have_text('Readable original body 1')
+            expect(page.locator('.ai-translate-btn')).to_have_text('译文')
+            page.wait_for_timeout(400)
+            page.screenshot(path=str(tmp_path/'late-translation-offer.png'))
+            page.locator('.ai-translate-btn').click()
+            expect(page.locator('#articleBody')).to_have_text('中文译文正文')
+        else:
+            assert page.evaluate('window.firstReadableArticleBody') == '中文译文正文'
+            assert page.evaluate('window.firstReadableArticleTitle') == '中文标题'
+            expect(page.locator('#articleWrap h1')).to_have_text('中文标题')
+            expect(page.locator('.ai-translate-btn')).to_have_text('原文')
+            page.wait_for_timeout(400)
+            page.screenshot(path=str(tmp_path/'translation-first-paint.png'))
+            page.locator('.ai-translate-btn').click()
+            expect(page.locator('#articleBody')).to_have_text('Readable original body 1')
     finally:
         context.close()
 

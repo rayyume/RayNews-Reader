@@ -634,6 +634,7 @@ global.syncArticleHistory = () => {};
 global.fetchArticleDetail = () => new Promise(() => {});
 global.autoDisplaySummary = () => {};
 global.authToken = null;
+global.userAutoSettings = null;
 global.activeArticleRequestId = 0;
 global.markArticleOpen = () => {};
 global.news = [
