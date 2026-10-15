@@ -772,7 +772,7 @@ def test_run_does_not_retain_or_repeat_all_streamed_entries_at_cycle_end():
     assert "new_entries" not in run_block
     assert "failed_batches.append(stream_batch)" in run_block
     assert "for failed_batch in failed_batches:" in run_block
-    assert "ensure_article_sources(conn)" in run_block
+    assert "maintain_source_categories(conn, force=False)" in run_block
     assert "upsert_articles(conn," not in run_block
 
 

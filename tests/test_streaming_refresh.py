@@ -71,13 +71,13 @@ def test_run_streams_articles_into_sqlite_in_batches_before_cycle_completes(tmp_
     monkeypatch.setattr(fetcher, "upsert_articles", tracking_upsert)
 
     ensure_sources_calls = []
-    original_ensure_sources = fetcher.ensure_article_sources
+    original_ensure_sources = fetcher.maintain_source_categories
 
-    def tracking_ensure_sources(conn):
+    def tracking_ensure_sources(conn, **kwargs):
         ensure_sources_calls.append(True)
-        return original_ensure_sources(conn)
+        return original_ensure_sources(conn, **kwargs)
 
-    monkeypatch.setattr(fetcher, "ensure_article_sources", tracking_ensure_sources)
+    monkeypatch.setattr(fetcher, "maintain_source_categories", tracking_ensure_sources)
 
     fetcher.run()
 
@@ -251,13 +251,13 @@ def test_run_retries_only_failed_stream_batch_once_without_refetching_provider(
     monkeypatch.setattr(fetcher, "upsert_articles", flaky_upsert)
 
     ensure_sources_calls = []
-    original_ensure_sources = fetcher.ensure_article_sources
+    original_ensure_sources = fetcher.maintain_source_categories
 
-    def tracking_ensure_sources(conn):
+    def tracking_ensure_sources(conn, **kwargs):
         ensure_sources_calls.append(True)
-        return original_ensure_sources(conn)
+        return original_ensure_sources(conn, **kwargs)
 
-    monkeypatch.setattr(fetcher, "ensure_article_sources", tracking_ensure_sources)
+    monkeypatch.setattr(fetcher, "maintain_source_categories", tracking_ensure_sources)
     backfill_calls = []
     monkeypatch.setattr(
         fetcher,

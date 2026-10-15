@@ -20,6 +20,8 @@ from collections import OrderedDict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from observability import record_phase, warn_rate_limited
+
 from bs4 import BeautifulSoup
 
 from image_cache import (
@@ -40,7 +42,22 @@ from source_categories import (
     UNCATEGORIZED,
 )
 
-REFRESH_INTERVAL = 900  # 15 minutes
+_IMAGE_RESPONSE_SLOTS = threading.BoundedSemaphore(32)
+
+
+def _refresh_interval_seconds():
+    raw = os.environ.get('REFRESH_INTERVAL_SECONDS', '900')
+    try:
+        value = int(raw)
+        if 180 <= value <= 86400:
+            return value
+    except ValueError:
+        pass
+    logging.getLogger('refresh').warning('Invalid REFRESH_INTERVAL_SECONDS; using 900')
+    return 900
+
+
+REFRESH_INTERVAL = _refresh_interval_seconds()
 LOCK_FILE = "/tmp/raynews-fetcher.lock"
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 DB_FILE = DATA_DIR / "news.db"
@@ -645,6 +662,9 @@ def run_fetcher(existing_article_ids: set[int] | None = None):
         })
         log.info(f"Fetcher done (exit={result['returncode']})")
         if is_ok:
+            with REFRESH_JOB_LOCK:
+                if REFRESH_JOB.get("job_id") == CURRENT_FETCH_JOB_ID:
+                    REFRESH_JOB["stage"] = "finalizing"
             clear_article_cache()
             try:
                 conn = sqlite3.connect(str(DB_FILE))
@@ -737,6 +757,7 @@ def _positive_article_ids(values) -> list[int]:
 def _refresh_job_json_locked() -> bytes:
     payload = dict(REFRESH_JOB)
     baseline_ids = set(payload.pop("_baseline_ids", set()) or set())
+    payload.pop("_accepted_monotonic", None)
     if payload.get("status") == "running":
         progress = _read_fetch_progress()
         # Match by exact job_id (fetcher.py stamps it from FETCH_JOB_ID) rather than a
@@ -744,6 +765,9 @@ def _refresh_job_json_locked() -> bytes:
         # the same wall-clock second could otherwise let a previous cycle's progress
         # file be mistaken for this job's progress.
         if progress and progress.get("job_id") and progress.get("job_id") == payload.get("job_id"):
+            if payload.get("stage") != "finalizing":
+                payload["stage"] = progress.get("stage", "fetching")
+            payload["phase_durations_ms"] = progress.get("phase_durations_ms", {})
             if "inserted_ids" in progress:
                 new_ids_so_far = [
                     article_id
@@ -770,6 +794,7 @@ def _remember_terminal_job_locked() -> None:
         return
     terminal = dict(REFRESH_JOB)
     terminal.pop("_baseline_ids", None)
+    terminal.pop("_accepted_monotonic", None)
     REFRESH_JOB_HISTORY[job_id] = terminal
     REFRESH_JOB_HISTORY.move_to_end(job_id)
     while len(REFRESH_JOB_HISTORY) > REFRESH_JOB_HISTORY_LIMIT:
@@ -797,7 +822,11 @@ def _run_refresh_job(job_id: str) -> None:
     new_count = 0
     new_ids = []
     error = ""
+    job_started = time.monotonic()
     try:
+        with REFRESH_JOB_LOCK:
+            accepted = REFRESH_JOB.get("_accepted_monotonic", job_started)
+        queue_ms = record_phase(log, 'queue_wait', accepted, job_id=job_id)
         before_ids = article_id_snapshot()
         with REFRESH_JOB_LOCK:
             if REFRESH_JOB["job_id"] != job_id:
@@ -806,6 +835,7 @@ def _run_refresh_job(job_id: str) -> None:
             # Reuse it to filter running progress instead of adding a status-time
             # database scan for every poll.
             REFRESH_JOB["_baseline_ids"] = before_ids
+            REFRESH_JOB["stage"] = "fetching"
         CURRENT_FETCH_JOB_ID = job_id
         body, status = run_fetcher(before_ids)
         payload = json.loads(body)
@@ -827,14 +857,21 @@ def _run_refresh_job(job_id: str) -> None:
     with REFRESH_JOB_LOCK:
         if REFRESH_JOB["job_id"] != job_id:
             return
+        progress = _read_fetch_progress()
+        phases = progress.get("phase_durations_ms", {}) if progress and progress.get("job_id") == job_id else {}
         REFRESH_JOB.update({
+            "phase_durations_ms": phases,
             "status": "completed" if completed else "failed",
             "finished_at": int(time.time()),
+            "stage": "completed" if completed else "failed",
+            "queue_wait_ms": queue_ms if 'queue_ms' in locals() else 0,
+            "server_duration_ms": round((time.monotonic()-job_started)*1000,3),
             "new_count": new_count,
             "new_ids": new_ids if completed else [],
             "error": error,
         })
         _remember_terminal_job_locked()
+        record_phase(log, 'refresh_complete', job_started, job_id=job_id, count=new_count)
 
 
 def start_refresh_job(trigger: str = "manual") -> tuple[bytes, int]:
@@ -847,6 +884,11 @@ def start_refresh_job(trigger: str = "manual") -> tuple[bytes, int]:
             "status": "running",
             "trigger": trigger,
             "started_at": int(time.time()),
+            "_accepted_monotonic": time.monotonic(),
+            "stage": "accepted",
+            "phase_durations_ms": {},
+            "queue_wait_ms": 0,
+            "server_duration_ms": 0,
             "finished_at": None,
             "new_count": 0,
             "new_ids": [],

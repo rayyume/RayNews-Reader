@@ -22,6 +22,7 @@ from datetime import timezone as dt_timezone, timedelta
 from urllib.parse import urljoin
 
 import requests
+from observability import record_phase, timed_phase
 from bs4 import BeautifulSoup
 
 from network_safety import safe_get
@@ -30,7 +31,7 @@ from source_categories import (
     ensure_article_sources, init_source_categories,
     ensure_article_source_columns,
     extract_domain_from_url, extract_domains_from_html, lookup_source_by_domain,
-    publisher_source_for_domain,
+    publisher_source_for_domain, maintain_source_categories,
 )
 
 # ─── Config (overridable via environment variables) ──────
@@ -399,6 +400,22 @@ def backfill_missing_fulltext(conn: sqlite3.Connection) -> int:
     return updated
 
 
+_FETCH_PHASE = 'starting'
+_FETCH_PHASE_TIMINGS = {}
+_FETCH_PROGRESS = (0, 0, [])
+
+
+def _set_fetch_phase(phase):
+    global _FETCH_PHASE
+    _FETCH_PHASE = phase
+    write_fetch_progress(*_FETCH_PROGRESS)
+
+
+def _finish_fetch_phase(phase, started):
+    elapsed = record_phase(log, phase, started, job_id=FETCH_JOB_ID)
+    _FETCH_PHASE_TIMINGS[phase] = elapsed
+
+
 def write_fetch_progress(
     inserted: int,
     total: int,
@@ -408,6 +425,7 @@ def write_fetch_progress(
     /refresh/status can report how many articles have already landed in SQLite
     while the cycle is still running. Written atomically (temp + rename), same
     pattern as news.json, so a concurrent reader never sees a half-written file."""
+    global _FETCH_PROGRESS
     normalized_ids = []
     for value in inserted_ids or []:
         try:
@@ -416,7 +434,10 @@ def write_fetch_progress(
             continue
         if article_id > 0:
             normalized_ids.append(article_id)
+    _FETCH_PROGRESS = (inserted, total, list(normalized_ids))
     payload = {
+        "stage": _FETCH_PHASE,
+        "phase_durations_ms": dict(_FETCH_PHASE_TIMINGS),
         "pid": os.getpid(),
         "job_id": FETCH_JOB_ID,
         "inserted": inserted,
@@ -433,6 +454,7 @@ def write_fetch_progress(
         log.warning(f"Could not write fetch progress: {e}")
 
 
+@timed_phase("stream_commit")
 def _commit_stream_batch(
     conn: sqlite3.Connection,
     batch: list[dict],
@@ -1348,6 +1370,7 @@ def fetch_wechat_article(url: str) -> dict | None:
 
 
 # ─── Main Pipeline ────────────────────────────────────────
+@timed_phase("article_download")
 def process_message(msg: dict, orig_msg_id: int) -> dict:
     """Process a single Telegram message into a news entry."""
     content = msg["html"]
@@ -1534,6 +1557,10 @@ def run():
     log.info("=" * 50)
     log.info("Starting fetch cycle")
     cycle_started_at = time.monotonic()
+    _FETCH_PHASE_TIMINGS.clear()
+    global _FETCH_PROGRESS
+    _FETCH_PROGRESS = (0, 0, [])
+    _set_fetch_phase('bootstrap')
 
     state = load_state()
     try:
@@ -1550,8 +1577,10 @@ def run():
     except Exception as e:
         log.error(f"SQLite bootstrap check failed: {e}")
 
+    _set_fetch_phase('telegram_list')
     telegram_fetch_started_at = time.monotonic()
     messages, highest_observed_id = fetch_all_new_messages(state)
+    _finish_fetch_phase('telegram_list', telegram_fetch_started_at)
     log.info(f"[timing] Telegram fetch: {time.monotonic() - telegram_fetch_started_at:.2f}s")
 
     if not messages:
@@ -1580,12 +1609,15 @@ def run():
             conn.close()
         except Exception as e:
             log.error(f"SQLite init failed: {e}")
+        _finish_fetch_phase('total', cycle_started_at)
+        _set_fetch_phase('completed')
         log.info(f"[timing] Fetch cycle total: {time.monotonic() - cycle_started_at:.2f}s (no new messages)")
         return
 
     # Reset progress for this cycle before streaming starts, so a stale value from a
     # previous run/crash is never mistaken for current progress (see
     # write_fetch_progress() / refresh_server.py's started_at guard).
+    _set_fetch_phase('fulltext_and_ingest')
     write_fetch_progress(0, len(messages), [])
 
     # Process new messages with thread pool, streaming completed articles into SQLite
@@ -1696,6 +1728,7 @@ def run():
         f"{inserted_total} inserted, {failed_count} failed)"
     )
 
+    _finish_fetch_phase('fulltext_and_ingest', fulltext_started_at)
     # Update state with latest message ID
     # Only advance last_seen_id if ALL messages processed successfully,
     # otherwise failed messages would be permanently skipped on next run.
@@ -1717,6 +1750,7 @@ def run():
     # ── SQLite sync ── the load-bearing step: source-category bookkeeping that
     # GET /sources and the drawer rely on. Runs before the news.json mirror below
     # so a slow/failed news.json write can never delay or block it.
+    _set_fetch_phase('database_sync')
     sqlite_sync_started_at = time.monotonic()
     mirror_entries = None
     try:
@@ -1724,7 +1758,11 @@ def run():
         migrate_news_json(conn)
         # Streaming batches always skip the expensive full-table source sync. Run
         # that bookkeeping exactly once after both initial commits and batch retries.
-        ensure_article_sources(conn)
+        source_started = time.monotonic()
+        _set_fetch_phase('source_maintenance')
+        maintain_source_categories(conn, force=False)
+        _finish_fetch_phase('source_maintenance', source_started)
+        _set_fetch_phase('database_sync')
         conn.commit()
         # Retry any recent articles whose Telegraph full text failed on arrival, so a
         # transient timeout/5xx doesn't leave them permanently downgraded to the excerpt
@@ -1743,10 +1781,12 @@ def run():
         log.error(f"SQLite write failed: {e}")
     log.info(f"[timing] SQLite sync: {time.monotonic() - sqlite_sync_started_at:.2f}s")
 
+    _finish_fetch_phase('database_sync', sqlite_sync_started_at)
     # ── news.json mirror ── best-effort only: legacy bootstrap source for
     # migrate_news_json() when SQLite is empty, not read by anything else. A
     # failure here is logged, not raised, so it can never fail the fetch cycle —
     # articles are already durably in SQLite by this point regardless.
+    _set_fetch_phase('json_mirror')
     news_json_started_at = time.monotonic()
     try:
         if mirror_entries is not None:
@@ -1759,6 +1799,9 @@ def run():
     log.info(f"[timing] news.json mirror write: {time.monotonic() - news_json_started_at:.2f}s")
 
     log.info(f"[timing] Fetch cycle total: {time.monotonic() - cycle_started_at:.2f}s")
+    _finish_fetch_phase('json_mirror', news_json_started_at)
+    _finish_fetch_phase('total', cycle_started_at)
+    _set_fetch_phase('completed')
     log.info("Fetch cycle complete")
 
 

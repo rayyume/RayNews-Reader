@@ -11,6 +11,7 @@ services:
     volumes:
       - ./data:/app/data
     environment:
+      - REFRESH_INTERVAL_SECONDS=${REFRESH_INTERVAL_SECONDS:-900}
       # 必填：数据源与站点对外地址
       # 推荐用 TELEGRAM_CHANNEL_URL 指定完整频道链接（域名可换成镜像域名，无需改代码）
       - TELEGRAM_CHANNEL_URL=${TELEGRAM_CHANNEL_URL:-}

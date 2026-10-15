@@ -211,6 +211,26 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BODY_BYTES
 
 
+@app.before_request
+def begin_request_timing():
+    supplied = request.headers.get('X-Request-ID', '')
+    g.request_id = supplied if re.fullmatch(r'[A-Za-z0-9_-]{1,64}', supplied) else uuid.uuid4().hex
+    g.request_started = time.monotonic()
+
+
+@app.after_request
+def finish_request_timing(response):
+    elapsed = (time.monotonic()-getattr(g, 'request_started', time.monotonic()))*1000
+    response.headers['X-Request-ID'] = g.request_id
+    response.headers['Server-Timing'] = f'app;dur={elapsed:.3f}'
+    # Route templates have bounded cardinality and contain no query credentials.
+    app.logger.info('request_id=%s route=%s status=%s duration_ms=%.3f',
+                    g.request_id, str(request.url_rule or 'unmatched'), response.status_code, elapsed)
+    if request.path.startswith('/ai/result'):
+        response.headers['Cache-Control'] = 'private, no-store'
+    return response
+
+
 # ─── JSON error handler — prevent HTML responses on errors ─────
 @app.errorhandler(Exception)
 def handle_exception(e):
