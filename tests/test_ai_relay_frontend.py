@@ -18,7 +18,11 @@ def _ai_chat_block():
 def _auto_display_summary_block():
     start = HTML.index("async function autoDisplaySummary(")
     end = HTML.index("function showAIActions(", start)
-    return HTML[start:end]
+    return ("function sharedArticleContext(id) { return {id}; }\n"
+            "function sharedContextCurrent() { return true; }\n"
+            "function sharedResultStatus() {}\n"
+            "async function readSharedResult(ctx) { return (await fetch('/ai/result/' + ctx.id)).json(); }\n"
+            + HTML[start:end])
 
 
 def _translation_update_block():
@@ -60,7 +64,8 @@ def _share_connection_actions_block():
 def _user_settings_sync_block():
     start = HTML.index("async function loadUserSettings()")
     end = HTML.index("// ─── General Settings", start)
-    return HTML[start:end]
+    return ("function sharedPermissionKey(s) { return JSON.stringify(s); }\n"
+            "var sharedAccessGeneration = 0; function cancelSharedResultReads() {}\n" + HTML[start:end])
 
 
 def _share_tab_block():

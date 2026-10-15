@@ -1265,6 +1265,10 @@ function applyThemePreference(pref) {
 }
 
 // ═══ Auth State ══════════════════════════════════════════
+let sharedSessionGeneration = 0;
+let sharedAccessGeneration = 0;
+let sharedSettingsRequestSequence = 0;
+const sharedResultReads = new Map();
 let authToken = null;
 let authUser = null;
 let authMode = 'login'; // 'login' | 'register'
@@ -1468,6 +1472,8 @@ function compressImage(file, maxBytes) {
 }
 
 function saveAuth(token, user) {
+  sharedSessionGeneration++;
+  cancelSharedResultReads();
   authToken = token;
   authUser = user;
   localStorage.setItem('raynews_token', token);
@@ -1476,6 +1482,9 @@ function saveAuth(token, user) {
 }
 
 function logout() {
+  sharedSessionGeneration++;
+  cancelSharedResultReads();
+  clearSharedArticleView();
   authToken = null;
   authUser = null;
   localStorage.removeItem('raynews_token');
@@ -3921,7 +3930,7 @@ async function testSystemAiConnection() {
 async function loadSummarySettings() {
   try {
     const data = await apiFetch('/settings');
-    if (!data) return;
+    if (!data || settingsSequence !== sharedSettingsRequestSequence || settingsSession !== sharedSessionGeneration || settingsToken !== authToken) return;
     document.getElementById('autoSummaryEnabled').checked = !!data.auto_summary_enabled;
     document.getElementById('autoTitleSummaryEnabled').checked = !!data.auto_title_summary_enabled;
   } catch (e) {}
@@ -3955,7 +3964,7 @@ async function saveSummarySettings() {
 async function loadNotifyConfig() {
   try {
     const data = await apiFetch('/settings');
-    if (!data) return;
+    if (!data || settingsSequence !== sharedSettingsRequestSequence || settingsSession !== sharedSessionGeneration || settingsToken !== authToken) return;
     const nc = data.notification_config || {};
     const resend = nc.resend || {};
     document.getElementById('notifyToEmail').value = resend.to_email || '';
@@ -4014,9 +4023,12 @@ async function testNotification() {
 }
 
 async function loadUserSettings() {
+  const settingsSequence = ++sharedSettingsRequestSequence;
+  const settingsSession = sharedSessionGeneration;
+  const settingsToken = authToken;
   try {
     const data = await apiFetch('/settings');
-    if (!data) return;
+    if (!data || settingsSequence !== sharedSettingsRequestSequence || settingsSession !== sharedSessionGeneration || settingsToken !== authToken) return;
     const nextSettings = {
       auto_translate_title: !!data.auto_translate_title,
       auto_translate_content: !!data.auto_translate_content,
@@ -4109,6 +4121,10 @@ function synchronizeOpenArticleShareView(previousSettings, nextSettings) {
 async function synchronizeShareAccessState(nextSettings) {
   const previousSettings = userAutoSettings || {};
   userAutoSettings = nextSettings || {};
+  if (sharedPermissionKey(previousSettings) !== sharedPermissionKey(userAutoSettings)) {
+    sharedAccessGeneration++;
+    cancelSharedResultReads();
+  }
   renderList();
 
   const searchOverlay = document.getElementById('searchOverlay');
@@ -4841,12 +4857,14 @@ function publishSharedAIResult(articleId, payload) {
 
 async function aiSummarize(articleId) {
   if (isRestrictedUser()) { showToast('🔒 预览账号待管理员审核，暂不可用此功能'); return; }
+  const context = sharedArticleContext(articleId);
   const btn = document.querySelector('.ai-summarize-btn');
   if (btn) btn.disabled = true;
 
   const articleWrap = document.getElementById('articleWrap');
   let existingSummary = document.getElementById('aiSummaryTop');
   const setSummaryHtml = (innerHtml) => {
+    if (!sharedContextCurrent(context)) return;
     if (!existingSummary) {
       existingSummary = document.createElement('div');
       existingSummary.id = 'aiSummaryTop';
@@ -4863,8 +4881,8 @@ async function aiSummarize(articleId) {
 
   try {
     // 1) Server already has a shared result — just show it, no LLM call.
-    const cachedResp = await fetch('/ai/result/' + articleId, { headers: { 'Authorization': 'Bearer ' + authToken } });
-    const cached = cachedResp.ok ? await cachedResp.json().catch(() => null) : null;
+    const cached = await readSharedResult(context);
+    if (!sharedContextCurrent(context)) return;
     if (cached && cached.summary) {
       setSummaryHtml(esc(cached.summary));
       if (btn) btn.disabled = false;
@@ -4881,7 +4899,9 @@ async function aiSummarize(articleId) {
     const title = articleWrap.querySelector('h1')?.textContent || '';
     const bodyEl = document.getElementById('articleBody');
     const text = bodyEl ? (bodyEl.innerText || bodyEl.textContent || '') : '';
+    if (!sharedContextCurrent(context)) return;
     const summary = (await aiChat(config, buildSummarizeMessages(title, text), 2000, 0.3)).trim();
+    if (!sharedContextCurrent(context)) return;
     setSummaryHtml(esc(summary));
 
     // 3) Share the result back to the server for other users to reuse.
@@ -4919,6 +4939,7 @@ async function aiTranslate(articleId) {
     return;
   }
 
+  const context = sharedArticleContext(articleId);
   // First-time translate
   if (btn) btn.disabled = true;
 
@@ -4928,6 +4949,7 @@ async function aiTranslate(articleId) {
   bodyEl.innerHTML = '<p style="color:var(--text-2);text-align:center;padding:40px 0">⏳ 翻译中...</p>';
 
   const applyTranslation = (translatedHtmlRaw, translatedTitle) => {
+    if (!sharedContextCurrent(context)) return;
     const translatedHtml = proxyImages(sanitizeTranslatedHtml(translatedHtmlRaw));
     bodyEl.dataset.originalHtml = originalHtml;
     bodyEl.dataset.originalTitle = originalTitle;
@@ -4941,8 +4963,8 @@ async function aiTranslate(articleId) {
 
   try {
     // 1) Server already has a shared result — just show it, no LLM call.
-    const cachedResp = await fetch('/ai/result/' + articleId, { headers: { 'Authorization': 'Bearer ' + authToken } });
-    const cached = cachedResp.ok ? await cachedResp.json().catch(() => null) : null;
+    const cached = await readSharedResult(context);
+    if (!sharedContextCurrent(context)) return;
     if (
       cached
       && cached.translation
@@ -4977,7 +4999,9 @@ async function aiTranslate(articleId) {
       if (btn) btn.disabled = false;
       return;
     }
+    if (!sharedContextCurrent(context)) return;
     const raw = await aiChat(config, buildTranslateFullMessages(originalHtml, originalTitle), 8000, 0.3);
+    if (!sharedContextCurrent(context)) return;
     let translatedTitle = '';
     let translatedHtml = raw;
     if (originalTitle) {
@@ -4994,6 +5018,7 @@ async function aiTranslate(articleId) {
       translation: JSON.stringify({ title: translatedTitle, html: translatedHtml }),
     });
   } catch (e) {
+    if (!sharedContextCurrent(context)) return;
     bodyEl.innerHTML = originalHtml;
     showToast('❌ 生成失败: ' + (e.message || '请检查你的 API 配置和网络（自建 endpoint 需支持浏览器跨域）'));
     if (btn) btn.disabled = false;
@@ -5004,14 +5029,114 @@ async function aiTranslate(articleId) {
  * Auto-display cached AI summary when opening an article (no click needed).
  * Called after renderArticleBody completes.
  */
+function sharedPermissionKey(settings = userAutoSettings) {
+  return ['share_active', 'share_view_title', 'share_view_translation', 'share_view_summary']
+    .map(key => !!settings?.[key]).join(':');
+}
+
+function sharedArticleContext(articleId) {
+  return { id: Number(articleId), open: activeArticleRequestId, session: sharedSessionGeneration,
+    token: authToken, access: sharedAccessGeneration, permissions: sharedPermissionKey() };
+}
+
+function sharedContextCurrent(context) {
+  const overlay = document.getElementById('overlay');
+  return !!context.token && context.session === sharedSessionGeneration && context.token === authToken
+    && context.access === sharedAccessGeneration && context.permissions === sharedPermissionKey() && context.open === activeArticleRequestId
+    && overlay?.classList.contains('open') && Number(overlay.dataset.articleId) === context.id;
+}
+
+function cancelSharedResultReads() {
+  for (const item of sharedResultReads.values()) item.controller.abort();
+  sharedResultReads.clear();
+}
+
+function clearSharedArticleView() {
+  document.getElementById('aiSummaryTop')?.remove();
+  document.getElementById('sharedResultStatus')?.remove();
+  const body = document.getElementById('articleBody');
+  if (!body) return;
+  const title = document.getElementById('articleWrap')?.querySelector('h1');
+  if (body.dataset.originalHtml) body.innerHTML = body.dataset.originalHtml;
+  if (title && body.dataset.originalTitle) title.textContent = body.dataset.originalTitle;
+  for (const key of ['translatedHtml', 'translatedTitle', 'showingTranslation', 'sharedTranslation']) delete body.dataset[key];
+  const button = document.querySelector('.ai-translate-btn');
+  if (button) button.textContent = '翻译';
+}
+
+function sharedResultStatus(context, text, retry = false) {
+  if (!sharedContextCurrent(context)) return;
+  let el = document.getElementById('sharedResultStatus');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'sharedResultStatus';
+    el.setAttribute('role', 'status');
+    document.getElementById('articleWrap').appendChild(el);
+  }
+  el.textContent = text;
+  if (retry) {
+    const button = document.createElement('button');
+    button.textContent = '重试读取';
+    button.onclick = () => { if (sharedContextCurrent(context)) autoDisplaySummary(context.id); };
+    el.appendChild(button);
+  }
+}
+
+function readSharedResult(context) {
+  const key = [context.id, context.open, context.session, context.access, context.permissions].join('|');
+  if (sharedResultReads.has(key)) return sharedResultReads.get(key).promise;
+  const controller = new AbortController();
+  const promise = (async () => {
+    const deadline = Date.now() + 30000;
+    for (let attempt = 0; ; attempt++) {
+      if (controller.signal.aborted || !sharedContextCurrent(context)) throw new DOMException('cancelled', 'AbortError');
+      const requestController = new AbortController();
+      const cancel = () => requestController.abort();
+      controller.signal.addEventListener('abort', cancel, { once: true });
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; requestController.abort(); }, Math.min(8000, deadline - Date.now()));
+      let failure;
+      try {
+        const response = await fetch('/ai/result/' + context.id, {
+          headers: { Authorization: 'Bearer ' + context.token }, cache: 'no-store', signal: requestController.signal,
+        });
+        if (!response.ok) {
+          failure = Object.assign(new Error('HTTP ' + response.status), { status: response.status });
+          const header = response.headers.get('Retry-After');
+          if (header) failure.retryAfter = /^\d+$/.test(header) ? Number(header) * 1000 : Math.max(0, Date.parse(header) - Date.now());
+          throw failure;
+        }
+        const data = await response.json();
+        if (!data || typeof data !== 'object' || Array.isArray(data)) throw new SyntaxError('共享结果格式错误');
+        return data;
+      } catch (error) {
+        failure = error;
+        if (controller.signal.aborted || !sharedContextCurrent(context)) throw new DOMException('cancelled', 'AbortError');
+        const retryable = timedOut || error instanceof TypeError || [429, 500, 502, 503, 504].includes(error.status);
+        const wait = Math.max((800 * 2 ** attempt) * (0.8 + Math.random() * 0.4), error.retryAfter || 0);
+        if (!retryable || attempt >= 2 || Date.now() + wait + 1 >= deadline) throw error;
+        await abortableDelay(wait, controller.signal);
+      } finally {
+        clearTimeout(timer);
+        controller.signal.removeEventListener('abort', cancel);
+      }
+    }
+  })().finally(() => {
+    if (sharedResultReads.get(key)?.promise === promise) sharedResultReads.delete(key);
+  });
+  sharedResultReads.set(key, { controller, promise });
+  return promise;
+}
+
 async function autoDisplaySummary(articleId) {
-  if (isRestrictedUser()) return;
+  if (isRestrictedUser() || !authToken) return;
+  const context = sharedArticleContext(articleId);
+  if (!sharedContextCurrent(context)) return;
+  sharedResultStatus(context, '正在读取共享结果…');
   try {
-    const resp = await fetch('/ai/result/' + articleId, {
-      headers: { 'Authorization': 'Bearer ' + authToken },
-    });
-    const data = await resp.json();
-    if (!data) return;
+    const data = await readSharedResult(context);
+    if (!sharedContextCurrent(context)) return;
+    sharedResultStatus(context, data.summary || data.translation ? '' : '暂无共享结果');
     const shareActive = !!userAutoSettings?.share_active;
     const articleWrap = document.getElementById('articleWrap');
     if (!articleWrap) return;
@@ -5040,6 +5165,10 @@ async function autoDisplaySummary(articleId) {
       const bodyEl = document.getElementById('articleBody');
       if (!bodyEl) return;
       const t = data.translation.trim();
+      if (bodyEl.dataset.showingTranslation === 'false') {
+        bodyEl.dataset.translatedHtml = '';
+        return;
+      }
       // New format with title: JSON {"title": "...", "html": "..."}
       if (t.startsWith('{')) {
         let cachedData;
@@ -5048,8 +5177,8 @@ async function autoDisplaySummary(articleId) {
         const articleWrap = document.getElementById('articleWrap');
         const h1El = articleWrap ? articleWrap.querySelector('h1') : null;
         // Save original before replacing for toggle support
-        bodyEl.dataset.originalHtml = bodyEl.innerHTML;
-        bodyEl.dataset.originalTitle = h1El ? h1El.textContent : '';
+        if (!bodyEl.dataset.originalHtml) bodyEl.dataset.originalHtml = bodyEl.innerHTML;
+        if (!bodyEl.dataset.originalTitle) bodyEl.dataset.originalTitle = h1El ? h1El.textContent : '';
         bodyEl.dataset.translatedHtml = proxyImages(sanitizeTranslatedHtml(cachedData.html));
         const cachedTitle = userAutoSettings?.share_view_title
           ? (cachedData.title || '')
@@ -5067,7 +5196,7 @@ async function autoDisplaySummary(articleId) {
       // Legacy format: plain HTML (starts with '<') — no title
       if (t.startsWith('<')) {
         // Save original before replacing for toggle support
-        bodyEl.dataset.originalHtml = bodyEl.innerHTML;
+        if (!bodyEl.dataset.originalHtml) bodyEl.dataset.originalHtml = bodyEl.innerHTML;
         bodyEl.dataset.translatedHtml = proxyImages(sanitizeTranslatedHtml(t));
         bodyEl.dataset.showingTranslation = 'true';
         bodyEl.innerHTML = bodyEl.dataset.translatedHtml;
@@ -5080,7 +5209,9 @@ async function autoDisplaySummary(articleId) {
       // anything else rather than innerHTML-rendering unrecognized content.
     }
   } catch (e) {
-    // Silent fail — cache check is optional
+    if (e.name === 'AbortError' || !sharedContextCurrent(context)) return;
+    if ([401, 403].includes(e.status)) clearSharedArticleView();
+    sharedResultStatus(context, [401, 403].includes(e.status) ? '共享结果访问不可用，请检查登录和共享权限' : '共享结果读取失败', ![401, 403, 404].includes(e.status));
   }
 }
 
@@ -9022,6 +9153,7 @@ function finishArticleClose() {
   _closingOverlay = true;
   articleReturnInProgress = true;
   activeArticleRequestId++;
+  cancelSharedResultReads();
   const overlay = document.getElementById('overlay');
   overlay.classList.remove('open');
   overlay.classList.remove('from-source-history');
