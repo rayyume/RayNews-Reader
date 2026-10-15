@@ -15,7 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
-def share_env():
+def share_env(tmp_path, monkeypatch):
+    news_path = tmp_path / "news.db"
+    sqlite3.connect(news_path).close()
+    monkeypatch.setattr(web_server, "NEWS_DB", str(news_path))
     db_path = ROOT / f"tmp-share-recovery-{uuid.uuid4().hex}.db"
     old_db_file = models.DB_FILE
     models.close_db()
@@ -226,7 +229,7 @@ def test_suspension_hides_cached_summary_and_translation_without_clearing_prefer
     monkeypatch.setattr(
         web_server,
         "_get_ai_result",
-        lambda article_id: {
+        lambda article_id, **kwargs: {
             "summary": "shared summary",
             "summary_error": "old error",
             "summary_error_at": "2026-07-27T10:00:00",
@@ -238,7 +241,10 @@ def test_suspension_hides_cached_summary_and_translation_without_clearing_prefer
     response = client.get("/ai/result/42", headers=auth_headers(user_id))
 
     assert response.status_code == 200
-    assert response.get_json() == {"updated_at": "2026-07-27T10:00:00"}
+    payload = response.get_json()
+    assert payload["updated_at"] == "2026-07-27T10:00:00"
+    assert payload["access"]["share_active"] is False
+    assert not {"summary", "translation"} & payload.keys()
     settings = models.get_user_settings(user_id)
     assert settings["share_ai_results"] == 1
     assert settings["share_view_title"] == 1
@@ -285,7 +291,7 @@ def test_translation_cache_route_gates_html_and_embedded_title_independently(
     monkeypatch.setattr(
         web_server,
         "_get_ai_result",
-        lambda article_id: {
+        lambda article_id, **kwargs: {
             "translation": '{"title":"共享译名","html":"<p>共享译文</p>"}',
             "updated_at": "now",
         },
@@ -1787,7 +1793,7 @@ def test_new_config_save_is_effectively_inactive_until_its_probe_finishes(share_
     monkeypatch.setattr(
         web_server,
         "_get_ai_result",
-        lambda article_id: {"summary": "shared", "updated_at": "now"},
+        lambda article_id, **kwargs: {"summary": "shared", "updated_at": "now"},
     )
     monkeypatch.setattr(web_server, "_run_ai_connection_test", delayed_probe)
 
@@ -1801,9 +1807,10 @@ def test_new_config_save_is_effectively_inactive_until_its_probe_finishes(share_
     assert settings["share_current_config_revision"] > old_revision
     assert web_server.is_share_active(settings) is False
     assert client.get("/settings", headers=auth_headers(user_id)).get_json()["share_active"] is False
-    assert client.get("/ai/result/42", headers=auth_headers(user_id)).get_json() == {
-        "updated_at": "now"
-    }
+    result = client.get("/ai/result/42", headers=auth_headers(user_id)).get_json()
+    assert result["updated_at"] == "now"
+    assert result["access"]["share_active"] is False
+    assert not {"summary", "translation"} & result.keys()
     assert notices == []
 
     allow_probe.set()

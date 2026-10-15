@@ -20,7 +20,7 @@ def _auto_display_summary_block():
     end = HTML.index("function showAIActions(", start)
     return ("function sharedArticleContext(id) { return {id}; }\n"
             "function sharedContextCurrent() { return true; }\n"
-            "function sharedResultStatus() {}\n"
+            "function sharedResultStatus() {} function markArticleVisible() {}\n"
             "async function readSharedResult(ctx) { return (await fetch('/ai/result/' + ctx.id)).json(); }\n"
             + HTML[start:end])
 
@@ -28,7 +28,7 @@ def _auto_display_summary_block():
 def _translation_update_block():
     start = HTML.index("function invalidateArticleBody(")
     end = HTML.index("function articleItemHtml(", start)
-    return HTML[start:end]
+    return "var sharedSessionGeneration = 0; function sharedArticleContext() { return {}; } function sharedContextCurrent() { return true; }\n" + HTML[start:end]
 
 
 def _article_detail_block():
@@ -1058,7 +1058,7 @@ vm.runInContext({json.dumps(_article_body_cache_helpers_block() + _translation_u
     assert result.returncode == 0, result.stderr or result.stdout
 
 
-def test_first_detail_waits_for_translation_cursor_baseline():
+def test_first_detail_starts_with_parallel_translation_baseline():
     script = rf"""
 const assert = require('assert');
 const vm = require('vm');
@@ -1101,7 +1101,7 @@ vm.runInContext({json.dumps(_article_body_cache_helpers_block() + _article_detai
     assert result.returncode == 0, result.stderr or result.stdout
 
 
-def test_article_detail_starts_after_bounded_baseline_wait():
+def test_article_detail_starts_without_waiting_for_baseline():
     script = rf"""
 const assert = require('assert');
 const vm = require('vm');
@@ -1145,7 +1145,7 @@ vm.runInContext({json.dumps(_article_body_cache_helpers_block() + _article_detai
     ]);
     const elapsed = detailStartedAt - startedAt;
     assert.deepEqual(detail, {{ body_html: '<p>current</p>' }});
-    assert.ok(elapsed >= 20 && elapsed <= 500, `detail started after ${{elapsed}}ms`);
+    assert.ok(elapsed < 100, `detail started after ${{elapsed}}ms`);
     resolveBaseline({{ ok: true, json: async () => ({{ items: [], cursor: 'baseline|0' }}) }});
     baselineSettled = true;
     await context.translationUpdatePollPromise;
@@ -1203,7 +1203,7 @@ vm.runInContext({json.dumps(_article_body_cache_helpers_block() + _article_detai
       context.fetchArticleDetail(42),
       new Promise((_resolve, reject) => {{ watchdog = setTimeout(() => reject(new Error('detail cache was blocked by baseline')), 500); }}),
     ]);
-    assert.deepEqual(context.articleBodyCache[42], {{ body_html: '<p>English cached</p>' }});
+    assert.equal(context.articleBodyCache[42], undefined);
     assert.equal(context.translationUpdateBaselineUncertain, true);
     resolveBaseline({{ ok: true, json: async () => ({{ items: [], cursor: 'late|0' }}) }});
     baselineSettled = true;
@@ -1271,11 +1271,11 @@ vm.runInContext({json.dumps(_article_body_cache_helpers_block() + _article_detai
     clearTimeout(watchdog);
     assert.deepEqual(first, {{ body_html: '<p>detail 1</p>' }});
     assert.equal(context.translationUpdateBaselineUncertain, true);
-    assert.deepEqual(context.articleBodyCache[1], {{ body_html: '<p>detail 1</p>' }});
+    assert.equal(context.articleBodyCache[1], undefined);
 
     const second = context.fetchArticleDetail(2);
     assert.ok(context.articleBodyPromises[2]);
-    assert.equal(context.articleBodyControllers[2], undefined);
+    assert.ok(context.articleBodyControllers[2]);
     resolveBaseline({{ ok: true, json: async () => ({{ items: [], cursor: 'shared|0' }}) }});
     baselineSettled = true;
     await context.translationUpdatePollPromise;
@@ -1289,7 +1289,7 @@ vm.runInContext({json.dumps(_article_body_cache_helpers_block() + _article_detai
     assert.equal(context.translationUpdateCursor, 'shared|0');
     assert.equal(context.translationUpdateBaselineUncertain, false);
     assert.equal(context.articleBodyCache[1], undefined);
-    assert.deepEqual(context.articleBodyCache[2], {{ body_html: '<p>detail 2</p>' }});
+    assert.equal(context.articleBodyCache[2], undefined);
     assert.equal(detailRequests.filter(url => url.startsWith('/api/news/1?')).length, 1);
     assert.equal(detailRequests.filter(url => url.startsWith('/api/news/2?')).length, 1);
   }} finally {{

@@ -635,6 +635,7 @@ global.fetchArticleDetail = () => new Promise(() => {});
 global.autoDisplaySummary = () => {};
 global.authToken = null;
 global.activeArticleRequestId = 0;
+global.markArticleOpen = () => {};
 global.news = [
   { id: 1, title: '旧文章', source: 'test', date: '2026-07-26', time: '12:00', thumb: '' },
   { id: 2, title: '新文章', source: 'test', date: '2026-07-27', time: '12:00', thumb: '' },

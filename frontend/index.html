@@ -1226,6 +1226,7 @@ let searchRetryTimer = null;
 let searchRetryCount = 0;
 let titleUpdateCursor = '';
 let titleUpdatePolling = false;
+let translationUpdatePollController = null;
 let translationUpdateCursor = '';
 let translationUpdateBaselineUncertain = false;
 let translationUpdatePolling = false;
@@ -1269,6 +1270,7 @@ let sharedSessionGeneration = 0;
 let sharedAccessGeneration = 0;
 let sharedSettingsRequestSequence = 0;
 const sharedResultReads = new Map();
+const sharedResultVersions = new Map();
 let authToken = null;
 let authUser = null;
 let authMode = 'login'; // 'login' | 'register'
@@ -1287,15 +1289,19 @@ function loadAuth() {
 
 async function verifyToken() {
   if (!authToken) return;
+  const verificationSession = sharedSessionGeneration;
+  const verificationToken = authToken;
   try {
     const resp = await fetch('/auth/me', {
       headers: { 'Authorization': 'Bearer ' + authToken },
     });
+    if (verificationSession !== sharedSessionGeneration || verificationToken !== authToken) return;
     if (resp.status === 401) {
       logout();
     } else if (resp.ok) {
       // Update cached user data with fresh info from server
       const data = await resp.json();
+      if (verificationSession !== sharedSessionGeneration || verificationToken !== authToken) return;
       const freshUser = data && (data.user || (data.id ? data : null));
       if (freshUser) {
         authUser = freshUser;
@@ -1472,19 +1478,25 @@ function compressImage(file, maxBytes) {
 }
 
 function saveAuth(token, user) {
+  userAutoSettings = null;
   sharedSessionGeneration++;
+  clearAccountShareViews();
+  resetAIResultUpdates();
   cancelSharedResultReads();
   authToken = token;
   authUser = user;
   localStorage.setItem('raynews_token', token);
   localStorage.setItem('raynews_user', JSON.stringify(user));
   updateUserUI();
+  renderList();
 }
 
 function logout() {
   sharedSessionGeneration++;
+  resetAIResultUpdates();
   cancelSharedResultReads();
-  clearSharedArticleView();
+  userAutoSettings = null;
+  clearAccountShareViews();
   authToken = null;
   authUser = null;
   localStorage.removeItem('raynews_token');
@@ -4112,9 +4124,9 @@ function synchronizeOpenArticleShareView(previousSettings, nextSettings) {
   }
 
   return (
-    previousSettings
-    && !previousSettings.share_active
-    && nextSettings.share_active
+    previousSettings && nextSettings.share_active
+    && (!previousSettings.share_active || ['share_view_title', 'share_view_translation', 'share_view_summary']
+      .some(key => nextSettings[key] && !previousSettings[key]))
   ) ? articleId : 0;
 }
 
@@ -4366,6 +4378,7 @@ async function retryDailySummary() {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + authToken },
     });
+    if (verificationSession !== sharedSessionGeneration || verificationToken !== authToken) return;
     if (resp.status === 401) {
       logout();
       return;
@@ -4530,6 +4543,7 @@ async function syncDailySummaryToday() {
       headers: { 'Authorization': 'Bearer ' + authToken },
       cache: 'no-store',
     });
+    if (verificationSession !== sharedSessionGeneration || verificationToken !== authToken) return;
     if (resp.status === 401) {
       logout();
       return;
@@ -5029,6 +5043,203 @@ async function aiTranslate(articleId) {
  * Auto-display cached AI summary when opening an article (no click needed).
  * Called after renderArticleBody completes.
  */
+let aiResultCursor = '';
+let aiResultPoll = null;
+let aiResultPollController = null;
+let aiResultNextPollAt = 0;
+let aiResultPollTimer = null;
+let aiResultFailures = 0;
+let aiResultNeedsCatchup = true;
+const aiResultTabId = Math.random().toString(36).slice(2);
+let aiResultLeaseKey = '';
+const aiResultPending = new Set();
+let aiResultChannel = null;
+try { aiResultChannel = new BroadcastChannel('raynews-ai-result-versions'); } catch (_) {}
+
+function resetAIResultUpdates() {
+  clearTimeout(aiResultPollTimer);
+  aiResultPollTimer = null;
+  aiResultPollController?.abort();
+  aiResultCursor = '';
+  aiResultPoll = null;
+  aiResultNextPollAt = 0;
+  aiResultFailures = 0;
+  aiResultNeedsCatchup = true;
+  aiResultPending.clear();
+  sharedResultVersions.clear();
+  releaseAIResultLease();
+  translationUpdatePollController?.abort();
+  translationUpdatePolling = false;
+  translationUpdatePollPromise = null;
+  translationUpdateCursor = '';
+  translationUpdateBaselineUncertain = false;
+}
+
+function releaseAIResultLease() {
+  try {
+    const lease = JSON.parse(localStorage.getItem(aiResultLeaseKey) || 'null');
+    if (lease?.owner === aiResultTabId) localStorage.removeItem(aiResultLeaseKey);
+  } catch (_) {}
+  aiResultLeaseKey = '';
+}
+
+function ownsAIResultLease() {
+  aiResultLeaseKey = 'raynews-ai-result-lease-' + authUser?.id;
+  try {
+    const now = Date.now();
+    const lease = JSON.parse(localStorage.getItem(aiResultLeaseKey) || 'null');
+    if (lease && lease.owner !== aiResultTabId && lease.expires > now) return false;
+    localStorage.setItem(aiResultLeaseKey, JSON.stringify({owner:aiResultTabId, expires:now+30000}));
+    return JSON.parse(localStorage.getItem(aiResultLeaseKey)).owner === aiResultTabId;
+  } catch (_) {
+    // Storage disabled: jitter/backoff and one in-flight request still bound
+    // each page; do not prevent updates for private browsing users.
+    return true;
+  }
+}
+
+function refreshCurrentAIResult(id) {
+  const overlay = document.getElementById('overlay');
+  if (!overlay?.classList.contains('open') || Number(overlay.dataset.articleId) !== id) return;
+  const body = document.getElementById('articleBody');
+  if (body?.dataset.readyGeneration !== String(activeArticleRequestId)) {
+    aiResultPending.add(id);
+    return;
+  }
+  sharedResultVersions.set(id, (sharedResultVersions.get(id) || 0) + 1);
+  for (const entry of sharedResultReads.values()) if (entry.articleId === id) entry.controller.abort();
+  autoDisplaySummary(id);
+}
+
+function applyAIResultPage(data) {
+  if (data.reset) {
+    cancelSharedResultReads();
+    clearSharedArticleView();
+    articleBodyCache = {};
+    articleBodyCacheRecency = new Map();
+  }
+  const currentId = Number(document.getElementById('overlay')?.dataset.articleId);
+  const touched = new Set((data.items || []).map(item => Number(item.id)).filter(id => id === currentId));
+  if (data.reset || data.baseline) {
+    const id = Number(document.getElementById('overlay')?.dataset.articleId);
+    if (id) touched.add(id);
+  }
+  // Shared results have no cross-open cache. Only the matching view needs
+  // rereading; unrelated article changes never rebuild the list or body.
+  for (const id of touched) refreshCurrentAIResult(id);
+}
+
+async function pollAIResultUpdates(force = false) {
+  if (!authToken || document.hidden) return;
+  if (aiResultPoll) return aiResultPoll;
+  if (!force && Date.now() < aiResultNextPollAt) return;
+  const leader = ownsAIResultLease();
+  if (!leader && !aiResultNeedsCatchup) return;
+  const session = sharedSessionGeneration;
+  const token = authToken;
+  const user = authUser?.id;
+  const controller = new AbortController();
+  aiResultPollController = controller;
+  const promise = (async () => {
+    try {
+      // Limit work per turn; a long backlog continues on the next tick.
+      for (let page = 0; page < 10; page++) {
+        const baseline = !aiResultCursor;
+        const timer = setTimeout(() => controller.abort(), 8000);
+        let data;
+        try {
+          const response = await fetch('/ai/result-updates?since=' + encodeURIComponent(aiResultCursor), {
+            headers: {Authorization:'Bearer '+token}, cache:'no-store', signal:controller.signal,
+          });
+          if (!response.ok) throw Object.assign(new Error('AI update HTTP '+response.status), {status:response.status});
+          data = await response.json();
+          if (!data || typeof data.cursor !== 'string' || !Array.isArray(data.items)) throw new Error('invalid AI update page');
+        } finally { clearTimeout(timer); }
+        if (session !== sharedSessionGeneration || token !== authToken || controller.signal.aborted) return;
+        if (data.access && sharedPermissionKey(data.access) !== sharedPermissionKey()) {
+          await synchronizeShareAccessState({ ...userAutoSettings, ...data.access });
+          if (session !== sharedSessionGeneration || token !== authToken) return;
+        }
+        data.baseline = baseline;
+        applyAIResultPage(data);
+        aiResultCursor = data.cursor;
+        aiResultChannel?.postMessage({user, ...data});
+        aiResultFailures = 0;
+        aiResultNeedsCatchup = !!data.has_more;
+        aiResultNextPollAt = Date.now() + (data.has_more ? 0 : 10000 + Math.random()*2000);
+        if (!data.has_more) break;
+      }
+    } catch (error) {
+      if (session !== sharedSessionGeneration || controller.signal.aborted) {
+        // A genuine timeout must recover; a lifecycle abort simply pauses.
+        if (session !== sharedSessionGeneration || document.hidden) return;
+      }
+      aiResultFailures++;
+      aiResultNeedsCatchup = true;
+      aiResultNextPollAt = Date.now() + Math.min(60000, 12000 * 2 ** Math.min(aiResultFailures-1,3));
+      if ([401,403].includes(error.status)) {
+        await synchronizeShareAccessState({ ...userAutoSettings, share_active:false });
+      }
+    }
+  })().finally(() => {
+    if (aiResultPoll === promise) {
+      aiResultPoll = null;
+      aiResultPollController = null;
+      if (leader && session === sharedSessionGeneration && token === authToken && !document.hidden) {
+        clearTimeout(aiResultPollTimer);
+        aiResultPollTimer = setTimeout(() => pollAIResultUpdates(), Math.max(1, aiResultNextPollAt-Date.now()));
+      }
+    }
+  });
+  aiResultPoll = promise;
+  return promise;
+}
+
+if (aiResultChannel) aiResultChannel.onmessage = event => {
+  const data = event.data;
+  if (!authToken || document.hidden || !data || data.user !== authUser?.id) return;
+  // A recovering follower first catches up from its own cursor. Adopting a
+  // newer broadcast cursor would skip events from its hidden interval.
+  if (aiResultNeedsCatchup) return;
+  if (data.access && sharedPermissionKey(data.access) !== sharedPermissionKey()) {
+    synchronizeShareAccessState({ ...userAutoSettings, ...data.access }).catch(() => {});
+  }
+  const currentSequence = Number(aiResultCursor.split('|')[1] || 0);
+  const incomingSequence = Number(String(data.cursor).split('|')[1] || 0);
+  if (String(data.cursor).split('|')[0] === aiResultCursor.split('|')[0] && incomingSequence < currentSequence) return;
+  applyAIResultPage(data);
+  aiResultCursor = data.cursor;
+};
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    clearTimeout(aiResultPollTimer);
+    aiResultPollTimer = null;
+    aiResultPollController?.abort();
+    aiResultNeedsCatchup = true;
+    releaseAIResultLease();
+  } else {
+    aiResultNeedsCatchup = true;
+    pollAIResultUpdates(true);
+  }
+});
+window.addEventListener('pagehide', releaseAIResultLease);
+
+function markArticleOpen() {
+  sharedResultVersions.clear();
+  if (typeof performance === 'undefined') return;
+  for (const name of ['raynews-article-open', 'raynews-body-visible', 'raynews-shared-visible']) {
+    performance.clearMarks(name);
+    performance.clearMeasures(name);
+  }
+  performance.mark('raynews-article-open');
+}
+
+function markArticleVisible(kind) {
+  if (typeof performance === 'undefined' || !performance.getEntriesByName('raynews-article-open').length) return;
+  const name = 'raynews-' + kind + '-visible';
+  if (!performance.getEntriesByName(name).length) performance.measure(name, 'raynews-article-open');
+}
+
 function sharedPermissionKey(settings = userAutoSettings) {
   return ['share_active', 'share_view_title', 'share_view_translation', 'share_view_summary']
     .map(key => !!settings?.[key]).join(':');
@@ -5036,19 +5247,27 @@ function sharedPermissionKey(settings = userAutoSettings) {
 
 function sharedArticleContext(articleId) {
   return { id: Number(articleId), open: activeArticleRequestId, session: sharedSessionGeneration,
-    token: authToken, access: sharedAccessGeneration, permissions: sharedPermissionKey() };
+    token: authToken, revision: sharedResultVersions.get(Number(articleId)) || 0, access: sharedAccessGeneration, permissions: sharedPermissionKey() };
 }
 
 function sharedContextCurrent(context) {
   const overlay = document.getElementById('overlay');
   return !!context.token && context.session === sharedSessionGeneration && context.token === authToken
-    && context.access === sharedAccessGeneration && context.permissions === sharedPermissionKey() && context.open === activeArticleRequestId
+    && context.revision === (sharedResultVersions.get(context.id) || 0) && context.access === sharedAccessGeneration && context.permissions === sharedPermissionKey() && context.open === activeArticleRequestId
     && overlay?.classList.contains('open') && Number(overlay.dataset.articleId) === context.id;
 }
 
 function cancelSharedResultReads() {
   for (const item of sharedResultReads.values()) item.controller.abort();
   sharedResultReads.clear();
+}
+
+function clearAccountShareViews() {
+  clearSharedArticleView();
+  const favorites = document.getElementById('favBody');
+  if (favorites) favorites.textContent = '';
+  if (document.getElementById('searchOverlay')?.classList.contains('open')) renderSearchResults();
+  if (document.getElementById('sourceArticlesOverlay')?.classList.contains('open')) renderSourceArticles(sourceArticlesState.items || []);
 }
 
 function clearSharedArticleView() {
@@ -5058,13 +5277,15 @@ function clearSharedArticleView() {
   if (!body) return;
   const title = document.getElementById('articleWrap')?.querySelector('h1');
   if (body.dataset.originalHtml) body.innerHTML = body.dataset.originalHtml;
-  if (title && body.dataset.originalTitle) title.textContent = body.dataset.originalTitle;
+  const id = Number(document.getElementById('overlay')?.dataset.articleId);
+  const original = findOpenArticleShareData(id)?.original_title || body.dataset.originalTitle;
+  if (title && original) title.textContent = original;
   for (const key of ['translatedHtml', 'translatedTitle', 'showingTranslation', 'sharedTranslation']) delete body.dataset[key];
   const button = document.querySelector('.ai-translate-btn');
   if (button) button.textContent = '翻译';
 }
 
-function sharedResultStatus(context, text, retry = false) {
+function sharedResultStatus(context, text, retry = false, retryAt = 0) {
   if (!sharedContextCurrent(context)) return;
   let el = document.getElementById('sharedResultStatus');
   if (!el) {
@@ -5077,13 +5298,20 @@ function sharedResultStatus(context, text, retry = false) {
   if (retry) {
     const button = document.createElement('button');
     button.textContent = '重试读取';
-    button.onclick = () => { if (sharedContextCurrent(context)) autoDisplaySummary(context.id); };
+    button.onclick = () => {
+      if (!sharedContextCurrent(context)) return;
+      if (retryAt > Date.now()) {
+        sharedResultStatus(context, '请在 ' + new Date(retryAt).toLocaleTimeString() + ' 后重试', true, retryAt);
+        return;
+      }
+      autoDisplaySummary(context.id);
+    };
     el.appendChild(button);
   }
 }
 
 function readSharedResult(context) {
-  const key = [context.id, context.open, context.session, context.access, context.permissions].join('|');
+  const key = [context.id, context.open, context.session, context.access, context.revision, context.permissions].join('|');
   if (sharedResultReads.has(key)) return sharedResultReads.get(key).promise;
   const controller = new AbortController();
   const promise = (async () => {
@@ -5104,6 +5332,7 @@ function readSharedResult(context) {
           failure = Object.assign(new Error('HTTP ' + response.status), { status: response.status });
           const header = response.headers.get('Retry-After');
           if (header) failure.retryAfter = /^\d+$/.test(header) ? Number(header) * 1000 : Math.max(0, Date.parse(header) - Date.now());
+          if (failure.retryAfter) failure.retryAt = Date.now() + failure.retryAfter;
           throw failure;
         }
         const data = await response.json();
@@ -5112,6 +5341,11 @@ function readSharedResult(context) {
       } catch (error) {
         failure = error;
         if (controller.signal.aborted || !sharedContextCurrent(context)) throw new DOMException('cancelled', 'AbortError');
+        if ([401,403].includes(error.status)) {
+          synchronizeShareAccessState({ ...userAutoSettings, share_active:false }).catch(() => {});
+          sharedResultStatus(sharedArticleContext(context.id), '共享结果访问不可用，请检查登录和共享权限');
+          throw error;
+        }
         const retryable = timedOut || error instanceof TypeError || [429, 500, 502, 503, 504].includes(error.status);
         const wait = Math.max((800 * 2 ** attempt) * (0.8 + Math.random() * 0.4), error.retryAfter || 0);
         if (!retryable || attempt >= 2 || Date.now() + wait + 1 >= deadline) throw error;
@@ -5124,23 +5358,35 @@ function readSharedResult(context) {
   })().finally(() => {
     if (sharedResultReads.get(key)?.promise === promise) sharedResultReads.delete(key);
   });
-  sharedResultReads.set(key, { controller, promise });
+  promise.sharedContext = context;
+  sharedResultReads.set(key, { controller, promise, articleId: context.id });
   return promise;
 }
 
-async function autoDisplaySummary(articleId) {
+async function autoDisplaySummary(articleId, prefetched = null) {
   if (isRestrictedUser() || !authToken) return;
   const context = sharedArticleContext(articleId);
   if (!sharedContextCurrent(context)) return;
   sharedResultStatus(context, '正在读取共享结果…');
   try {
-    const data = await readSharedResult(context);
+    if (prefetched?.sharedContext && !sharedContextCurrent(prefetched.sharedContext)) prefetched = null;
+    const data = await (prefetched || readSharedResult(context));
     if (!sharedContextCurrent(context)) return;
-    sharedResultStatus(context, data.summary || data.translation ? '' : '暂无共享结果');
+    if (data.access && sharedPermissionKey(data.access) !== sharedPermissionKey()) {
+      await synchronizeShareAccessState({ ...userAutoSettings, ...data.access });
+      return;
+    }
+    const states = Object.values(data.states || {});
+    sharedResultStatus(context, data.summary || data.translation ? '' : states.includes('generating') ? '共享结果生成中…' : states.includes('failed') ? '共享结果生成失败' : '暂无共享结果');
+    if (data.summary || data.translation) markArticleVisible('shared');
     const shareActive = !!userAutoSettings?.share_active;
     const articleWrap = document.getElementById('articleWrap');
     if (!articleWrap) return;
     
+    // Preserve the visible reading position when a summary arrives above it.
+    const readingOverlay = document.getElementById('overlay');
+    const readingBody = document.getElementById('articleBody');
+    const readingTop = readingBody?.getBoundingClientRect?.().top;
     // Auto-display cached summary
     if (data.summary && shareActive && userAutoSettings?.share_view_summary) {
       const existingSummary = document.getElementById('aiSummaryTop');
@@ -5160,15 +5406,15 @@ async function autoDisplaySummary(articleId) {
       }
     }
 
+    if (typeof readingTop === 'number' && readingOverlay.scrollTop > 0) {
+      readingOverlay.scrollTop += readingBody.getBoundingClientRect().top - readingTop;
+    }
     // Auto-display cached translations
     if (data.translation && shareActive && userAutoSettings?.share_view_translation) {
       const bodyEl = document.getElementById('articleBody');
       if (!bodyEl) return;
       const t = data.translation.trim();
-      if (bodyEl.dataset.showingTranslation === 'false') {
-        bodyEl.dataset.translatedHtml = '';
-        return;
-      }
+      const keepOriginal = bodyEl.dataset.showingTranslation === 'false';
       // New format with title: JSON {"title": "...", "html": "..."}
       if (t.startsWith('{')) {
         let cachedData;
@@ -5185,6 +5431,7 @@ async function autoDisplaySummary(articleId) {
           : '';
         bodyEl.dataset.translatedTitle = cachedTitle;
         bodyEl.dataset.sharedTranslation = 'true';
+        if (keepOriginal) return;
         bodyEl.dataset.showingTranslation = 'true';
         bodyEl.innerHTML = bodyEl.dataset.translatedHtml;
         if (h1El && cachedTitle) h1El.textContent = cachedTitle;
@@ -5198,6 +5445,7 @@ async function autoDisplaySummary(articleId) {
         // Save original before replacing for toggle support
         if (!bodyEl.dataset.originalHtml) bodyEl.dataset.originalHtml = bodyEl.innerHTML;
         bodyEl.dataset.translatedHtml = proxyImages(sanitizeTranslatedHtml(t));
+        if (keepOriginal) return;
         bodyEl.dataset.showingTranslation = 'true';
         bodyEl.innerHTML = bodyEl.dataset.translatedHtml;
         const btn = document.querySelector('.ai-translate-btn');
@@ -5211,7 +5459,7 @@ async function autoDisplaySummary(articleId) {
   } catch (e) {
     if (e.name === 'AbortError' || !sharedContextCurrent(context)) return;
     if ([401, 403].includes(e.status)) clearSharedArticleView();
-    sharedResultStatus(context, [401, 403].includes(e.status) ? '共享结果访问不可用，请检查登录和共享权限' : '共享结果读取失败', ![401, 403, 404].includes(e.status));
+    sharedResultStatus(context, e.retryAt ? '请在 ' + new Date(e.retryAt).toLocaleTimeString() + ' 后重试' : [401, 403].includes(e.status) ? '共享结果访问不可用，请检查登录和共享权限' : '共享结果读取失败', ![401, 403, 404].includes(e.status), e.retryAt || 0);
   }
 }
 
@@ -5238,13 +5486,19 @@ function closeFavorites() {
 }
 
 async function loadFavorites() {
+  const session = sharedSessionGeneration;
+  const token = authToken;
+  if (!token) {
+    document.getElementById('favBody').textContent = '请先登录查看收藏';
+    return;
+  }
   try {
     const data = await apiFetch('/favorites');
-    if (!data) return;
+    if (!data || session !== sharedSessionGeneration || token !== authToken) return;
     if (data.error) { document.getElementById('favBody').innerHTML = '<div class="fav-empty">❌ ' + esc(data.error) + '</div>'; return; }
     renderFavorites(data);
   } catch (e) {
-    document.getElementById('favBody').innerHTML = '<div class="fav-empty">❌ 加载失败: ' + e.message + '</div>';
+    if (session === sharedSessionGeneration && token === authToken) document.getElementById('favBody').innerHTML = '<div class="fav-empty">❌ 加载失败</div>';
   }
 }
 
@@ -6106,6 +6360,15 @@ async function triggerRefresh() {
     return;
   }
 
+  const observationStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const observation = { job_id:null, accepted_ms:null, first_discovered_ms:null,
+    first_visible_ms:null, completion_observed_ms:null };
+  globalThis.raynewsRefreshTiming = observation;
+  const observe = name => {
+    if (observation[name] !== null) return;
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    observation[name] = Math.max(0, now-observationStart);
+  };
   cancelStartupEmptyRevalidation();
   const flowGeneration = ++refreshFlowGeneration;
   const flowController = new AbortController();
@@ -6121,8 +6384,18 @@ async function triggerRefresh() {
     if (!flowIsCurrent()) return discoveredArticleIds.size;
     const before = discoveredArticleIds.size;
     const size = mergeRefreshArticleIds(discoveredArticleIds, values);
-    if (size !== before) renderRefreshDiscoveredCount(discoveredArticleIds);
+    if (size !== before) {
+      observe('first_discovered_ms');
+      renderRefreshDiscoveredCount(discoveredArticleIds);
+    }
     return size;
+  };
+  const observeVisibleArticles = () => {
+    if (!flowIsCurrent() || observation.first_visible_ms !== null) return;
+    for (const id of discoveredArticleIds) {
+      const card = document.querySelector?.('#list .item[data-id="' + id + '"]');
+      if (card?.getClientRects?.().length) { observe('first_visible_ms'); break; }
+    }
   };
   const refreshView = {
     activeFilter: filter,
@@ -6174,7 +6447,7 @@ async function triggerRefresh() {
       flowIsCurrent()
       && viewIsCurrent(refreshView.requestSequence, 0)
       && window.scrollY <= 4
-    )).finally(() => { streamApplyInFlight = false; });
+    )).then(observeVisibleArticles).finally(() => { streamApplyInFlight = false; });
   };
 
   // Captured before the job starts so a page-1 refresh that gets navigated away
@@ -6182,8 +6455,8 @@ async function triggerRefresh() {
   // fallback loadSince() call.
   const sinceCursor = latestKnownTimestamp || latestNewsTimestamp();
 
-  // The server auto-refreshes every 15 minutes (see refresh_server.py's
-  // REFRESH_INTERVAL) — SQLite usually already holds articles this session hasn't
+  // The server auto-refreshes on its configured interval (15 minutes by default;
+  // see refresh_server.py's REFRESH_INTERVAL) — SQLite usually already holds articles this session hasn't
   // seen yet by the time the user clicks "刷新". Check for those immediately,
   // in parallel with kicking off the scrape job, instead of making the user wait
   // out the whole job just to see content that was already sitting in the DB.
@@ -6198,12 +6471,19 @@ async function triggerRefresh() {
     applicationGuard: flowIsCurrent,
   });
 
+  Promise.resolve(immediateCheck).then(observeVisibleArticles, () => {});
   try {
     const data = await requestRefreshOnce(flowController.signal);
     if (!flowIsCurrent()) return;
     if (!data.job_id) throw new Error('刷新任务未返回编号');
+    observation.job_id = data.job_id;
+    observe('accepted_ms');
     const status = await pollRefreshJob(data.job_id, 135000, flowController.signal, handleRefreshProgress);
     if (!flowIsCurrent()) return;
+    observe('completion_observed_ms');
+    observation.server_duration_ms = Number(status.server_duration_ms) || null;
+    observation.queue_wait_ms = Number(status.queue_wait_ms) || 0;
+    observation.server_phase_durations_ms = status.phase_durations_ms || {};
     if (status.status === 'failed') {
       throw new Error(refreshErrorMessage(status));
     }
@@ -6231,6 +6511,7 @@ async function triggerRefresh() {
         externalSignal: flowController.signal,
       });
       if (loaded && viewIsCurrent(completionRequestSequence, 0)) {
+        observeVisibleArticles();
         consumePendingNewArticles(refreshView.activeFilter);
       }
     }
@@ -6652,9 +6933,8 @@ function renderSourceDeepLinkError(message) {
 
 function applyNewsPage(data, page, activeFilter, { animate = false, preserveDom = false } = {}) {
   news = Array.isArray(data.items) ? data.items : [];
-  // Start the translation-update baseline before this list can open article
-  // details. fetchArticleDetail waits for it while the cursor is empty.
-  if (news.length) pollTranslationUpdates();
+  // Establish AI result versions independently of article-body rendering.
+  if (news.length) pollAIResultUpdates();
   coldStartInitializationActive = typeof isStartupInitializationResponse === 'function'
     && isStartupInitializationResponse(data);
   if (news.length || !coldStartInitializationActive) coldStartInitializationTimedOut = false;
@@ -7739,9 +8019,9 @@ function _setDisplayedTitle(articleId, text) {
 function syncArticleTitle(articleId, translatedTitle) {
   if (!translatedTitle) return;
   const newsItem = news.find(n => n.id === articleId);
-  if (newsItem) newsItem.title = translatedTitle;
+  if (newsItem) { newsItem.original_title ||= newsItem.title; newsItem.title = translatedTitle; }
   const searchItem = searchItems.find(n => n.id === articleId);
-  if (searchItem) searchItem.title = translatedTitle;
+  if (searchItem) { searchItem.original_title ||= searchItem.title; searchItem.title = translatedTitle; }
   _setDisplayedTitle(articleId, translatedTitle);
 }
 
@@ -7791,8 +8071,10 @@ function applyTranslationUpdate(item) {
 
   const overlay = document.getElementById('overlay');
   if (!overlay || !overlay.classList.contains('open') || overlay.dataset.articleId !== String(id)) return;
+  const context = sharedArticleContext(id);
   fetchArticleDetail(id)
     .then(data => {
+      if (!sharedContextCurrent(context)) return;
       const currentOverlay = document.getElementById('overlay');
       if (!currentOverlay || !currentOverlay.classList.contains('open') || currentOverlay.dataset.articleId !== String(id)) return;
       renderArticleBody(document.getElementById('articleWrap'), data, id);
@@ -7806,7 +8088,6 @@ function applyTranslationUpdate(item) {
 function recoverUncertainTranslationBaseline() {
   const cachedIds = new Set([
     ...Object.keys(articleBodyCache),
-    ...Object.keys(articleBodyControllers),
   ]);
   cachedIds.forEach(id => applyTranslationUpdate({ id }));
 }
@@ -7815,9 +8096,12 @@ async function pollTranslationUpdates() {
   if (!authToken) return;
   if (translationUpdatePolling) return translationUpdatePollPromise;
   translationUpdatePolling = true;
+  const pollSession = sharedSessionGeneration;
+  const pollToken = authToken;
   const pollPromise = (async () => {
     const establishingBaseline = !translationUpdateCursor;
     const pollController = new AbortController();
+    translationUpdatePollController = pollController;
     const pollTimer = setTimeout(
       () => pollController.abort(),
       TRANSLATION_UPDATES_POLL_TIMEOUT_MS,
@@ -7832,6 +8116,7 @@ async function pollTranslationUpdates() {
         return;
       }
       const data = await resp.json();
+      if (pollSession !== sharedSessionGeneration || pollToken !== authToken) return;
       const nextCursor = data && typeof data.cursor === 'string' ? data.cursor : '';
       if (!data || data.error || (establishingBaseline && !nextCursor)) {
         if (establishingBaseline) translationUpdateBaselineUncertain = true;
@@ -7851,8 +8136,10 @@ async function pollTranslationUpdates() {
       if (establishingBaseline) translationUpdateBaselineUncertain = true;
     } finally {
       clearTimeout(pollTimer);
-      translationUpdatePolling = false;
-      translationUpdatePollPromise = null;
+      if (translationUpdatePollPromise === pollPromise) {
+        translationUpdatePolling = false;
+        translationUpdatePollPromise = null;
+      }
     }
   })();
   translationUpdatePollPromise = pollPromise;
@@ -8577,6 +8864,9 @@ function openArticle(id) {
     if (!isRestrictedUser()) checkFavoriteStatus(id);
     wrap.innerHTML = '<p style="color:var(--text-2);text-align:center;padding:60px 0">加载中...</p>';
     const requestId = ++activeArticleRequestId;
+    markArticleOpen();
+    const sharedPrefetch = authToken ? readSharedResult(sharedArticleContext(id)) : null;
+    if (sharedPrefetch) sharedPrefetch.catch(() => {});
     // Try cache first
     const renderFull = (data) => {
       const coverSrc = data.thumb ? proxyImgSrc(data.thumb) : '';
@@ -8598,7 +8888,7 @@ function openArticle(id) {
         </div>
       `;
       renderArticleBody(wrap, data, id);
-      autoDisplaySummary(id);
+      autoDisplaySummary(id, sharedPrefetch);
       if (!isRestrictedUser()) checkFavoriteStatus(id);
       syncArticleHistory(id, data.date || '');
     };
@@ -8650,11 +8940,14 @@ function openArticle(id) {
 
   // Fetch full article body from API
   const requestId = ++activeArticleRequestId;
+  markArticleOpen();
+  const sharedPrefetch = authToken ? readSharedResult(sharedArticleContext(id)) : null;
+  if (sharedPrefetch) sharedPrefetch.catch(() => {});
   fetchArticleDetail(id)
     .then(data => {
       if (requestId !== activeArticleRequestId || document.getElementById('overlay').dataset.articleId != id) return;
       renderArticleBody(wrap, data, id);
-      autoDisplaySummary(id);
+      autoDisplaySummary(id, sharedPrefetch);
     })
     .catch((e) => {
       if (requestId !== activeArticleRequestId || document.getElementById('overlay').dataset.articleId != id) return;
@@ -8671,10 +8964,13 @@ function fetchArticleDetail(id, timeoutMs = 8000) {
   let controller = null;
   let timeout = null;
   const promise = (async () => {
-    // An empty cursor means the server would establish its baseline at the
-    // current instant. Do that before the first detail request so a completed
-    // translation cannot be skipped between list load and the first poll.
-    if (authToken && !translationUpdateCursor) await waitForTranslationBaseline();
+    // Establish compatibility baseline in parallel. A request crossing an
+    // unknown baseline is readable immediately but is not a reusable cache.
+    const crossedBaseline = !!(authToken && !translationUpdateCursor);
+    if (crossedBaseline) {
+      translationUpdateBaselineUncertain = true;
+      pollTranslationUpdates();
+    }
     if ((articleBodyRequestGenerations[id] || 0) !== generation) {
       throw new Error('article detail request superseded');
     }
@@ -8688,7 +8984,7 @@ function fetchArticleDetail(id, timeoutMs = 8000) {
     if ((articleBodyRequestGenerations[id] || 0) !== generation) {
       throw new Error('article detail request superseded');
     }
-    rememberArticleBody(id, data);
+    if (!crossedBaseline) rememberArticleBody(id, data);
     return data;
   })()
     .finally(() => {
@@ -8728,6 +9024,9 @@ function renderArticleBody(wrap, data, id) {
   } else {
     bodyEl.innerHTML = `<p style="color:var(--text-2);padding:40px 0;text-align:center">暂无全文内容</p>`;
   }
+  bodyEl.dataset.readyGeneration = String(activeArticleRequestId);
+  if (aiResultPending.delete(Number(id))) refreshCurrentAIResult(Number(id));
+  markArticleVisible('body');
   // Dedup cover image: if the body HTML already contains the same image,
   // remove the cover image div that's before article-body.
   // Also handles case where thumb URL differs from body image URL (e.g. different sizes).
@@ -9743,7 +10042,7 @@ setInterval(function() {
   if (document.hidden) return;
   if (news.length > 0) {
     pollTitleUpdates();
-    pollTranslationUpdates();
+    pollAIResultUpdates();
   }
 }, 12000);
 
@@ -9811,7 +10110,7 @@ function onReturnToForeground() {
   }
   if (news.length > 0) {
     pollTitleUpdates();
-    pollTranslationUpdates();
+    pollAIResultUpdates();
   }
   // Catch notifications that arrived while the tab was backgrounded (the 60s
   // poll timer is frozen on mobile/PWA until resume).

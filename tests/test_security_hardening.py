@@ -188,7 +188,7 @@ def test_automatic_summary_records_its_generation_provenance(tmp_path, monkeypat
     db_path = tmp_path / "news.db"
     sqlite3.connect(db_path).close()
     monkeypatch.setattr(web_server, "NEWS_DB", str(db_path))
-    monkeypatch.setattr(web_server, "_get_ai_result", lambda article_id: None)
+    monkeypatch.setattr(web_server, "_get_ai_result", lambda article_id, **kwargs: None)
     monkeypatch.setattr(
         web_server,
         "_fetch_article_body",
@@ -228,7 +228,7 @@ def test_automatic_summary_records_its_generation_provenance(tmp_path, monkeypat
 
 
 def test_automatic_summary_does_not_report_unsaved_result_as_success(monkeypatch):
-    monkeypatch.setattr(web_server, "_get_ai_result", lambda _id: None)
+    monkeypatch.setattr(web_server, "_get_ai_result", lambda _id, **kwargs: None)
     monkeypatch.setattr(
         web_server, "_fetch_article_body",
         lambda _id: {"title": "标题", "body_html": "正文"},

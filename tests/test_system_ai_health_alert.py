@@ -1443,7 +1443,7 @@ def test_a_cached_result_does_not_count_as_the_ai_working(alerts, monkeypatch):
     the admin got an alert, a recovery notice, an alert…
     """
     monkeypatch.setattr(web_server, "_get_ai_result",
-                        lambda article_id: {"summary": "cached"})
+                        lambda article_id, **kwargs: {"summary": "cached"})
 
     web_server._note_system_ai_failure("自动摘要", "AI API HTTP 401: Invalid API key.")
     web_server._note_system_ai_failure("自动翻译", "AI API HTTP 401: Invalid API key.")
@@ -1474,7 +1474,7 @@ def test_a_real_call_that_returns_arms_stable_recovery(
         def summarize(self, article_text="", title=""):
             return "fresh summary"
 
-    monkeypatch.setattr(web_server, "_get_ai_result", lambda article_id: None)
+    monkeypatch.setattr(web_server, "_get_ai_result", lambda article_id, **kwargs: None)
     monkeypatch.setattr(web_server, "_fetch_article_body",
                         lambda article_id: {"body_html": "b", "title": "t"})
     monkeypatch.setattr(web_server, "_save_ai_result", lambda *args, **kwargs: True)
@@ -1503,7 +1503,7 @@ def test_a_failing_call_is_recorded_from_the_call_site(alerts, monkeypatch):
         def summarize(self, article_text="", title=""):
             raise RuntimeError("AI API HTTP 401: Invalid API key.")
 
-    monkeypatch.setattr(web_server, "_get_ai_result", lambda article_id: None)
+    monkeypatch.setattr(web_server, "_get_ai_result", lambda article_id, **kwargs: None)
     monkeypatch.setattr(web_server, "_fetch_article_body",
                         lambda article_id: {"body_html": "b", "title": "t"})
     monkeypatch.setattr(web_server, "AIService", BoomService)

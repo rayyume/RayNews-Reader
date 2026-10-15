@@ -21,6 +21,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from ai_result_updates import ensure_result_versions, read_updates, track_generation, result_state
+
 from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify, g
 from notifier import render_notification_email_body, send_email
@@ -1213,6 +1215,7 @@ class _SystemAIService:
         setattr(self._svc, name, value)
 
 
+@track_generation("summary")
 def _generate_article_summary(article_id: int, config: dict,
                               use_shared_cache: bool = True,
                               save_shared_cache: bool = True) -> tuple[str, bool]:
@@ -4017,6 +4020,7 @@ def _cached_full_translation(translation: str | None) -> tuple[str, str]:
     return "", ""
 
 
+@track_generation("translation")
 def _translate_article_background(article: dict, config: dict) -> bool:
     svc = _SystemAIService(
         "自动翻译",
@@ -4893,6 +4897,7 @@ def _fetch_article_body(article_id: int) -> dict | None:
 # can point NEWS_DB at a different file during tests or runtime maintenance.
 _ai_results_schema_lock = threading.RLock()
 _ai_results_schema_ready_paths: set[str] = set()
+_ai_results_schema_file_ids: dict[str, tuple[int, int]] = {}
 
 
 def _add_ai_results_column_if_missing(conn, cols: set[str], name: str, col_type: str) -> None:
@@ -4912,7 +4917,9 @@ def _init_ai_results_table() -> bool:
         # fast-path check and acquiring the process-wide initializer lock.
         if not os.path.exists(db_path):
             return False
-        if db_path in _ai_results_schema_ready_paths:
+        file_stat = os.stat(db_path)
+        file_id = (file_stat.st_dev, file_stat.st_ino)
+        if db_path in _ai_results_schema_ready_paths and _ai_results_schema_file_ids.get(db_path) == file_id:
             return True
         try:
             with _news_db_conn() as conn:
@@ -4976,10 +4983,12 @@ def _init_ai_results_table() -> bool:
                 if "updated_at" not in cols:
                     conn.execute("ALTER TABLE ai_results ADD COLUMN updated_at TEXT")
                     conn.execute("UPDATE ai_results SET updated_at = datetime('now') WHERE updated_at IS NULL")
+                ensure_result_versions(conn)
                 conn.commit()
             # Do not latch until commit completed and the connection context
             # closed successfully. A failed initializer must remain retryable.
             _ai_results_schema_ready_paths.add(db_path)
+            _ai_results_schema_file_ids[db_path] = file_id
             return True
         except sqlite3.OperationalError as exc:
             if "duplicate column name" in str(exc).lower():
@@ -5004,6 +5013,7 @@ def _init_ai_results_table() -> bool:
                 }
                 if expected.issubset(current):
                     _ai_results_schema_ready_paths.add(db_path)
+                    _ai_results_schema_file_ids[db_path] = file_id
                     return True
                 app.logger.warning("[ai-results] schema init raced but still incomplete: %s", exc)
                 return False
@@ -5014,7 +5024,7 @@ def _init_ai_results_table() -> bool:
             return False
 
 
-def _get_ai_result(article_id: int) -> dict | None:
+def _get_ai_result(article_id: int, *, strict: bool = False) -> dict | None:
     """Get cached AI result (summary/translation) for an article."""
     import sqlite3
     if not os.path.exists(NEWS_DB):
@@ -5023,18 +5033,21 @@ def _get_ai_result(article_id: int) -> dict | None:
         with _news_db_conn() as conn:
             conn.row_factory = sqlite3.Row
             _init_ai_results_table()
+            version_column = ", (SELECT version FROM ai_result_versions v WHERE v.article_id=ai_results.article_id) AS version" if strict else ""
             row = conn.execute(
                 "SELECT summary, translation, summary_error, summary_error_at, "
                 "title_summary, title_summary_error, title_summary_error_at, "
                 "title_summary_provider, title_summary_model, title_summary_by_user_id, "
                 "summary_provider, summary_model, summary_by_user_id, summary_generated_at, "
                 "translation_provider, translation_model, translation_by_user_id, "
-                "translation_generated_at "
-                "FROM ai_results WHERE article_id = ?",
+                "translation_generated_at " + version_column +
+                " FROM ai_results WHERE article_id = ?",
                 (article_id,),
             ).fetchone()
         return dict(row) if row else None
     except Exception:
+        if strict:
+            raise
         return None
 
 
@@ -5372,6 +5385,28 @@ def ai_translation_updates():
             conn.close()
 
 
+def _viewer_share_access(settings):
+    return {"share_active": bool(is_share_active(settings)), **{
+        key: bool(settings.get(key)) for key in ('share_view_title', 'share_view_summary', 'share_view_translation')
+    }}
+
+
+@app.route("/ai/result-updates", methods=["GET"])
+@require_role("user", "admin")
+def ai_result_updates():
+    if not _init_ai_results_table():
+        return jsonify({"error": "result store unavailable"}), 503
+    try:
+        with _news_db_conn() as conn:
+            payload = read_updates(conn, request.args.get("since", ""))
+        payload["access"] = _viewer_share_access(get_user_settings(g.user_id) or {})
+        response = jsonify(payload)
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+    except ValueError:
+        return jsonify({"error": "invalid cursor"}), 400
+
+
 @app.route("/ai/result/<int:article_id>", methods=["GET"])
 @require_role("user", "admin")
 def ai_get_result(article_id):
@@ -5380,7 +5415,14 @@ def ai_get_result(article_id):
     Shared cache, but each field is only returned to viewers who opted into
     seeing it (Settings → AI → 共享) — see share_view_summary/share_view_translation.
     """
-    cached = dict(_get_ai_result(article_id) or {})
+    if not _init_ai_results_table():
+        return jsonify({"error": "result store unavailable"}), 503
+    with _news_db_conn() as conn:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='articles'").fetchone():
+            if not conn.execute("SELECT 1 FROM articles WHERE id=?", (article_id,)).fetchone():
+                return jsonify({"error": "article not found"}), 404
+    cached = dict(_get_ai_result(article_id, strict=True) or {})
+    cached["version"] = cached.get("version") or 0
     for private_key in (
         "summary_provider",
         "summary_model",
@@ -5390,10 +5432,20 @@ def ai_get_result(article_id):
         "translation_model",
         "translation_by_user_id",
         "translation_generated_at",
+        "title_summary_provider", "title_summary_model", "title_summary_by_user_id",
     ):
         cached.pop(private_key, None)
     settings = get_user_settings(g.user_id) or {}
     share_active = is_share_active(settings)
+    cached["access"] = _viewer_share_access(settings)
+    cached["states"] = {
+        kind: result_state(article_id, kind, cached)
+        for kind, permission in (("summary", "share_view_summary"), ("translation", "share_view_translation"))
+        if share_active and settings.get(permission)
+    }
+    if not share_active or not settings.get("share_view_title"):
+        for key in ("title_summary", "title_summary_error", "title_summary_error_at"):
+            cached.pop(key, None)
     if not share_active or not settings.get("share_view_summary"):
         cached.pop("summary", None)
         cached.pop("summary_error", None)
@@ -5410,7 +5462,9 @@ def ai_get_result(article_id):
             if isinstance(payload, dict):
                 payload.pop("title", None)
                 cached["translation"] = json.dumps(payload, ensure_ascii=False)
-    return jsonify(cached)
+    response = jsonify(cached)
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 # ─── Source Categories ─────────────────────────────────────
