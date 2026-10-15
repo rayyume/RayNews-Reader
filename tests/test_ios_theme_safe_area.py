@@ -1,4 +1,4 @@
-"""The iOS status area must use the app theme, even when iOS uses light mode."""
+"""Check document theming; the native iOS status bar needs device validation."""
 
 import pytest
 
@@ -16,7 +16,7 @@ THEME_FUNCTIONS = source_between("function resolveThemePreference(", "// ══�
         ("light", "#f5f7fb"),
     ],
 )
-def test_first_paint_status_area_follows_saved_theme_despite_light_ios(
+def test_first_paint_document_theme_follows_saved_preference_despite_light_ios(
     saved_theme, expected_background
 ):
     run_node(EARLY_THEME + THEME_FUNCTIONS, f"""
@@ -39,7 +39,7 @@ context.document = {{
 """)
 
 
-def test_runtime_theme_switch_updates_status_area_without_using_ios_mode():
+def test_runtime_theme_switch_updates_document_and_theme_color():
     run_node(THEME_FUNCTIONS, """
 context.applyThemePreference('dark');
 assert.equal(context.document.documentElement.dataset.theme, 'dark');
@@ -59,7 +59,7 @@ context.document = {
 """)
 
 
-def test_viewport_and_root_cover_the_status_bar_safe_area():
+def test_viewport_and_root_prepare_translucent_status_bar_safe_area():
     from test_frontend_refresh_behavior import HTML
 
     assert "viewport-fit=cover" in HTML
