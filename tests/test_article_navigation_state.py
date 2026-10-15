@@ -48,9 +48,10 @@ globalThis.overlay = {{
 }};
 globalThis.lightbox = {{ classList: {{ contains: () => false }} }};
 globalThis.navigator = {{ platform: 'MacIntel', maxTouchPoints: 5 }};
-globalThis.window = {{ matchMedia: () => ({{ matches: {standalone_js} }}) }};
+globalThis.window = {{ matchMedia: () => ({{ matches: {standalone_js} }}), addEventListener: () => {{}} }};
 globalThis.document = {{
   getElementById: id => id === 'overlay' ? overlay : lightbox,
+  addEventListener: () => {{}},
 }};
 globalThis.usesMobileArticleNavigation = () => true;
 globalThis.clearTimeout = () => {{}};

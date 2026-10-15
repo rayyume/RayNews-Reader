@@ -2647,7 +2647,9 @@ def test_return_to_foreground_resumes_empty_startup_with_get_only():
         foreground,
         """
 context.Date = { now: () => 5000 };
+context.document = { hidden: false, getElementById: () => null };
 context.lastForegroundSyncAt = 0;
+context.lastPageHiddenAt = 0;
 context.pageVisibleSince = 0;
 context.lastUserActivityAt = 0;
 context.latestKnownTimestamp = 0;
@@ -2662,6 +2664,8 @@ context.loadSince = () => { context.incrementalCalls++; };
 context.incrementalCalls = 0;
 context.pollTitleUpdates = () => {};
 context.authToken = 'token';
+context.settingsRefreshCalls = 0;
+context.loadUserSettings = () => { context.settingsRefreshCalls++; };
 context.refreshNotifStatus = () => { context.notifRefreshCalls++; };
 context.notifRefreshCalls = 0;
 context.loadCalls = [];
@@ -2683,6 +2687,7 @@ assert.deepEqual(context.metadataRetries, [{ immediate: true }]);
 // Foreground resume also re-checks notifications (dot may have gone stale
 // while the tab/PWA was frozen in the background).
 assert.equal(context.notifRefreshCalls, 1);
+assert.equal(context.settingsRefreshCalls, 1);
 """,
     )
 

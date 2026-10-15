@@ -276,3 +276,49 @@ await assert.rejects(pending, error => error.name === 'SwNetworkTimeoutError');
 assert.equal(context.timeoutMs, 8000);
 """,
     )
+
+
+def test_long_resume_releases_stale_card_motion_without_discarding_content():
+    motion = source_between(
+        "function releaseStalePageMotion()", "function usesIpadTrackpadNavigation()"
+    )
+    run_node(motion, """
+context.cancelled = 0;
+const card = {getAnimations: () => [{cancel: () => context.cancelled++}]};
+const list = {
+  classList: {remove: (...names) => {context.removed = names;}},
+  style: {minHeight: '800px'},
+  querySelectorAll: () => [card,card],
+};
+context.document = {getElementById: id => id === 'list' ? list : null};
+context.releaseStalePageMotion();
+assert.deepEqual(context.removed, ['page-switching','page-transitioning']);
+assert.equal(list.style.minHeight, '');
+assert.equal(context.cancelled, 2);
+""")
+
+
+def test_ios_scrolling_does_not_keep_all_cards_as_compositor_layers():
+    assert "position:relative;will-change:transform,opacity" not in HTML
+    assert ".overlay.open{transform:none}" in HTML
+    assert "fill: 'backwards'" in source_between(
+        "function animateArticleLayout(", "function reconcileVisibleArticles("
+    )
+    assert "fill: 'both'" not in source_between(
+        "function animateArticleLayout(", "function reconcileVisibleArticles("
+    )
+    assert ".header,.topcat-bar,.overlay-header,.search-header{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}" in HTML
+
+
+def test_pwa_back_forward_resume_uses_the_same_recovery_path():
+    lifecycle = source_between(
+        "document.addEventListener('visibilitychange', () => {\n  if (document.hidden) {\n    lastPageHiddenAt",
+        "// ═══ Mobile: swipe-to-go-back on article overlay",
+    )
+    assert "window.addEventListener('pagehide'" in lifecycle
+    assert "window.addEventListener('pageshow'" in lifecycle
+    assert "onReturnToForeground()" in lifecycle
+    swipe = source_between(
+        "function resetArticleSwipe()", "// iPadOS receives Magic Keyboard"
+    )
+    assert "window.addEventListener('pagehide', resetArticleSwipe)" in swipe

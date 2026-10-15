@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" id="appleStatusBarMeta">
 <meta name="mobile-web-app-capable" content="yes">
@@ -23,8 +23,12 @@
       ? saved
       : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
     document.documentElement.dataset.theme = mode;
+    document.documentElement.style.colorScheme = mode;
+    document.getElementById('themeColorMeta').setAttribute('content', mode === 'light' ? '#f5f7fb' : '#0a0a0c');
+    document.getElementById('appleStatusBarMeta').setAttribute('content', mode === 'light' ? 'default' : 'black-translucent');
   } catch (e) {
     document.documentElement.dataset.theme = 'dark';
+    document.documentElement.style.colorScheme = 'dark';
   }
 })();
 </script>
@@ -72,7 +76,7 @@ html[data-theme="light"] {
 
 /* ═══ Reset ═══════════════════════════════════════ */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-html{font-size:16px;scroll-behavior:smooth;-webkit-font-smoothing:antialiased;max-width:100%;overflow-x:hidden}
+html{font-size:16px;scroll-behavior:smooth;-webkit-font-smoothing:antialiased;max-width:100%;overflow-x:hidden;background:var(--bg)}
 body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.6;max-width:100%;overflow-x:hidden;-webkit-overflow-scrolling:touch}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
@@ -147,7 +151,7 @@ a:hover{text-decoration:underline}
 .list.page-switching .item{animation:pageFadeIn .28s cubic-bezier(.22,.61,.36,1) both;animation-delay:calc(var(--motion-index,0) * 40ms)}
 @keyframes listRefreshSweep{0%{transform:translateX(-110%);opacity:.35}50%{opacity:.9}100%{transform:translateX(385%);opacity:.35}}
 @keyframes pageFadeIn{from{opacity:0;transform:translateY(-12px)}to{opacity:1;transform:translateY(0)}}
-.item{display:flex;min-width:0;max-width:100%;gap:16px;padding:18px 20px;background:var(--bg-card);cursor:pointer;transition:background 0.12s;position:relative;will-change:transform,opacity}
+.item{display:flex;min-width:0;max-width:100%;gap:16px;padding:18px 20px;background:var(--bg-card);cursor:pointer;transition:background 0.12s;position:relative}
 .item:hover{background:var(--bg-card-hover)}
 .item-thumb{width:120px;height:80px;border-radius:6px;overflow:hidden;flex-shrink:0;background:var(--bg-surface)}
 .item-thumb img{width:100%;height:100%;object-fit:cover;transition:transform 0.3s}
@@ -204,7 +208,7 @@ a:hover{text-decoration:underline}
 .overlay{position:fixed;inset:0;z-index:200;background:var(--bg);overflow-x:hidden;overflow-y:auto;transform:translateX(100%);transition:transform 0.35s cubic-bezier(0.4,0,0.2,1);touch-action:pan-y;overscroll-behavior-x:none;overscroll-behavior-y:contain}
 .overlay.from-source-history{z-index:560}
 .overlay.over-daily-summary{z-index:500}
-.overlay.open{transform:translateX(0)}
+.overlay.open{transform:none}
 .overlay-header{position:sticky;top:0;z-index:10;background:var(--header-bg);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding-top:env(safe-area-inset-top,0px)}
 .overlay-header-inner{max-width:720px;margin:0 auto;display:flex;align-items:center;min-height:48px;padding:0 20px}
 .article-top-scroll-zone{flex:1;align-self:stretch;min-width:24px;touch-action:manipulation}
@@ -338,6 +342,12 @@ a:hover{text-decoration:underline}
   .topcat-bar{padding-left:20px;padding-right:26px}
   .scroll-top-btn{right:12px;bottom:calc(18px + env(safe-area-inset-bottom,0px))}
   .sidebar-toggle{z-index:55}
+}
+/* Avoid persistent blur surfaces on iOS scrolling headers. */
+@media(max-width:640px){
+  @supports(-webkit-touch-callout:none){
+    .header,.topcat-bar,.overlay-header,.search-header{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}
+  }
 }
 @media(prefers-reduced-motion:reduce){
   html{scroll-behavior:auto!important}
@@ -1256,6 +1266,7 @@ function applyThemePreference(pref) {
   const safe = pref === 'light' || pref === 'dark' || pref === 'system' ? pref : 'system';
   const mode = resolveThemePreference(safe);
   document.documentElement.dataset.theme = mode;
+  document.documentElement.style.colorScheme = mode;
   localStorage.setItem('raynews_theme', safe);
   const meta = document.getElementById('themeColorMeta');
   if (meta) meta.setAttribute('content', mode === 'light' ? '#f5f7fb' : '#0a0a0c');
@@ -1269,6 +1280,8 @@ function applyThemePreference(pref) {
 let sharedSessionGeneration = 0;
 let sharedAccessGeneration = 0;
 let sharedSettingsRequestSequence = 0;
+let sharedSettingsRetryTimer = null;
+let sharedSettingsRetryCount = 0;
 const sharedResultReads = new Map();
 const sharedResultVersions = new Map();
 let authToken = null;
@@ -1478,6 +1491,9 @@ function compressImage(file, maxBytes) {
 }
 
 function saveAuth(token, user) {
+  clearTimeout(sharedSettingsRetryTimer);
+  sharedSettingsRetryTimer = null;
+  sharedSettingsRetryCount = 0;
   userAutoSettings = null;
   sharedSessionGeneration++;
   clearAccountShareViews();
@@ -1492,6 +1508,9 @@ function saveAuth(token, user) {
 }
 
 function logout() {
+  clearTimeout(sharedSettingsRetryTimer);
+  sharedSettingsRetryTimer = null;
+  sharedSettingsRetryCount = 0;
   sharedSessionGeneration++;
   resetAIResultUpdates();
   cancelSharedResultReads();
@@ -4034,13 +4053,33 @@ async function testNotification() {
   } catch (e) { showSettingsStatus('❌ 发送失败', 'err'); }
 }
 
+function scheduleUserSettingsRetry() {
+  if (sharedSettingsRetryTimer || !authToken || document.hidden) return;
+  const session = sharedSessionGeneration;
+  const token = authToken;
+  const delayMs = Math.min(30000, 2000 * 2 ** Math.min(sharedSettingsRetryCount++, 4));
+  sharedSettingsRetryTimer = setTimeout(() => {
+    sharedSettingsRetryTimer = null;
+    if (session === sharedSessionGeneration && token === authToken && !document.hidden) {
+      loadUserSettings();
+    }
+  }, delayMs);
+}
+
 async function loadUserSettings() {
   const settingsSequence = ++sharedSettingsRequestSequence;
   const settingsSession = sharedSessionGeneration;
   const settingsToken = authToken;
   try {
-    const data = await apiFetch('/settings');
-    if (!data || settingsSequence !== sharedSettingsRequestSequence || settingsSession !== sharedSessionGeneration || settingsToken !== authToken) return;
+    const data = await apiFetch('/settings', { cache: 'no-store' });
+    if (settingsSequence !== sharedSettingsRequestSequence || settingsSession !== sharedSessionGeneration || settingsToken !== authToken) return false;
+    if (!data || data.error || typeof data.share_active !== 'boolean') {
+      scheduleUserSettingsRetry();
+      return false;
+    }
+    clearTimeout(sharedSettingsRetryTimer);
+    sharedSettingsRetryTimer = null;
+    sharedSettingsRetryCount = 0;
     const nextSettings = {
       auto_translate_title: !!data.auto_translate_title,
       auto_translate_content: !!data.auto_translate_content,
@@ -4064,7 +4103,13 @@ async function loadUserSettings() {
     };
     applyThemePreference(nextSettings.theme_preference);
     await synchronizeShareAccessState(nextSettings);
-  } catch (e) {}
+    return true;
+  } catch (e) {
+    if (settingsSequence === sharedSettingsRequestSequence && settingsSession === sharedSessionGeneration && settingsToken === authToken) {
+      scheduleUserSettingsRetry();
+    }
+    return false;
+  }
 }
 
 function findOpenArticleShareData(articleId) {
@@ -6260,7 +6305,7 @@ function animateArticleLayout(list, previousRects, newIds = new Set()) {
           duration: 320,
           delay: Math.min(index, 6) * 40,
           easing: 'cubic-bezier(.22,.61,.36,1)',
-          fill: 'both',
+          fill: 'backwards',
         },
       );
     }
@@ -10074,16 +10119,32 @@ async function checkForNewArticlesAfterForegroundResume(cursor) {
 }
 
 let lastForegroundSyncAt = 0;
+let lastPageHiddenAt = 0;
+function releaseStalePageMotion() {
+  const list = document.getElementById('list');
+  if (!list) return;
+  list.classList.remove('page-switching', 'page-transitioning');
+  list.style.minHeight = '';
+  // An animation frozen by iOS while suspended can still own a card's
+  // transform when the page wakes. The underlying card style is its final state.
+  list.querySelectorAll('.item').forEach(node => {
+    if (node.getAnimations) node.getAnimations().forEach(animation => animation.cancel());
+  });
+}
 function usesIpadTrackpadNavigation() {
   return navigator.platform === 'MacIntel'
     && navigator.maxTouchPoints > 0;
 }
 function onReturnToForeground() {
+  if (document.hidden) return;
   const now = Date.now();
   if (now - lastForegroundSyncAt < 1000) return;
   lastForegroundSyncAt = now;
+  if (lastPageHiddenAt && now - lastPageHiddenAt > 15000) releaseStalePageMotion();
+  lastPageHiddenAt = 0;
   pageVisibleSince = now;
   lastUserActivityAt = now;
+  if (authToken) loadUserSettings();
   const cursor = latestKnownTimestamp || latestNewsTimestamp();
   if (cursor > 0) checkForNewArticlesAfterForegroundResume(cursor);
   // A load that failed while the app was going away (or during the last resume,
@@ -10124,8 +10185,15 @@ function onReturnToForeground() {
   }
 }
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) cancelViewBoundRefreshWork();
+  if (document.hidden) {
+    lastPageHiddenAt = Date.now();
+    cancelViewBoundRefreshWork();
+  }
   else onReturnToForeground();
+});
+window.addEventListener('pagehide', () => { lastPageHiddenAt = Date.now(); });
+window.addEventListener('pageshow', event => {
+  if (event.persisted || lastPageHiddenAt) onReturnToForeground();
 });
 window.addEventListener('focus', onReturnToForeground);
 // ═══ Mobile: swipe-to-go-back on article overlay ════════
@@ -10217,6 +10285,10 @@ window.addEventListener('focus', onReturnToForeground);
   }, { passive: true });
 
   overlay.addEventListener('touchcancel', resetArticleSwipe, { passive: true });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) resetArticleSwipe();
+  });
+  window.addEventListener('pagehide', resetArticleSwipe);
 
   // iPadOS receives Magic Keyboard two-finger swipes as horizontal wheel
   // events in both Safari and an installed PWA. Claim a rightward gesture on
