@@ -1,0 +1,66 @@
+{
+  "environment": "Local Chromium 141, 1280x800, mocked HTTP, no public network, no Service Worker",
+  "scenario": "Same two synthetic articles; compatibility baseline response withheld for 500 ms after openArticle(1)",
+  "limitations": "Three controlled samples per variant; demonstrates serial dependency removal only, not production latency, scrolling, Safari/PWA, TTFB or percentiles",
+  "samples": [
+    {
+      "variant": "baseline-7597ac0",
+      "sample": 1,
+      "body_ms": 521.5,
+      "shared_ms": 529.5,
+      "long_tasks_ms": [
+        62
+      ],
+      "layout_shift_sum": 0.018044707870483397,
+      "console_errors": []
+    },
+    {
+      "variant": "baseline-7597ac0",
+      "sample": 2,
+      "body_ms": 519.9000000953674,
+      "shared_ms": 523.5999999046326,
+      "long_tasks_ms": [
+        51
+      ],
+      "layout_shift_sum": 0.020451448059082028,
+      "console_errors": []
+    },
+    {
+      "variant": "baseline-7597ac0",
+      "sample": 3,
+      "body_ms": 517.1999998092651,
+      "shared_ms": 521.0999999046326,
+      "long_tasks_ms": [],
+      "layout_shift_sum": 0.0178897762298584,
+      "console_errors": []
+    },
+    {
+      "variant": "optimized",
+      "sample": 1,
+      "body_ms": 16.90000009536743,
+      "shared_ms": 18.699999809265137,
+      "long_tasks_ms": [],
+      "layout_shift_sum": 0.013905114746093749,
+      "console_errors": []
+    },
+    {
+      "variant": "optimized",
+      "sample": 2,
+      "body_ms": 19.799999713897705,
+      "shared_ms": 22.399999618530273,
+      "long_tasks_ms": [],
+      "layout_shift_sum": 0.013905114746093749,
+      "console_errors": []
+    },
+    {
+      "variant": "optimized",
+      "sample": 3,
+      "body_ms": 27.90000009536743,
+      "shared_ms": 31.199999809265137,
+      "long_tasks_ms": [],
+      "layout_shift_sum": 0.014915045356750489,
+      "console_errors": []
+    }
+  ],
+  "optimized_commit": "4d133e28acfe464f331f50e38aaa7738bc90396d"
+}

@@ -1,0 +1,34 @@
+{
+  "source_commit": "4d133e28acfe464f331f50e38aaa7738bc90396d",
+  "baseline_commit": "7597ac0543a4af2fbed02aa9f81d7a3d8d53b0b9",
+  "environment": {
+    "python": "3.12.3",
+    "node": "24.21.0",
+    "playwright": "1.56.0",
+    "browser": "Chromium 141",
+    "browser_plugin": "not available"
+  },
+  "baseline_pytest": {
+    "passed": 1148,
+    "skipped": 1,
+    "duration_seconds": 102.39
+  },
+  "final_pytest": {
+    "passed": 1209,
+    "skipped": 1,
+    "warnings": 97,
+    "duration_seconds": 116.83,
+    "command": "python -m pytest -q -rs",
+    "skip_reason": "Docker daemon is unavailable"
+  },
+  "nginx": {
+    "version": "1.24.0",
+    "syntax_check": "passed",
+    "warning": "pre-existing duplicate text/html gzip MIME type",
+    "server_started": false
+  },
+  "public_network_validation": false,
+  "real_safari_pwa_validation": false,
+  "production_deployment": false,
+  "github_ci_executed": false
+}
