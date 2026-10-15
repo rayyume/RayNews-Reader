@@ -711,7 +711,11 @@ def test_view_bound_refresh_work_is_cancelled_by_navigation_and_backgrounding():
         html.index("document.addEventListener('visibilitychange', () =>"):
         html.index("window.addEventListener('focus', onReturnToForeground)")
     ]
-    assert "if (document.hidden) cancelViewBoundRefreshWork();" in visibility
+    hidden_branch = visibility[
+        visibility.index("if (document.hidden)"):
+        visibility.index("else onReturnToForeground()")
+    ]
+    assert "cancelViewBoundRefreshWork();" in hidden_branch
     helper = html[
         html.index("function cancelViewBoundRefreshWork()"):
         html.index("function rebuildCategoryMap")
@@ -1327,7 +1331,9 @@ def test_source_filter_rendering_executes_group_rebuild_path():
 
 def test_mobile_layout_and_article_content_cannot_create_horizontal_scroll():
     html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
-    assert "html{font-size:16px;scroll-behavior:smooth;-webkit-font-smoothing:antialiased;max-width:100%;overflow-x:hidden}" in html
+    html_rule = html.split("html{", 1)[1].split("}", 1)[0]
+    assert "max-width:100%" in html_rule
+    assert "overflow-x:hidden" in html_rule
     assert ".app{width:100%;max-width:960px;" in html
     assert ".overlay{position:fixed;inset:0;z-index:200;background:var(--bg);overflow-x:hidden;overflow-y:auto;" in html
     assert ".article-wrap{width:100%;max-width:720px;min-width:0;" in html

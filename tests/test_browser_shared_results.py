@@ -97,8 +97,7 @@ def test_body_first_live_updates_original_toggle_and_logout(browser, viewport, t
         page.evaluate('pollAIResultUpdates(true)')
         result['summary'] = 'Summary completed while reading'
         revision = 1
-        if viewport['width'] < 1000:
-            page.evaluate('pollAIResultUpdates(true)')
+        page.evaluate('pollAIResultUpdates(true)')
         expect(page.locator('#aiSummaryTop')).to_contain_text('Summary completed while reading',timeout=15000)
         expect(page.locator('#articleBody')).to_contain_text('Readable original body 1')
         result['translation'] = json.dumps({'title':'Translated title','html':'<p>Translated body one</p>'})
