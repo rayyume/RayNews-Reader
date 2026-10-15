@@ -68,7 +68,7 @@ from digest_engine import (MAX_DIGEST_EVENTS, SIGNAL_VERSION, normalize_signals,
 from network_safety import UnsafeUrlError, assert_ai_endpoint_url, assert_public_http_url
 from image_cache import (
     enqueue_article_image_prefetch, unpin_article_images,
-    cache_stats, evict_article_images, evict_unreferenced_images, collect_image_urls, open_cache_connection, _url_hash,
+    cache_mutation_guard, cache_stats, evict_article_images, evict_unreferenced_images, collect_image_urls, open_cache_connection, _url_hash,
 )
 from news_schema import ensure_article_schema, ensure_article_title_columns
 from runtime_memory import runtime_memory_snapshot
@@ -6192,24 +6192,26 @@ def _purge_articles_before(before_date: str, dry_run: bool,
                     maintain_image_cache=False, cleanup_sources=False,
                 )
                 deleted_images = 0
-                for article_id, body_html, thumb in batch:
-                    try:
-                        deleted_images += evict_article_images(
-                            body_html, thumb, article_id,
-                            protected_hashes=protected_hashes, conn=cache_conn,
-                        )
-                    except Exception as exc:
-                        with _purge_tasks_lock:
-                            task["errors"] += 1
-                        print(f"[purge] image eviction failed for {article_id}: {exc}")
-                cache_conn.commit()
+                with cache_mutation_guard():
+                    for article_id, body_html, thumb in batch:
+                        try:
+                            deleted_images += evict_article_images(
+                                body_html, thumb, article_id,
+                                protected_hashes=protected_hashes, conn=cache_conn,
+                            )
+                        except Exception as exc:
+                            with _purge_tasks_lock:
+                                task["errors"] += 1
+                            print(f"[purge] image eviction failed for {article_id}: {exc}")
+                    cache_conn.commit()
                 with _purge_tasks_lock:
                     task["processed"] += len(batch)
                     task["deleted"] += result.get("deleted", 0)
                     task["images_deleted"] += deleted_images
                 time.sleep(0.02)
-            orphaned = evict_unreferenced_images(protected_hashes, conn=cache_conn)
-            cache_conn.commit()
+            with cache_mutation_guard():
+                orphaned = evict_unreferenced_images(protected_hashes, conn=cache_conn)
+                cache_conn.commit()
             # Every per-batch _delete_article_ids() call above ran with
             # cleanup_sources=False, so the stale-source sweep the batches skipped
             # happens once here. _get_news_db() must be called from *this* thread:

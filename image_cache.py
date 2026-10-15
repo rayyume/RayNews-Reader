@@ -91,6 +91,13 @@ def _disk_lock(name, *, metadata=False):
             yield
 
 
+@contextmanager
+def cache_mutation_guard():
+    """Hold across caller-owned cache transactions, including their commit."""
+    with _disk_lock('metadata', metadata=True):
+        yield
+
+
 def _metadata_mutation(function):
     @wraps(function)
     def guarded(*args, **kwargs):
@@ -103,6 +110,8 @@ def _metadata_mutation(function):
 
 def open_cached_image(url):
     """Return an owned binary handle; unlink after open cannot break a reader."""
+    if not IMAGE_CACHE_ENABLED:
+        return None
     with _disk_lock('metadata', metadata=True):
         cached = get_cached_image(url)
         if not cached:
@@ -272,6 +281,7 @@ def collect_image_urls(body_html: str | None, thumb: str | None = "", body_limit
     return result
 
 
+@_metadata_mutation
 def get_cached_image(url: str) -> tuple[Path, str] | None:
     if not IMAGE_CACHE_ENABLED:
         return None
@@ -289,6 +299,8 @@ def get_cached_image(url: str) -> tuple[Path, str] | None:
             return None
         path = CACHE_DIR / row["path"]
         if not path.exists():
+            conn.execute("DELETE FROM image_cache_entries WHERE url_hash=?", (url_hash,))
+            conn.commit()
             return None
         conn.execute(
             "UPDATE image_cache_entries SET accessed_at = ?, hit_count = hit_count + 1 WHERE url_hash = ?",
@@ -403,25 +415,27 @@ def pin_article_images(article_id: int, body_html: str | None, thumb: str | None
             if not cached:
                 continue
             url_hash = _url_hash(url)
-            conn = _connect()
-            try:
-                conn.execute(
-                    "INSERT OR IGNORE INTO image_cache_article_images (article_id, url_hash) VALUES (?, ?)",
-                    (article_id, url_hash),
-                )
-                conn.execute(
-                    "UPDATE image_cache_entries SET pinned = 1 WHERE url_hash = ?",
-                    (url_hash,),
-                )
-                conn.commit()
-            finally:
-                conn.close()
+            with cache_mutation_guard():
+                conn = _connect()
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO image_cache_article_images (article_id, url_hash) VALUES (?, ?)",
+                        (article_id, url_hash),
+                    )
+                    conn.execute(
+                        "UPDATE image_cache_entries SET pinned = 1 WHERE url_hash = ?",
+                        (url_hash,),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
             count += 1
         except Exception:
             continue
     return count
 
 
+@_metadata_mutation
 def unpin_article_images(article_ids: int | list[int] | tuple[int, ...]) -> None:
     """Remove one batch of article mappings and recompute pins once.
 
@@ -483,19 +497,20 @@ def _prefetch_worker() -> None:
         try:
             cached = cache_image(url, is_cover=is_cover, pinned=pinned)
             if cached and pinned:
-                conn = _connect()
-                try:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO image_cache_article_images (article_id, url_hash) VALUES (?, ?)",
-                        (article_id, url_hash),
-                    )
-                    conn.execute(
-                        "UPDATE image_cache_entries SET pinned = 1 WHERE url_hash = ?",
-                        (url_hash,),
-                    )
-                    conn.commit()
-                finally:
-                    conn.close()
+                with cache_mutation_guard():
+                    conn = _connect()
+                    try:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO image_cache_article_images (article_id, url_hash) VALUES (?, ?)",
+                            (article_id, url_hash),
+                        )
+                        conn.execute(
+                            "UPDATE image_cache_entries SET pinned = 1 WHERE url_hash = ?",
+                            (url_hash,),
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
         except Exception as exc:
             log.warning("Image prefetch failed for article=%s url=%s: %s", article_id, url[:120], exc)
         finally:
@@ -657,6 +672,7 @@ def evict_article_images(body_html: str | None, thumb: str | None = "",
     return deleted
 
 
+@_metadata_mutation
 def evict_unreferenced_images(referenced_hashes: set[str], *, conn: sqlite3.Connection | None = None) -> int:
     """Delete cached files not referenced by any retained article.
 

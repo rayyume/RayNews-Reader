@@ -1521,6 +1521,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         send_text(self, "not found", 404)
 
     def _handle_img_cache(self, params):
+        if not _IMAGE_RESPONSE_SLOTS.acquire(timeout=2):
+            send_text(self, "Image service busy", 503)
+            return
+        try:
+            self._serve_img_cache(params)
+        finally:
+            _IMAGE_RESPONSE_SLOTS.release()
+
+    def _serve_img_cache(self, params):
         img_url = params.get("url", [None])[0]
         if not img_url:
             send_text(self, "Missing url parameter", 400)
@@ -1531,14 +1540,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             send_text(self, "Invalid URL scheme", 400)
             return
 
+        response_started = False
         try:
+            if getattr(self, 'connection', None) is not None:
+                self.connection.settimeout(30)
             cached = open_cached_image(img_url)
             if not cached:
-                cached = cache_image(img_url, _reader=True)
+                try:
+                    cached = cache_image(img_url, _reader=True)
+                except FileNotFoundError:
+                    cached = cache_image(img_url, _reader=True)
+                except Exception:
+                    cached = open_cached_image(img_url)
+                    if not cached:
+                        raise
             if cached:
                 reader, content_type = cached
                 with reader:
                     size = os.fstat(reader.fileno()).st_size
+                    response_started = True
                     self.send_response(200)
                     self.send_header("Content-Type", content_type)
                     self.send_header("X-Content-Type-Options", "nosniff")
@@ -1549,6 +1569,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         self.wfile.write(chunk)
             else:
                 body, content_type = fetch_remote_image(img_url)
+                response_started = True
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
                 self.send_header("X-Content-Type-Options", "nosniff")
@@ -1559,8 +1580,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
         except Exception:
-            log.warning("Image cache unavailable")
-            send_text(self, "Image cache unavailable", 502)
+            warn_rate_limited(log, "image_unavailable", "Image cache unavailable")
+            if not response_started:
+                send_text(self, "Image cache unavailable", 502)
 
     def log_message(self, fmt, *args):
         log.info(fmt % args)

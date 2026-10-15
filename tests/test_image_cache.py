@@ -449,3 +449,24 @@ class ImageContentValidationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_upstream_failure_recovers_a_concurrently_filled_cache(tmp_path,monkeypatch):
+    path=tmp_path/'fallback.png'
+    path.write_bytes(b'complete image')
+    handler=ImageContentValidationTests()._handler()
+    monkeypatch.setattr(refresh_server,'open_cached_image',mock.Mock(side_effect=[None,(path.open('rb'),'image/png')]))
+    monkeypatch.setattr(refresh_server,'cache_image',mock.Mock(side_effect=TimeoutError()))
+    handler._handle_img_cache({'url':['https://example.test/image']})
+    assert handler.statuses == [200]
+    assert handler.wfile.getvalue() == b'complete image'
+
+
+def test_response_capacity_is_bounded_without_using_502(monkeypatch):
+    handler=ImageContentValidationTests()._handler()
+    slots=mock.Mock()
+    slots.acquire.return_value=False
+    monkeypatch.setattr(refresh_server,'_IMAGE_RESPONSE_SLOTS',slots)
+    handler._handle_img_cache({'url':['https://example.test/image']})
+    assert handler.statuses == [503]
+    slots.release.assert_not_called()
