@@ -442,3 +442,43 @@ def test_refresh_server_lets_post_fetch_maintenance_be_throttled():
     source = (ROOT / "refresh_server.py").read_text(encoding="utf-8")
     assert "maintain_source_categories(conn, force=False)" in source
     assert "maintain_source_categories(conn, force=True)" not in source
+
+
+def test_dirty_generation_detects_insert_after_idle_maintenance():
+    conn = _make_conn()
+    sc.init_source_categories(conn)
+    assert sc.maintain_source_categories(conn)['ran']
+    assert not sc.maintain_source_categories(conn)['ran']
+    _add_article(conn, 1, 'later-source')
+    assert sc.maintain_source_categories(conn)['ran']
+    assert conn.execute("SELECT 1 FROM source_categories WHERE source='later-source'").fetchone()
+
+
+def test_cleanup_keeps_exact_fallback_and_whitespace_semantics():
+    conn = _make_conn()
+    conn.execute("ALTER TABLE articles ADD COLUMN group_source TEXT")
+    sc.init_source_categories(conn)
+    conn.executemany(
+        "INSERT INTO articles(id,group_source,feed_source,source) VALUES (?,?,?,?)",
+        [(1,None,'feed','fallback'), (2,'','', 'fallback'), (3,'  ','hidden','fallback'), (4,'group','other','fallback')],
+    )
+    conn.executemany(
+        "INSERT INTO source_categories(source,status) VALUES (?, 'pending')",
+        [(value,) for value in ('feed','fallback','  ','group','hidden','other')],
+    )
+    conn.commit()
+    sc.cleanup_stale_source_categories(conn)
+    live = {r[0] for r in conn.execute('SELECT source FROM source_categories')}
+    assert live == {'feed','fallback','  ','group'}
+
+
+def test_empty_backfill_does_not_run_discovery_or_cleanup(tmp_path, monkeypatch):
+    import fetcher
+    import web_server
+    path = tmp_path / 'news.db'
+    monkeypatch.setattr(fetcher, 'DB_FILE', path)
+    monkeypatch.setattr(web_server, 'NEWS_DB', str(path))
+    fetcher.init_db().close()
+    monkeypatch.setattr(web_server, 'ensure_article_sources', lambda *a: pytest.fail('empty discovery'))
+    monkeypatch.setattr(web_server, 'cleanup_stale_source_categories', lambda *a: pytest.fail('empty cleanup'))
+    assert web_server._redetect_article_sources_work(100, 10, False, pending_only=True)['checked'] == 0

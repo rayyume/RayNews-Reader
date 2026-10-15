@@ -6624,8 +6624,10 @@ def _redetect_article_sources_work(limit: int, network_limit: int, force_telegra
         else:
             skipped += 1
         update_progress()
-    ensure_article_sources(conn)
-    deleted_sources = cleanup_stale_source_categories(conn)
+    deleted_sources = 0
+    if changed:
+        maintenance = maintain_source_categories(conn, force=False)
+        deleted_sources = maintenance.get("deleted", 0)
     conn.commit()
     conn.close()
     return {
@@ -6704,6 +6706,10 @@ def _run_source_identity_backfill_once() -> tuple[dict, int, int]:
     conn = _get_news_db()
     if not conn:
         return result, 0, 0
+    state = conn.execute("SELECT generation, manual_generation FROM source_maintenance_state WHERE id=1").fetchone()
+    if not result.get("checked") and state and state[0] == state[1]:
+        return result, 0, 0
+    migration_generation = state[0] if state else 0
     remaining = conn.execute(
         "SELECT COUNT(*) FROM articles WHERE source_detection_version < 1 "
         "AND NOT EXISTS (SELECT 1 FROM source_categories sc "
@@ -6711,6 +6717,8 @@ def _run_source_identity_backfill_once() -> tuple[dict, int, int]:
         "AND sc.status IN ('manual', 'classified'))"
     ).fetchone()[0]
     migrated = _migrate_unambiguous_manual_source_settings(conn)
+    conn.execute("UPDATE source_maintenance_state SET manual_generation=? WHERE id=1", (migration_generation,))
+    conn.commit()
     return result, remaining, migrated
 
 
@@ -6733,12 +6741,13 @@ def _source_identity_backfill_loop():
                     f"[source-migration] checked {result['checked']}, updated {result['updated']}, "
                     f"remaining {remaining}"
                 )
-            time.sleep(2 if remaining and result.get("checked") else 60)
+            pause = 2 if remaining and result.get("checked") else 60
         except Exception:
             app.logger.exception("Automatic source identity migration failed")
-            time.sleep(30)
+            pause = 30
         finally:
             _source_identity_backfill_lock.release()
+        time.sleep(pause)
 
 
 @app.route("/sources/redetect", methods=["POST"])

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import fcntl
+from contextlib import contextmanager
+from functools import wraps
+from pathlib import Path
 import re
 import sqlite3
 import threading
@@ -333,6 +337,8 @@ def init_source_categories(conn: sqlite3.Connection) -> None:
         )
     """)
 
+    _ensure_maintenance_state(conn)
+
     # The built-in registry records identity only. Per-deployment labels and
     # categories stay in the database and can be edited independently.
     for domain, source_name in KNOWN_DOMAINS.items():
@@ -514,29 +520,84 @@ def _ensure_source_tables(conn: sqlite3.Connection) -> None:
 
 
 MAINTENANCE_THROTTLE_SECONDS = 60
-_maintenance_lock = threading.Lock()
+MAINTENANCE_RECONCILE_SECONDS = 1800
+_maintenance_lock = threading.RLock()
+_source_guard_local = threading.local()
 _maintenance_last_run = 0.0
 
 
-def maintain_source_categories(conn: sqlite3.Connection, force: bool = False) -> dict:
-    """Run the write-heavy source bookkeeping: discover new sources, drop stale ones.
+def _ensure_maintenance_state(conn):
+    conn.execute("CREATE TABLE IF NOT EXISTS source_maintenance_state ("
+                 "id INTEGER PRIMARY KEY CHECK(id=1), generation INTEGER NOT NULL DEFAULT 1, "
+                 "maintained INTEGER NOT NULL DEFAULT 0, manual_generation INTEGER NOT NULL DEFAULT 0, reconciled_at REAL NOT NULL DEFAULT 0)")
+    conn.execute("INSERT OR IGNORE INTO source_maintenance_state(id) VALUES (1)")
+    # Triggers catch writes from all processes, including imports and direct
+    # deletion paths; updates that do not change identity do not dirty it.
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='articles' AND type='table'").fetchone():
+        for suffix, event, condition in (
+            ('insert', 'INSERT', ''), ('delete', 'DELETE', ''),
+            ('update', 'UPDATE OF group_source, feed_source, source, source_detection_version',
+             'WHEN OLD.group_source IS NOT NEW.group_source OR OLD.feed_source IS NOT NEW.feed_source OR OLD.source IS NOT NEW.source OR OLD.source_detection_version IS NOT NEW.source_detection_version'),
+        ):
+            conn.execute(f"CREATE TRIGGER IF NOT EXISTS source_dirty_{suffix} AFTER {event} ON articles {condition} "
+                         "BEGIN UPDATE source_maintenance_state SET generation=generation+1 WHERE id=1; END")
+    for table in ('source_aliases', 'source_categories'):
+        for event in ('INSERT', 'UPDATE', 'DELETE'):
+            conn.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_dirty_{event} AFTER {event} ON {table} "
+                         "BEGIN UPDATE source_maintenance_state SET generation=generation+1 WHERE id=1; END")
 
-    Both steps scan the whole articles table, so they must stay off the read path of
-    GET /sources — that request has to stay fast even while a fetch cycle holds the
-    write lock. Call this after a fetch cycle instead. Throttled to one pass per
-    MAINTENANCE_THROTTLE_SECONDS per process; pass force=True to bypass (write paths
-    that just changed articles need their changes reflected immediately).
-    """
+
+@contextmanager
+def source_maintenance_guard(conn):
+    if getattr(_source_guard_local, 'active', False):
+        yield True
+        return
+    db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+    if not _maintenance_lock.acquire(blocking=False):
+        yield False
+        return
+    handle = None
+    try:
+        if db_path:
+            handle = open(str(Path(db_path)) + '.source-maintenance.lock', 'a+b')
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+        _source_guard_local.active = True
+        yield True
+    finally:
+        _source_guard_local.active = False
+        if handle is not None:
+            handle.close()
+        _maintenance_lock.release()
+
+
+def maintain_source_categories(conn: sqlite3.Connection, force: bool = False) -> dict:
+    """Coalesce maintenance across threads/processes, with a durable dirty fence."""
     global _maintenance_last_run
-    if not force:
-        with _maintenance_lock:
-            if time.monotonic() - _maintenance_last_run < MAINTENANCE_THROTTLE_SECONDS:
-                return {"ran": False, "discovered": 0, "deleted": 0}
-    discovered = ensure_article_sources(conn)
-    deleted = cleanup_stale_source_categories(conn)
-    with _maintenance_lock:
+    skipped = {"ran": False, "discovered": 0, "deleted": 0}
+    with source_maintenance_guard(conn) as acquired:
+        if not acquired:
+            return skipped
+        _ensure_source_tables(conn)
+        _ensure_maintenance_state(conn)
+        conn.commit()
+        generation, maintained, reconciled = conn.execute(
+            "SELECT generation, maintained, reconciled_at FROM source_maintenance_state WHERE id=1"
+        ).fetchone()
+        now = time.time()
+        if not force and generation == maintained and now - reconciled < MAINTENANCE_RECONCILE_SECONDS:
+            return skipped
+        # Dirty data bypasses the old minute throttle, so new sources appear
+        # after a committed fetch rather than waiting for a future fetch cycle.
+        discovered = ensure_article_sources(conn)
+        deleted = cleanup_stale_source_categories(conn)
+        conn.execute("UPDATE source_maintenance_state SET maintained=?, reconciled_at=? WHERE id=1", (generation, now))
+        conn.commit()
         _maintenance_last_run = time.monotonic()
-    return {"ran": True, "discovered": discovered, "deleted": deleted}
+        return {"ran": True, "discovered": discovered, "deleted": deleted}
 
 
 def cleanup_stale_source_categories(conn: sqlite3.Connection) -> int:
@@ -548,11 +609,14 @@ def cleanup_stale_source_categories(conn: sqlite3.Connection) -> int:
         init_source_categories(conn)
     rows = conn.execute(
         """
-        SELECT sc.source, sc.status, COUNT(a.id) AS article_count
+        WITH effective_sources AS MATERIALIZED (
+            SELECT DISTINCT COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source) AS source
+            FROM articles
+        )
+        SELECT sc.source, sc.status, 0 AS article_count
         FROM source_categories sc
-        LEFT JOIN articles a ON COALESCE(NULLIF(a.group_source, ''), NULLIF(a.feed_source, ''), a.source) = sc.source
-        GROUP BY sc.source
-        HAVING article_count = 0
+        LEFT JOIN effective_sources e ON e.source = sc.source
+        WHERE e.source IS NULL
         """
     ).fetchall()
     deleted = 0
@@ -602,6 +666,20 @@ def cleanup_stale_source_categories(conn: sqlite3.Connection) -> int:
     if deleted:
         conn.commit()
     return deleted
+
+
+def _serialized_source_write(function):
+    @wraps(function)
+    def guarded(conn, *args, **kwargs):
+        with source_maintenance_guard(conn) as acquired:
+            if not acquired:
+                return 0
+            return function(conn, *args, **kwargs)
+    return guarded
+
+
+ensure_article_sources = _serialized_source_write(ensure_article_sources)
+cleanup_stale_source_categories = _serialized_source_write(cleanup_stale_source_categories)
 
 
 def delete_source_metadata(conn: sqlite3.Connection, sources: list[str]) -> int:
