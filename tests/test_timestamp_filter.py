@@ -1,6 +1,7 @@
 import io
 import os
 import re
+import selectors
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,42 @@ from timestamp_filter import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_live_pipe_emits_line_before_eof():
+    process = subprocess.Popen(
+        [sys.executable, "-u", str(ROOT / "timestamp_filter.py"), "web"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    )
+    try:
+        process.stdin.write("实时日志\n".encode())
+        process.stdin.flush()
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            assert selector.select(1), "filter buffered a complete live log line"
+        assert process.stdout.readline().decode().endswith("实时日志\n")
+        assert process.poll() is None
+    finally:
+        process.stdin.close()
+        process.wait(timeout=3)
+        process.stdout.close()
+
+
+def test_decoder_handles_split_characters_and_incomplete_eof():
+    from timestamp_filter import _iter_lines
+
+    class Chunks(io.BytesIO):
+        def read1(self, size):
+            return super().read(1)
+
+    assert list(_iter_lines(Chunks("中文\n".encode() + b"\xe4"))) == ["中文\n", "\ufffd"]
+
+
+def test_unterminated_large_input_has_bounded_output_chunks():
+    from timestamp_filter import _iter_lines, _READ_CHUNK, _TRUNCATE_MARKER
+    chunks = list(_iter_lines(io.BytesIO(b"x" * (4 * _READ_CHUNK))))
+    assert len(chunks) == 4
+    assert all(len(chunk) <= _MAX_LINE_CHARS + len(_TRUNCATE_MARKER) for chunk in chunks)
 
 
 def test_formats_iso_timestamp_with_aware_offset():

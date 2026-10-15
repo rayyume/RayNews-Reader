@@ -72,10 +72,15 @@ def _iter_lines(stream):
     """
     use_decoder = isinstance(stream.read(0), (bytes, bytearray))
     decoder = codecs.getincrementaldecoder("utf-8")("replace") if use_decoder else None
+    read_chunk = getattr(stream, "read1", stream.read)
     buffer = ""
     while True:
-        chunk = stream.read(_READ_CHUNK)
+        # BufferedReader.read(n) waits for n bytes or EOF on a live pipe.
+        # read1 returns the bytes already available after one underlying read.
+        chunk = read_chunk(_READ_CHUNK)
         if not chunk:
+            if decoder is not None:
+                buffer += decoder.decode(b"", final=True)
             if buffer:
                 yield buffer
             return
