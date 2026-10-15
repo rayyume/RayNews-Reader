@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" id="appleStatusBarMeta">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0a0a0c" id="themeColorMeta">
 <link rel="manifest" href="/manifest.json">
@@ -25,7 +25,6 @@
     document.documentElement.dataset.theme = mode;
     document.documentElement.style.colorScheme = mode;
     document.getElementById('themeColorMeta').setAttribute('content', mode === 'light' ? '#f5f7fb' : '#0a0a0c');
-    document.getElementById('appleStatusBarMeta').setAttribute('content', mode === 'light' ? 'default' : 'black-translucent');
   } catch (e) {
     document.documentElement.dataset.theme = 'dark';
     document.documentElement.style.colorScheme = 'dark';
@@ -342,12 +341,6 @@ a:hover{text-decoration:underline}
   .topcat-bar{padding-left:20px;padding-right:26px}
   .scroll-top-btn{right:12px;bottom:calc(18px + env(safe-area-inset-bottom,0px))}
   .sidebar-toggle{z-index:55}
-}
-/* Avoid persistent blur surfaces on iOS scrolling headers. */
-@media(max-width:640px){
-  @supports(-webkit-touch-callout:none){
-    .header,.topcat-bar,.overlay-header,.search-header{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}
-  }
 }
 @media(prefers-reduced-motion:reduce){
   html{scroll-behavior:auto!important}
@@ -1270,8 +1263,6 @@ function applyThemePreference(pref) {
   localStorage.setItem('raynews_theme', safe);
   const meta = document.getElementById('themeColorMeta');
   if (meta) meta.setAttribute('content', mode === 'light' ? '#f5f7fb' : '#0a0a0c');
-  const statusMeta = document.getElementById('appleStatusBarMeta');
-  if (statusMeta) statusMeta.setAttribute('content', mode === 'light' ? 'default' : 'black-translucent');
   const select = document.getElementById('themePreference');
   if (select) select.value = safe;
 }

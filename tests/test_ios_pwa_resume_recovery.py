@@ -298,7 +298,7 @@ assert.equal(context.cancelled, 2);
 """)
 
 
-def test_ios_scrolling_does_not_keep_all_cards_as_compositor_layers():
+def test_ios_scrolling_does_not_keep_cards_and_overlay_as_compositor_layers():
     assert "position:relative;will-change:transform,opacity" not in HTML
     assert ".overlay.open{transform:none}" in HTML
     assert "fill: 'backwards'" in source_between(
@@ -307,7 +307,6 @@ def test_ios_scrolling_does_not_keep_all_cards_as_compositor_layers():
     assert "fill: 'both'" not in source_between(
         "function animateArticleLayout(", "function reconcileVisibleArticles("
     )
-    assert ".header,.topcat-bar,.overlay-header,.search-header{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}" in HTML
 
 
 def test_pwa_back_forward_resume_uses_the_same_recovery_path():
