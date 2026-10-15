@@ -5498,11 +5498,20 @@ def list_sources():
     _promote_legacy_admin_source_settings(conn)
     definitions = category_definitions(conn)
     all_definitions = category_definitions(conn, include_disabled=True)
+    try:
+        sources = source_rows(conn)
+    except sqlite3.OperationalError as exc:
+        if "no such table: articles" not in str(exc):
+            raise
+        # The fetcher creates articles on its first cycle; keep the page's retry path active.
+        response = jsonify({"error": "source metadata not ready"})
+        response.headers["Cache-Control"] = "no-store"
+        return response, 503
     response = jsonify({
         "categories": [row["category"] for row in definitions],
         "category_names": {row["category"]: row["label"] for row in definitions},
         "category_definitions": all_definitions,
-        "sources": source_rows(conn),
+        "sources": sources,
     })
     response.headers["Cache-Control"] = "no-store"
     return response
