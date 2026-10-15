@@ -6417,6 +6417,7 @@ def _fetch_telegram_message_content(article_id: int) -> str:
     return text_el.decode_contents() if text_el else ""
 
 
+_source_identity_idle = None
 _source_redetect_jobs = {}
 _source_redetect_jobs_lock = threading.Lock()
 SOURCE_REDETECT_RETRY_SECONDS = 900
@@ -6511,6 +6512,13 @@ def _redetect_article_sources_work(limit: int, network_limit: int, force_telegra
     conn = sqlite3.connect(NEWS_DB, timeout=30)
     conn.row_factory = sqlite3.Row
     ensure_article_source_columns(conn)
+    global _source_identity_idle
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_maintenance_state'").fetchone():
+        init_source_categories(conn)
+    generation = conn.execute("SELECT generation FROM source_maintenance_state WHERE id=1").fetchone()[0]
+    if pending_only and _source_identity_idle and _source_identity_idle[:2] == (NEWS_DB, generation) and time.time() < _source_identity_idle[2]:
+        conn.close()
+        return {"checked": 0, "updated": 0, "skipped": 0, "telegram_checked": 0, "telegram_hits": 0, "deleted_sources": 0, "changes": []}
     classified_lookup = _classified_source_lookup(conn)
     classified_keys = _classified_source_keys(conn)
     rows = conn.execute(
@@ -6528,6 +6536,14 @@ def _redetect_article_sources_work(limit: int, network_limit: int, force_telegra
         """,
         (1 if pending_only else 0, int(time.time()) - SOURCE_REDETECT_RETRY_SECONDS, limit),
     ).fetchall()
+    if pending_only and not rows:
+        next_attempt = conn.execute(
+            "SELECT MIN(source_detection_last_attempt_at + ?), COUNT(*) FROM articles WHERE source_detection_version < 1 "
+            "AND NOT EXISTS (SELECT 1 FROM source_categories sc "
+            "WHERE sc.source=COALESCE(NULLIF(articles.group_source,''),articles.source) "
+            "AND sc.status IN ('manual','classified'))", (SOURCE_REDETECT_RETRY_SECONDS,)
+        ).fetchone()
+        _source_identity_idle = (NEWS_DB, generation, min(next_attempt[0] or time.time()+1800, time.time()+1800), next_attempt[1])
     changed = []
     skipped = 0
     telegram_checked = 0
@@ -6708,7 +6724,8 @@ def _run_source_identity_backfill_once() -> tuple[dict, int, int]:
         return result, 0, 0
     state = conn.execute("SELECT generation, manual_generation FROM source_maintenance_state WHERE id=1").fetchone()
     if not result.get("checked") and state and state[0] == state[1]:
-        return result, 0, 0
+        remaining = _source_identity_idle[3] if _source_identity_idle and _source_identity_idle[:2] == (NEWS_DB, state[0]) else 0
+        return result, remaining, 0
     migration_generation = state[0] if state else 0
     remaining = conn.execute(
         "SELECT COUNT(*) FROM articles WHERE source_detection_version < 1 "

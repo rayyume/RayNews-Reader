@@ -1,0 +1,35 @@
+{
+  "articles": 85647,
+  "sources": 68,
+  "body_bytes_per_row": 1200,
+  "sqlite_version": "3.45.1",
+  "runs": 3,
+  "old": {
+    "duration_ms": [
+      1116.308,
+      1259.319,
+      1171.889
+    ],
+    "median_ms": 1171.889,
+    "plan": [
+      "SCAN sc USING INDEX sqlite_autoindex_source_categories_1",
+      "SCAN a LEFT-JOIN"
+    ]
+  },
+  "new": {
+    "duration_ms": [
+      25.083,
+      25.516,
+      26.449
+    ],
+    "median_ms": 25.516,
+    "plan": [
+      "MATERIALIZE effective_sources",
+      "SCAN articles",
+      "USE TEMP B-TREE FOR DISTINCT",
+      "SCAN sc",
+      "SCAN e LEFT-JOIN"
+    ]
+  },
+  "equivalent": true
+}

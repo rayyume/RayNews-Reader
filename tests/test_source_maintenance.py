@@ -482,3 +482,27 @@ def test_empty_backfill_does_not_run_discovery_or_cleanup(tmp_path, monkeypatch)
     monkeypatch.setattr(web_server, 'ensure_article_sources', lambda *a: pytest.fail('empty discovery'))
     monkeypatch.setattr(web_server, 'cleanup_stale_source_categories', lambda *a: pytest.fail('empty cleanup'))
     assert web_server._redetect_article_sources_work(100, 10, False, pending_only=True)['checked'] == 0
+
+
+def test_idle_identity_loop_skips_article_scan_and_wakes_for_new_articles(tmp_path,monkeypatch):
+    import fetcher
+    import web_server
+    path=tmp_path/'news.db'
+    monkeypatch.setattr(fetcher,'DB_FILE',path)
+    monkeypatch.setattr(web_server,'NEWS_DB',str(path))
+    monkeypatch.setattr(web_server,'_source_identity_idle',None)
+    conn=fetcher.init_db()
+    conn.close()
+    assert web_server._redetect_article_sources_work(100,0,False,pending_only=True)['checked']==0
+    real_connect=web_server.sqlite3.connect
+    statements=[]
+    def traced(*args,**kwargs):
+        db=real_connect(*args,**kwargs)
+        db.set_trace_callback(statements.append)
+        return db
+    monkeypatch.setattr(web_server.sqlite3,'connect',traced)
+    assert web_server._redetect_article_sources_work(100,0,False,pending_only=True)['checked']==0
+    assert not any('SELECT id, title' in statement or 'SELECT MIN(source_detection' in statement for statement in statements)
+    with real_connect(path) as conn:
+        conn.execute("INSERT INTO articles(id,title,source,feed_source,group_source,body_html) VALUES(1,'new','feed','feed','feed','<p>via 路透社</p>')")
+    assert web_server._redetect_article_sources_work(100,0,False,pending_only=True)['checked']==1

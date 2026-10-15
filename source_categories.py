@@ -536,15 +536,24 @@ def _ensure_maintenance_state(conn):
     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='articles' AND type='table'").fetchone():
         for suffix, event, condition in (
             ('insert', 'INSERT', ''), ('delete', 'DELETE', ''),
-            ('update', 'UPDATE OF group_source, feed_source, source, source_detection_version',
-             'WHEN OLD.group_source IS NOT NEW.group_source OR OLD.feed_source IS NOT NEW.feed_source OR OLD.source IS NOT NEW.source OR OLD.source_detection_version IS NOT NEW.source_detection_version'),
+            ('update', 'UPDATE OF group_source, feed_source, source, source_detection_version, source_detection_last_attempt_at',
+             'WHEN OLD.group_source IS NOT NEW.group_source OR OLD.feed_source IS NOT NEW.feed_source OR OLD.source IS NOT NEW.source OR OLD.source_detection_version IS NOT NEW.source_detection_version OR OLD.source_detection_last_attempt_at IS NOT NEW.source_detection_last_attempt_at'),
         ):
             conn.execute(f"CREATE TRIGGER IF NOT EXISTS source_dirty_{suffix} AFTER {event} ON articles {condition} "
                          "BEGIN UPDATE source_maintenance_state SET generation=generation+1 WHERE id=1; END")
     for table in ('source_aliases', 'source_categories'):
         for event in ('INSERT', 'UPDATE', 'DELETE'):
-            conn.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_dirty_{event} AFTER {event} ON {table} "
+            condition = ''
+            if table == 'source_categories':
+                if event == 'INSERT':
+                    condition = "WHEN NEW.status IN ('manual','classified')"
+                elif event == 'DELETE':
+                    condition = "WHEN OLD.status IN ('manual','classified')"
+                else:
+                    condition = 'WHEN OLD.status IS NOT NEW.status OR OLD.source IS NOT NEW.source OR OLD.label IS NOT NEW.label OR OLD.category IS NOT NEW.category'
+            conn.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_dirty_{event} AFTER {event} ON {table} {condition} "
                          "BEGIN UPDATE source_maintenance_state SET generation=generation+1 WHERE id=1; END")
+
 
 
 @contextmanager
