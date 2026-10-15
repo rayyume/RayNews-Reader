@@ -58,6 +58,34 @@ def test_identical_generic_ai_event_does_not_merge_unrelated_articles():
     assert len(engine.group_events([left, right])) == 2
 
 
+def test_cross_source_headlines_merge_when_extracted_entities_disagree():
+    left = article(1, "甲报", "星河公司发布新一代芯片", entity="星河公司")
+    right = article(2, "乙报", "星河公司发布新一代芯片", entity="星河芯片")
+    left["digest_signals"]["event"] = "星河发布新一代芯片"
+    right["digest_signals"]["event"] = "星河公司推出新一代芯片"
+    groups = engine.group_events([left, right])
+    assert len(groups) == 1
+    assert {item["source"] for item in groups[0]["articles"]} == {"甲报", "乙报"}
+    assert engine.rank_events(groups, [], cutoff=2000)[0]["publisher_count"] == 2
+
+
+def test_cross_source_similar_headlines_merge_but_distinct_events_remain():
+    left = article(1, "甲报", "星河公司正式发布新一代芯片", entity="星河公司")
+    right = article(2, "乙报", "星河公司发布了新一代芯片", entity="芯片项目")
+    unrelated = article(3, "丙报", "星河公司宣布关闭芯片项目", entity="星河公司")
+    right["digest_signals"]["event"] = "星河公司推出新一代芯片"
+    unrelated["digest_signals"]["action"] = "关闭"
+    groups = engine.group_events([left, right, unrelated])
+    assert [[item["id"] for item in group["articles"]] for group in groups] == [[1, 2], [3]]
+
+
+def test_matching_specific_event_merges_different_source_wording():
+    left = article(1, "甲报", "星河公司宣布新一代芯片开始量产", entity="星河公司")
+    right = article(2, "乙报", "星河公司新一代芯片已开始量产", entity="芯片项目")
+    left["digest_signals"]["event"] = right["digest_signals"]["event"] = "星河公司新一代芯片已开始量产"
+    assert len(engine.group_events([left, right])) == 1
+
+
 def test_relative_ranking_fills_requested_count_even_with_low_scores():
     reliable = article(1, "甲报", "机构A发布消息", impact=2, entity="机构A")
     fallback = article(2, "乙报", "机构B发布消息", impact=2, entity="机构B")

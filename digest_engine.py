@@ -69,11 +69,34 @@ def same_event(left: dict, right: dict) -> bool:
     )) or (event_similarity >= 0.88 and min(len(left_event), len(right_event)) >= 8)
 
 
+def _same_article_event(left: dict, right: dict) -> bool:
+    """Use the source headlines when AI entity extraction disagrees across publishers."""
+    left_title, right_title = _key(left.get("original_title") or left.get("title")), _key(
+        right.get("original_title") or right.get("title")
+    )
+    if min(len(left_title), len(right_title)) < 8:
+        return False
+    if left_title == right_title:
+        return True
+    title_similarity = SequenceMatcher(None, left_title, right_title).ratio()
+    left_event = _key(left["digest_signals"].get("event"))
+    right_event = _key(right["digest_signals"].get("event"))
+    if left_event == right_event and len(left_event) >= 14 and title_similarity >= 0.7:
+        return True
+    if title_similarity < 0.88 or min(len(left_title), len(right_title)) < 12:
+        return False
+    return SequenceMatcher(None, left_event, right_event).ratio() >= 0.7
+
+
 def group_events(articles: list[dict]) -> list[dict]:
     groups: list[dict] = []
     for article in articles:
         signal = article["digest_signals"]
-        group = next((item for item in groups if same_event(item["signal"], signal)), None)
+        group = next((item for item in groups if any(
+            same_event(existing["digest_signals"], signal)
+            or _same_article_event(existing, article)
+            for existing in item["articles"]
+        )), None)
         if group is None:
             group = {"signal": signal, "articles": []}
             groups.append(group)

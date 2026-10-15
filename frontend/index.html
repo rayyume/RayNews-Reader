@@ -476,7 +476,7 @@ body.body-scroll-lock{overflow:hidden!important}
 .notif-markdown img{display:block;max-width:100%!important;height:auto;border-radius:8px}
 .notif-markdown table{width:100%!important;max-width:100%!important;table-layout:fixed;border-collapse:collapse}
 .notif-markdown th,.notif-markdown td{overflow-wrap:anywhere;word-break:break-word}
-.notif-markdown ul,.notif-markdown ol{padding-left:1.5em;margin:0 0 1em}
+.notif-markdown ul,.notif-markdown ol{padding-left:3em;margin:0 0 1em}
 .notif-markdown li{margin-bottom:0.4em}
 .notif-detail-footer{display:flex;justify-content:center;gap:10px;padding:20px 0 4px}
 .notif-read-primary{background:var(--accent);border:1px solid var(--accent);color:#fff;padding:9px 32px;border-radius:10px;font:inherit;font-size:13px;font-weight:700;cursor:pointer;transition:opacity .15s}
@@ -496,7 +496,7 @@ body.body-scroll-lock{overflow:hidden!important}
 .daily-summary-content{font-size:13px;line-height:1.75;color:var(--text);padding:4px 0 2px;background:transparent}
 .daily-summary-content h1,.daily-summary-content h2,.daily-summary-content h3{margin:18px 0 12px;font-size:20px;line-height:1.25;color:var(--text)}
 .daily-summary-content h1:first-child,.daily-summary-content h2:first-child,.daily-summary-content h3:first-child{margin-top:0}
-.daily-summary-content ol,.daily-summary-content ul{margin:0 0 18px 0;padding-left:26px;list-style-position:outside}
+.daily-summary-content ol,.daily-summary-content ul{margin:0 0 18px 0;padding-left:3em;list-style-position:outside}
 .daily-summary-content li{padding-left:4px;margin:0 0 12px;color:var(--text);overflow:visible}
 .daily-summary-content li::marker{color:var(--text-2);font-weight:700}
 .daily-summary-content p{margin:0 0 12px}
@@ -2081,7 +2081,7 @@ function persistSourceMetadata(data) {
 }
 
 // Fetch /sources with an abortable timeout. Logged-in users hit the authenticated
-// endpoint; if the token has expired mid-session, fall back to the public /api/sources
+// endpoint; if the token has expired mid-session, fall back to the public source endpoint
 // so the drawer still populates instead of silently staying empty.
 async function fetchSourceMetadata(networkTimeoutMs, externalSignal = null) {
   const controller = new AbortController();
@@ -2092,7 +2092,7 @@ async function fetchSourceMetadata(networkTimeoutMs, externalSignal = null) {
   }
   const timeout = setTimeout(() => controller.abort(), networkTimeoutMs);
   const fetchPublicSources = async () => {
-    const resp = await fetch('/api/sources', { signal: controller.signal, cache: 'no-store' });
+    const resp = await fetch('/sources/public', { signal: controller.signal, cache: 'no-store' });
     if (!resp.ok || isSwFallbackResponse(resp)) {
       throw new Error('公开来源信息暂不可用');
     }
@@ -4984,7 +4984,6 @@ async function aiTranslate(articleId) {
       bodyEl.innerHTML = bodyEl.dataset.translatedHtml;
       if (h1 && bodyEl.dataset.translatedTitle) h1.textContent = bodyEl.dataset.translatedTitle;
       bodyEl.dataset.showingTranslation = 'true';
-      delete bodyEl.dataset.deferAutoTranslation;
       if (btn) btn.textContent = '原文';
     }
     return;
@@ -5007,7 +5006,6 @@ async function aiTranslate(articleId) {
     bodyEl.dataset.translatedHtml = translatedHtml;
     bodyEl.dataset.translatedTitle = translatedTitle || '';
     bodyEl.dataset.showingTranslation = 'true';
-    delete bodyEl.dataset.deferAutoTranslation;
     bodyEl.innerHTML = translatedHtml;
     if (h1 && translatedTitle) h1.textContent = translatedTitle;
     if (btn) { btn.textContent = '原文'; btn.disabled = false; }
@@ -5453,8 +5451,7 @@ async function autoDisplaySummary(articleId, prefetched = null) {
       const bodyEl = document.getElementById('articleBody');
       if (!bodyEl) return;
       const t = data.translation.trim();
-      const keepOriginal = bodyEl.dataset.showingTranslation === 'false'
-        || bodyEl.dataset.deferAutoTranslation === 'true';
+      const keepOriginal = bodyEl.dataset.showingTranslation === 'false';
       // New format with title: JSON {"title": "...", "html": "..."}
       if (t.startsWith('{')) {
         let cachedData;
@@ -5474,7 +5471,6 @@ async function autoDisplaySummary(articleId, prefetched = null) {
         if (keepOriginal) {
           const btn = document.querySelector('.ai-translate-btn');
           if (btn) btn.textContent = '译文';
-          if (bodyEl.dataset.deferAutoTranslation === 'true') sharedResultStatus(context, '译文已就绪，点击“译文”查看');
           return;
         }
         bodyEl.dataset.showingTranslation = 'true';
@@ -5493,7 +5489,6 @@ async function autoDisplaySummary(articleId, prefetched = null) {
         if (keepOriginal) {
           const btn = document.querySelector('.ai-translate-btn');
           if (btn) btn.textContent = '译文';
-          if (bodyEl.dataset.deferAutoTranslation === 'true') sharedResultStatus(context, '译文已就绪，点击“译文”查看');
           return;
         }
         bodyEl.dataset.showingTranslation = 'true';
@@ -8879,14 +8874,6 @@ function restoreArticleReturnState(onComplete) {
   });
 }
 
-function hasUsableSharedTranslation(data) {
-  const translation = data?.translation?.trim();
-  if (!translation) return false;
-  if (translation.startsWith('<')) return true;
-  if (!translation.startsWith('{')) return false;
-  try { return !!JSON.parse(translation).html; } catch { return false; }
-}
-
 async function waitForInitialSharedTranslation(prefetched) {
   if (!prefetched || !authToken || !userAutoSettings?.share_active
       || !userAutoSettings?.share_view_translation) return null;
@@ -8902,13 +8889,6 @@ async function waitForInitialSharedTranslation(prefetched) {
 }
 
 function showInitialSharedArticleResult(id, prefetched, initialShared) {
-  const body = document.getElementById('articleBody');
-  if (body && (!userAutoSettings?.share_active || !userAutoSettings?.share_view_translation
-      || (initialShared?.access && sharedPermissionKey(initialShared.access) !== sharedPermissionKey())
-      || !hasUsableSharedTranslation(initialShared))) {
-    // Once the original is shown, do not replace it underneath the reader.
-    body.dataset.deferAutoTranslation = 'true';
-  }
   autoDisplaySummary(id, initialShared || prefetched);
 }
 

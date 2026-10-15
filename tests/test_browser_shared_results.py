@@ -103,11 +103,10 @@ def test_body_first_live_updates_original_toggle_and_logout(browser, viewport, t
         result['translation'] = json.dumps({'title':'Translated title','html':'<p>Translated body one</p>'})
         revision = 2
         page.evaluate('pollAIResultUpdates(true)')
-        expect(page.locator('#articleBody')).to_contain_text('Readable original body 1')
-        expect(page.locator('#sharedResultStatus')).to_contain_text('译文已就绪')
-        expect(page.locator('.ai-translate-btn')).to_have_text('译文')
-        page.locator('.ai-translate-btn').click()
         expect(page.locator('#articleBody')).to_have_text('Translated body one')
+        expect(page.locator('#articleWrap h1')).to_have_text('Translated title')
+        expect(page.locator('#list .item[data-id="1"] .item-title')).to_have_text('Translated title')
+        expect(page.locator('.ai-translate-btn')).to_have_text('原文')
         page.locator('.ai-translate-btn').click()
         expect(page.locator('#articleBody')).to_contain_text('Readable original body 1')
         result['translation'] = json.dumps({'title':'New translated title','html':'<p>Updated translation</p>'})
@@ -129,7 +128,7 @@ def test_body_first_live_updates_original_toggle_and_logout(browser, viewport, t
 
 
 @pytest.mark.parametrize('delayed_shared', [False, True])
-def test_shared_translation_does_not_replace_visible_reading_body(browser, delayed_shared, tmp_path):
+def test_shared_translation_applies_when_ready_and_preserves_original_toggle(browser, delayed_shared, tmp_path):
     context = browser.new_context(viewport={'width':390,'height':844}, service_workers='block')
     context.add_init_script("localStorage.setItem('raynews_token','local-mock-token');localStorage.setItem('raynews_user',JSON.stringify(%s));" % json.dumps(USER))
     pending_shared = []
@@ -190,13 +189,14 @@ def test_shared_translation_does_not_replace_visible_reading_body(browser, delay
             assert pending_shared
             for pending in pending_shared:
                 pending.fulfill(json=translation)
-            expect(page.locator('#sharedResultStatus')).to_contain_text('译文已就绪')
-            expect(page.locator('#articleBody')).to_have_text('Readable original body 1')
-            expect(page.locator('.ai-translate-btn')).to_have_text('译文')
-            page.wait_for_timeout(400)
-            page.screenshot(path=str(tmp_path/'late-translation-offer.png'))
-            page.locator('.ai-translate-btn').click()
             expect(page.locator('#articleBody')).to_have_text('中文译文正文')
+            expect(page.locator('#articleWrap h1')).to_have_text('中文标题')
+            expect(page.locator('#list .item[data-id="1"] .item-title')).to_have_text('中文标题')
+            expect(page.locator('.ai-translate-btn')).to_have_text('原文')
+            page.wait_for_timeout(400)
+            page.screenshot(path=str(tmp_path/'late-translation-applied.png'))
+            page.locator('.ai-translate-btn').click()
+            expect(page.locator('#articleBody')).to_have_text('Readable original body 1')
         else:
             assert page.evaluate('window.firstReadableArticleBody') == '中文译文正文'
             assert page.evaluate('window.firstReadableArticleTitle') == '中文标题'

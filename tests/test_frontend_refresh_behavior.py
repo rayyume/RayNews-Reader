@@ -1159,6 +1159,8 @@ def test_notification_markdown_uses_a_bounded_rendering_container():
     assert ".notif-markdown table{" in css
     assert 'id="notifPubPreview" class="notif-detail-body notif-markdown"' in HTML
     assert '<div class="notif-detail-body notif-markdown">${bodyHtml}</div>' in HTML
+    assert '.notif-markdown ul,.notif-markdown ol{padding-left:3em;' in css
+    assert '.daily-summary-content ol,.daily-summary-content ul{margin:0 0 18px 0;padding-left:3em;' in HTML
 
 
 def test_notification_list_uses_compact_browser_local_dates_and_keeps_time_on_mobile():
@@ -2967,7 +2969,7 @@ context.setTimeout = () => 1;
 context.clearTimeout = () => {};
 let requestOptions;
 context.fetch = async (url, options) => {
-  assert.equal(url, '/api/sources');
+  assert.equal(url, '/sources/public');
   requestOptions = options;
   return {
     ok: true,
@@ -2990,8 +2992,8 @@ assert.equal(data.sources[0].category, 'Tech');
 
 def test_service_worker_does_not_cache_public_source_metadata():
     sw = (ROOT / "frontend" / "sw.js").read_text(encoding="utf-8")
-    assert "if (url.pathname === '/api/sources') {\n    return;\n  }" in sw
-    assert sw.index("if (url.pathname === '/api/sources')") < sw.index("if (url.pathname.startsWith('/api/'))")
+    assert "if (url.pathname === '/api/sources' || url.pathname === '/sources/public') {\n    return;\n  }" in sw
+    assert sw.index("if (url.pathname === '/api/sources'") < sw.index("if (url.pathname.startsWith('/api/'))")
 
 
 def test_app_update_banner_appears_only_after_new_worker_waits_and_refreshes_on_click():

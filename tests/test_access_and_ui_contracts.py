@@ -458,6 +458,29 @@ def test_admin_source_overrides_promote_to_shared_settings():
     ).fetchone()[0] == 0
 
 
+def test_guest_source_metadata_promotes_legacy_admin_categories(monkeypatch):
+    news_conn = _source_db()
+    news_conn.execute(
+        "INSERT INTO user_source_categories "
+        "(user_id, source, category, label, status) "
+        "VALUES (1, 'Original Feed', 'Tech', 'Shared Tech', 'manual')"
+    )
+    news_conn.commit()
+    users_conn = sqlite3.connect(":memory:")
+    users_conn.row_factory = sqlite3.Row
+    users_conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, role TEXT)")
+    users_conn.execute("INSERT INTO users VALUES (1, 'admin')")
+    monkeypatch.setattr(web_server, "_get_news_db", lambda: news_conn)
+    monkeypatch.setattr(web_server, "get_db", lambda: users_conn)
+    monkeypatch.setattr(web_server, "_legacy_admin_source_settings_promoted", False)
+
+    response = web_server.app.test_client().get("/sources/public")
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    assert next(row for row in response.json["sources"] if row["source"] == "Original Feed")["category"] == "Tech"
+    assert news_conn.execute("SELECT COUNT(*) FROM user_source_categories").fetchone()[0] == 0
+
+
 def test_source_history_has_own_status_layer_and_theme_safe_article_actions():
     html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     assert 'id="sourceArticlesStatus"' in html

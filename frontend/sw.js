@@ -144,7 +144,7 @@ self.addEventListener('fetch', event => {
   // Source categories are edited by administrators at runtime. Let the page
   // handle its own short-lived IndexedDB fallback instead of serving an old
   // API response as if it were fresh after a network timeout.
-  if (url.pathname === '/api/sources') {
+  if (url.pathname === '/api/sources' || url.pathname === '/sources/public') {
     return;
   }
 

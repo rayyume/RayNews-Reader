@@ -5489,8 +5489,8 @@ def _promote_legacy_admin_source_settings(conn: sqlite3.Connection) -> None:
         print(f"[sources] Failed to promote legacy administrator settings: {exc}")
 
 
+@app.route("/sources/public", methods=["GET"])
 @app.route("/sources", methods=["GET"])
-@require_role("user", "admin")
 def list_sources():
     conn = _get_news_db()
     if not conn:
@@ -5498,12 +5498,14 @@ def list_sources():
     _promote_legacy_admin_source_settings(conn)
     definitions = category_definitions(conn)
     all_definitions = category_definitions(conn, include_disabled=True)
-    return jsonify({
+    response = jsonify({
         "categories": [row["category"] for row in definitions],
         "category_names": {row["category"]: row["label"] for row in definitions},
         "category_definitions": all_definitions,
         "sources": source_rows(conn),
     })
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.route("/sources/categories", methods=["PUT", "DELETE"])
