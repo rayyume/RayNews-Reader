@@ -1003,7 +1003,7 @@ def test_notification_list_uses_read_then_red_delete_without_view_button():
     source = notification_source_with_action_state_helpers()
     run_node(
         source,
-        """
+        r"""
 const body = { innerHTML: '' };
 const menuBadge = { style: {}, textContent: '' };
 context.document = {
@@ -1032,7 +1032,7 @@ def test_notification_detail_renders_read_and_delete_actions_for_an_unread_item(
     source = notification_source_with_action_state_helpers()
     run_node(
         source,
-        """
+        r"""
 const body = { innerHTML: '' };
 const elements = {
   notifBody: body,
