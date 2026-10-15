@@ -27,6 +27,7 @@ from image_cache import (
     enqueue_article_image_prefetch,
     fetch_remote_image,
     get_cached_image,
+    open_cached_image,
 )
 from news_schema import (
     enable_wal_mode,
@@ -1489,27 +1490,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         try:
-            cached = get_cached_image(img_url)
+            cached = open_cached_image(img_url)
             if not cached:
-                cached = cache_image(img_url)
-            if not cached:
-                body, content_type = fetch_remote_image(img_url)
-            else:
-                path, content_type = cached
-                body = path.read_bytes()
-
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Cache-Control", "public, max-age=2592000")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            cached = get_cached_image(img_url)
+                cached = cache_image(img_url, _reader=True)
             if cached:
-                path, content_type = cached
-                body = path.read_bytes()
+                reader, content_type = cached
+                with reader:
+                    size = os.fstat(reader.fileno()).st_size
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.send_header("Cache-Control", "public, max-age=2592000")
+                    self.send_header("Content-Length", str(size))
+                    self.end_headers()
+                    while chunk := reader.read(65536):
+                        self.wfile.write(chunk)
+            else:
+                body, content_type = fetch_remote_image(img_url)
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
                 self.send_header("X-Content-Type-Options", "nosniff")
@@ -1517,8 +1514,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-                return
-            log.exception("Image cache failed")
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception:
+            log.warning("Image cache unavailable")
             send_text(self, "Image cache unavailable", 502)
 
     def log_message(self, fmt, *args):

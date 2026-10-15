@@ -420,7 +420,7 @@ class ImageContentValidationTests(unittest.TestCase):
     def test_img_cache_returns_502_for_non_image_fetch_failure(self):
         handler = self._handler()
         with (
-            mock.patch.object(refresh_server, "get_cached_image", return_value=None),
+            mock.patch.object(refresh_server, "open_cached_image", return_value=None),
             mock.patch.object(refresh_server, "cache_image", side_effect=ValueError("unsupported image content")),
         ):
             handler._handle_img_cache({"url": ["https://public.example/image"]})
@@ -432,35 +432,19 @@ class ImageContentValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "cached.jpg"
             path.write_bytes(body)
-            scenarios = [
-                {
-                    "get_cached_image": mock.Mock(return_value=(path, "image/jpeg")),
-                    "cache_image": mock.Mock(),
-                    "fetch_remote_image": mock.Mock(),
-                },
-                {
-                    "get_cached_image": mock.Mock(return_value=None),
-                    "cache_image": mock.Mock(return_value=None),
-                    "fetch_remote_image": mock.Mock(return_value=(body, "image/jpeg")),
-                },
-                {
-                    "get_cached_image": mock.Mock(side_effect=[None, (path, "image/jpeg")]),
-                    "cache_image": mock.Mock(side_effect=ValueError("fetch failed")),
-                    "fetch_remote_image": mock.Mock(),
-                },
-            ]
-            for scenario in scenarios:
-                with self.subTest(scenario=scenario):
+            for cached in (True, False):
+                with self.subTest(cached=cached):
                     handler = self._handler()
                     with (
-                        mock.patch.object(refresh_server, "get_cached_image", scenario["get_cached_image"]),
-                        mock.patch.object(refresh_server, "cache_image", scenario["cache_image"]),
-                        mock.patch.object(refresh_server, "fetch_remote_image", scenario["fetch_remote_image"]),
+                        mock.patch.object(refresh_server, "open_cached_image", return_value=(path.open('rb'), "image/jpeg") if cached else None),
+                        mock.patch.object(refresh_server, "cache_image", return_value=None),
+                        mock.patch.object(refresh_server, "fetch_remote_image", return_value=(body, "image/jpeg")),
                     ):
                         handler._handle_img_cache({"url": ["https://public.example/image"]})
-
                     self.assertEqual(handler.statuses, [200])
+                    self.assertEqual(handler.wfile.getvalue(), body)
                     self.assertIn(("X-Content-Type-Options", "nosniff"), handler.headers_sent)
+
 
 
 if __name__ == "__main__":

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
+import tempfile
+from contextlib import contextmanager
+from functools import wraps
 import html
 import logging
 import os
@@ -48,6 +52,67 @@ _prefetch_lock = threading.Lock()
 _prefetch_started = False
 _cache_init_lock = threading.Lock()
 _initialized_cache_paths: set[str] = set()
+
+
+_cache_metadata_lock = threading.RLock()
+_cache_lock_local = threading.local()
+
+
+@contextmanager
+def _disk_lock(name, *, metadata=False):
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if metadata:
+        with _cache_metadata_lock:
+            if getattr(_cache_lock_local, 'depth', 0):
+                _cache_lock_local.depth += 1
+                try:
+                    yield
+                finally:
+                    _cache_lock_local.depth -= 1
+                return
+            with (CACHE_DIR / '.metadata.lock').open('a+b') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                _cache_lock_local.depth = 1
+                try:
+                    yield
+                finally:
+                    _cache_lock_local.depth = 0
+    else:
+        with (CACHE_DIR / name).open('a+b') as lock:
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError('image download coordination timeout')
+                    time.sleep(0.02)
+            yield
+
+
+def _metadata_mutation(function):
+    @wraps(function)
+    def guarded(*args, **kwargs):
+        if not IMAGE_CACHE_ENABLED:
+            return function(*args, **kwargs)
+        with _disk_lock('metadata', metadata=True):
+            return function(*args, **kwargs)
+    return guarded
+
+
+def open_cached_image(url):
+    """Return an owned binary handle; unlink after open cannot break a reader."""
+    with _disk_lock('metadata', metadata=True):
+        cached = get_cached_image(url)
+        if not cached:
+            return None
+        path, content_type = cached
+        try:
+            return path.open('rb'), content_type
+        except FileNotFoundError:
+            # An external cache cleaner may not participate in our lock.
+            return None
 
 
 def init_cache() -> None:
@@ -235,13 +300,23 @@ def get_cached_image(url: str) -> tuple[Path, str] | None:
         conn.close()
 
 
-def cache_image(url: str, *, is_cover: bool = False, pinned: bool = False) -> tuple[Path, str] | None:
+def cache_image(url: str, *, is_cover: bool = False, pinned: bool = False, _reader=False):
+    if not IMAGE_CACHE_ENABLED:
+        return None
+    normalized = normalize_image_url(url)
+    # A fixed set of advisory locks also coordinates web/favorite processes.
+    stripe = int(_url_hash(normalized)[:4], 16) % 256
+    with _disk_lock(f'.download-{stripe:02x}.lock'):
+        return _cache_image_locked(normalized, is_cover=is_cover, pinned=pinned, _reader=_reader)
+
+
+def _cache_image_locked(url, *, is_cover=False, pinned=False, _reader=False):
     if not IMAGE_CACHE_ENABLED:
         return None
     url = normalize_image_url(url)
     if not _valid_remote_url(url):
         return None
-    cached = get_cached_image(url)
+    cached = open_cached_image(url) if _reader else get_cached_image(url)
     if cached:
         if pinned or is_cover:
             _update_flags(url, pinned=pinned, is_cover=is_cover)
@@ -252,36 +327,54 @@ def cache_image(url: str, *, is_cover: bool = False, pinned: bool = False) -> tu
     url_hash = _url_hash(url)
     path = _cache_path(url_hash, content_type)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(body)
-    rel_path = str(path.relative_to(CACHE_DIR)).replace("\\", "/")
-    now = int(time.time())
+    with _disk_lock('metadata', metadata=True):
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=path.parent, prefix='.image-', delete=False) as output:
+                temporary = Path(output.name)
+                output.write(body)
+            os.replace(temporary, path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        rel_path = str(path.relative_to(CACHE_DIR)).replace("\\", "/")
+        now = int(time.time())
 
-    conn = _connect()
-    try:
-        conn.execute(
-            """
-            INSERT INTO image_cache_entries
-                (url_hash, url, content_type, size_bytes, path, pinned, is_cover, created_at, accessed_at, hit_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-            ON CONFLICT(url_hash) DO UPDATE SET
-                content_type = excluded.content_type,
-                size_bytes = excluded.size_bytes,
-                path = excluded.path,
-                pinned = CASE WHEN excluded.pinned = 1 THEN 1 ELSE image_cache_entries.pinned END,
-                is_cover = CASE WHEN excluded.is_cover = 1 THEN 1 ELSE image_cache_entries.is_cover END,
-                accessed_at = excluded.accessed_at,
-                hit_count = image_cache_entries.hit_count + 1
-            """,
-            (url_hash, url, content_type, len(body), rel_path, 1 if pinned else 0, 1 if is_cover else 0, now, now),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+        conn = _connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO image_cache_entries
+                    (url_hash, url, content_type, size_bytes, path, pinned, is_cover, created_at, accessed_at, hit_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT(url_hash) DO UPDATE SET
+                    content_type = excluded.content_type,
+                    size_bytes = excluded.size_bytes,
+                    path = excluded.path,
+                    pinned = CASE WHEN excluded.pinned = 1 THEN 1 ELSE image_cache_entries.pinned END,
+                    is_cover = CASE WHEN excluded.is_cover = 1 THEN 1 ELSE image_cache_entries.is_cover END,
+                    accessed_at = excluded.accessed_at,
+                    hit_count = image_cache_entries.hit_count + 1
+                """,
+                (url_hash, url, content_type, len(body), rel_path, 1 if pinned else 0, 1 if is_cover else 0, now, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
-    prune_cache()
-    return path, content_type
+        # Acquire the reader before pruning, including when this file alone
+        # exceeds the disk quota. The descriptor owns the unlinked inode.
+        reader = path.open('rb') if _reader else None
+        try:
+            prune_cache()
+            return (reader if _reader else path), content_type
+        except BaseException:
+            if reader is not None:
+                reader.close()
+            raise
 
 
+@_metadata_mutation
 def _update_flags(url: str, *, pinned: bool = False, is_cover: bool = False) -> None:
     url = normalize_image_url(url)
     url_hash = _url_hash(url)
@@ -446,6 +539,7 @@ def enqueue_article_image_prefetch(
     return queued
 
 
+@_metadata_mutation
 def prune_cache() -> int:
     if not IMAGE_CACHE_ENABLED:
         return 0
@@ -505,6 +599,7 @@ def cache_stats() -> dict:
     return stats
 
 
+@_metadata_mutation
 def evict_article_images(body_html: str | None, thumb: str | None = "",
                          article_id: int | None = None, *,
                          protected_hashes: set[str] | None = None,
