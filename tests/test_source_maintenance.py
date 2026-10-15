@@ -506,3 +506,43 @@ def test_idle_identity_loop_skips_article_scan_and_wakes_for_new_articles(tmp_pa
     with real_connect(path) as conn:
         conn.execute("INSERT INTO articles(id,title,source,feed_source,group_source,body_html) VALUES(1,'new','feed','feed','feed','<p>via 路透社</p>')")
     assert web_server._redetect_article_sources_work(100,0,False,pending_only=True)['checked']==1
+
+
+def test_maintenance_trigger_upgrade_preserves_state_and_replaces_old_definition():
+    conn=_make_conn()
+    sc.init_source_categories(conn)
+    conn.execute('UPDATE source_maintenance_state SET schema_version=0, maintained=17')
+    conn.execute('DROP TRIGGER source_dirty_update')
+    conn.execute('CREATE TRIGGER source_dirty_update AFTER UPDATE OF source ON articles BEGIN SELECT 1; END')
+    sc._ensure_maintenance_state(conn)
+    row=conn.execute('SELECT maintained,schema_version FROM source_maintenance_state').fetchone()
+    assert tuple(row)==(17,2)
+    sql=conn.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='source_dirty_update'").fetchone()[0]
+    assert 'source_detection_last_attempt_at' in sql
+    conn.commit()
+    _add_article(conn,1,'source')
+    before=conn.execute('SELECT generation FROM source_maintenance_state').fetchone()[0]
+    conn.execute('UPDATE articles SET source_detection_last_attempt_at=123 WHERE id=1')
+    assert conn.execute('SELECT generation FROM source_maintenance_state').fetchone()[0] == before+1
+
+
+def test_maintenance_lock_coordinates_an_independent_process(tmp_path):
+    import subprocess
+    import sys
+    path=tmp_path/'shared.db'
+    conn=sqlite3.connect(path)
+    conn.row_factory=sqlite3.Row
+    conn.execute('CREATE TABLE articles(id INTEGER PRIMARY KEY,source TEXT,timestamp INTEGER)')
+    sc.init_source_categories(conn)
+    program="import sqlite3,sys,source_categories as sc; c=sqlite3.connect(sys.argv[1]); c.row_factory=sqlite3.Row; print(sc.maintain_source_categories(c)['ran']); c.close()"
+    try:
+        with sc.source_maintenance_guard(conn) as acquired:
+            assert acquired
+            result=subprocess.run([sys.executable,'-c',program,str(path)],capture_output=True,text=True,timeout=5)
+            assert result.returncode==0, result.stderr
+            assert result.stdout.strip()=='False'
+        result=subprocess.run([sys.executable,'-c',program,str(path)],capture_output=True,text=True,timeout=5)
+        assert result.returncode==0, result.stderr
+        assert result.stdout.strip()=='True'
+    finally:
+        conn.close()

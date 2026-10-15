@@ -529,8 +529,19 @@ _maintenance_last_run = 0.0
 def _ensure_maintenance_state(conn):
     conn.execute("CREATE TABLE IF NOT EXISTS source_maintenance_state ("
                  "id INTEGER PRIMARY KEY CHECK(id=1), generation INTEGER NOT NULL DEFAULT 1, "
-                 "maintained INTEGER NOT NULL DEFAULT 0, manual_generation INTEGER NOT NULL DEFAULT 0, reconciled_at REAL NOT NULL DEFAULT 0)")
+                 "maintained INTEGER NOT NULL DEFAULT 0, manual_generation INTEGER NOT NULL DEFAULT 0, reconciled_at REAL NOT NULL DEFAULT 0, "
+                 "schema_version INTEGER NOT NULL DEFAULT 0)")
     conn.execute("INSERT OR IGNORE INTO source_maintenance_state(id) VALUES (1)")
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(source_maintenance_state)')}
+    if 'schema_version' not in columns:
+        conn.execute('ALTER TABLE source_maintenance_state ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 0')
+    if conn.execute('SELECT schema_version FROM source_maintenance_state WHERE id=1').fetchone()[0] >= 2:
+        return
+    for name in ('source_dirty_insert','source_dirty_delete','source_dirty_update'):
+        conn.execute(f'DROP TRIGGER IF EXISTS {name}')
+    for table in ('source_aliases','source_categories'):
+        for event in ('INSERT','UPDATE','DELETE'):
+            conn.execute(f'DROP TRIGGER IF EXISTS {table}_dirty_{event}')
     # Triggers catch writes from all processes, including imports and direct
     # deletion paths; updates that do not change identity do not dirty it.
     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='articles' AND type='table'").fetchone():
@@ -553,6 +564,7 @@ def _ensure_maintenance_state(conn):
                     condition = 'WHEN OLD.status IS NOT NEW.status OR OLD.source IS NOT NEW.source OR OLD.label IS NOT NEW.label OR OLD.category IS NOT NEW.category'
             conn.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_dirty_{event} AFTER {event} ON {table} {condition} "
                          "BEGIN UPDATE source_maintenance_state SET generation=generation+1 WHERE id=1; END")
+    conn.execute('UPDATE source_maintenance_state SET schema_version=2 WHERE id=1')
 
 
 
