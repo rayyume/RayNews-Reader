@@ -481,7 +481,7 @@ def test_guest_source_metadata_promotes_legacy_admin_categories(monkeypatch):
     assert news_conn.execute("SELECT COUNT(*) FROM user_source_categories").fetchone()[0] == 0
 
 
-def test_public_sources_retries_until_first_article_table_exists(tmp_path, monkeypatch):
+def test_public_sources_retries_until_article_source_columns_are_ready(tmp_path, monkeypatch):
     news_db = tmp_path / "news.db"
     sqlite3.connect(news_db).close()
     monkeypatch.setattr(web_server, "NEWS_DB", str(news_db))
@@ -495,9 +495,15 @@ def test_public_sources_retries_until_first_article_table_exists(tmp_path, monke
 
     with sqlite3.connect(news_db) as conn:
         conn.execute(
-            "CREATE TABLE articles (id INTEGER PRIMARY KEY, group_source TEXT, "
-            "source TEXT, timestamp INTEGER)"
+            "CREATE TABLE articles (id INTEGER PRIMARY KEY, source TEXT, timestamp INTEGER)"
         )
+    incomplete = client.get("/sources/public")
+    assert incomplete.status_code == 503
+    assert incomplete.json == {"error": "source metadata not ready"}
+    assert incomplete.headers["Cache-Control"] == "no-store"
+
+    with sqlite3.connect(news_db) as conn:
+        conn.execute("ALTER TABLE articles ADD COLUMN group_source TEXT")
     ready = client.get("/sources/public")
     assert ready.status_code == 200
     assert ready.json["sources"] == []
@@ -523,8 +529,6 @@ def test_source_mutation_routes_are_admin_only_and_shared():
         route_pos = server.index(route)
         decorator_block = server[route_pos:route_pos + 180]
         assert '@require_role("admin")' in decorator_block, route
-    assert "sources = source_rows(conn)" in server
-    assert '"sources": sources' in server
     assert "update_source_category(\n            conn, source, category, label" in server
     assert "user_id=g.user_id" not in server[server.index("def save_source"):server.index("def classify_sources")]
 

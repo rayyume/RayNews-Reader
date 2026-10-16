@@ -5495,23 +5495,22 @@ def list_sources():
     conn = _get_news_db()
     if not conn:
         return jsonify({"error": "news db not found"}), 404
-    _promote_legacy_admin_source_settings(conn)
-    definitions = category_definitions(conn)
-    all_definitions = category_definitions(conn, include_disabled=True)
-    try:
-        sources = source_rows(conn)
-    except sqlite3.OperationalError as exc:
-        if "no such table: articles" not in str(exc):
-            raise
-        # The fetcher creates articles on its first cycle; keep the page's retry path active.
+    # The fetcher commits the base articles table before adding source columns.
+    # PRAGMA returns no columns while the table is absent, so both startup stages
+    # stay retryable without treating an incomplete schema as valid metadata.
+    article_columns = {row[1] for row in conn.execute("PRAGMA table_info(articles)")}
+    if not {"group_source", "source", "timestamp"}.issubset(article_columns):
         response = jsonify({"error": "source metadata not ready"})
         response.headers["Cache-Control"] = "no-store"
         return response, 503
+    _promote_legacy_admin_source_settings(conn)
+    definitions = category_definitions(conn)
+    all_definitions = category_definitions(conn, include_disabled=True)
     response = jsonify({
         "categories": [row["category"] for row in definitions],
         "category_names": {row["category"]: row["label"] for row in definitions},
         "category_definitions": all_definitions,
-        "sources": sources,
+        "sources": source_rows(conn),
     })
     response.headers["Cache-Control"] = "no-store"
     return response
