@@ -125,7 +125,15 @@ def test_config_is_admin_only_secrets_preserved_and_auth_modes_exclusive(app):
     assert not response.json['has_password'] and not response.json['has_authorization']
 
 
-@pytest.mark.parametrize('payload', [{'speed':0}, {'speed':True}, {'enabled':1}, {'auth_type':'bearer'}, {'password':'x\r\nHeader: secret'}, {'endpoint':'https://tts.test/v1?key=secret'}, {'username':'name:password'}, {'api_key':'unsupported'}])
+@pytest.mark.parametrize('payload', [
+    {'speed':0}, {'speed':4.1}, {'speed':True}, {'enabled':1}, {'stream':'true'},
+    {'auth_type':'bearer'}, {'password':'x\r\nHeader: secret'},
+    {'endpoint':'https://tts.test/v1?key=secret'}, {'username':'name:password'},
+    *({field:audio_format} for field in ('response_format','download_format')
+      for audio_format in ('aac','opus','flac','wav','pcm')),
+    {'volume_multiplier':-1}, {'volume_multiplier':True},
+    {'normalization_options':{'normalize':True}}, {'api_key':'unsupported'},
+])
 def test_invalid_config_is_atomic(app, payload):
     client, admin, _, _, _ = app
     before = tts_service.get_config()
@@ -226,11 +234,15 @@ def test_ttl_cleanup_protects_active_transfers_and_startup_removes_orphans(app):
     assert path.exists()
     cache.release(result['id'])
     assert not path.exists()
-    orphan=cache.directory/('a'*32+'.part');orphan.write_bytes(b'partial')
+    orphans=[cache.directory/('a'*32+'.'+suffix) for suffix in ('part','mp3','opus','flac','wav')]
+    for orphan in orphans:
+        orphan.write_bytes(b'orphaned')
+    other_file=cache.directory/'notes.flac';other_file.write_bytes(b'keep')
     fresh=tts_cache.TTSCache(cache.directory)
     fresh._clean_loop=lambda:None
     fresh.start()
-    assert not orphan.exists()
+    assert all(not orphan.exists() for orphan in orphans)
+    assert other_file.read_bytes()==b'keep'
     fresh.pool.shutdown()
 
 
@@ -290,12 +302,79 @@ def test_kokoro_request_contract_and_custom_auth(tmp_path, monkeypatch):
     tts_service.synthesize(config,'标题。正文。',target)
     url,kw=calls[0]
     assert url=='https://tts.example.test/v1/audio/speech'
-    assert kw['json']=={'model':'kokoro','input':'标题。正文。','voice':'zf_094','speed':1.3,'lang_code':'z','response_format':'mp3','stream':False}
+    assert kw['json']=={'model':'kokoro','input':'标题。正文。','voice':'zf_001(0.5)+zf_022(0.5)',
+                        'speed':1.3,'lang_code':'z','response_format':'mp3','stream':False,
+                        'return_download_link':False}
     assert kw['headers']['Authorization']=='Basic '+base64.b64encode('reader:密码'.encode()).decode()
     assert kw['stream'] is True and kw['max_redirects']==0 and target.read_bytes()==MP3
     config.update(auth_type='authorization',authorization='Basic custom-header')
     tts_service.synthesize(config,'正文。',target)
     assert calls[-1][1]['headers']['Authorization']=='Basic custom-header'
+
+
+def test_admin_can_configure_optional_kokoro_parameters(app, tmp_path, monkeypatch):
+    client, admin, _, _, _ = app
+    options = {**tts_service.NORMALIZATION_DEFAULTS, 'unit_normalization':True,
+               'url_normalization':False}
+    response = client.put('/admin/tts-config', headers=admin, json={
+        'enabled':True, 'endpoint':'https://tts.example.test/v1', 'username':'reader',
+        'password':'secret', 'model':'tts-1-hd', 'voice':'zf_001(0.5)+zf_022(0.5)',
+        'lang_code':None, 'speed':3.5, 'response_format':'mp3', 'stream':True,
+        'volume_multiplier':0.8, 'return_download_link':True,
+        'download_format':'mp3', 'normalization_options':options,
+    })
+    assert response.status_code == 200
+    assert response.json['normalization_options'] == options
+    assert response.json['lang_code'] is None
+    calls = []
+    def post(url, **kwargs):
+        calls.append(kwargs)
+        return ProviderResponse()
+    monkeypatch.setattr(tts_service, 'safe_post', post)
+    target = tmp_path/'speech.mp3'
+    tts_service.synthesize(tts_service.get_config(), '测试文本', target)
+    payload = calls[0]['json']
+    assert payload == {
+        'model':'tts-1-hd', 'input':'测试文本', 'voice':'zf_001(0.5)+zf_022(0.5)',
+        'speed':3.5, 'response_format':'mp3', 'stream':True,
+        'return_download_link':True, 'volume_multiplier':0.8,
+        'download_format':'mp3', 'normalization_options':options,
+    }
+    assert calls[0]['headers']['Accept'] == 'audio/mpeg'
+    assert target.read_bytes() == MP3
+
+
+@pytest.mark.parametrize('legacy_format', ['opus','flac','wav','pcm'])
+def test_legacy_audio_formats_fall_back_to_mp3(app, monkeypatch, legacy_format):
+    client, admin, user_headers, user, cache = app
+    enable(client, admin, user)
+    legacy_config = {**tts_service.get_config(), 'response_format':legacy_format,
+                     'download_format':legacy_format, 'return_download_link':True}
+    models.set_app_state(tts_service.CONFIG_KEY, json.dumps(legacy_config))
+    config = client.get('/admin/tts-config', headers=admin).json
+    assert config['response_format'] == config['download_format'] == 'mp3'
+    assert client.put('/admin/tts-config', headers=admin, json={'speed':1.2}).status_code == 200
+    calls = []
+    def post(url, **kwargs):
+        calls.append(kwargs)
+        return ProviderResponse()
+    monkeypatch.setattr(tts_service, 'safe_post', post)
+    monkeypatch.setattr(tts_cache, 'synthesize', tts_service.synthesize)
+    test_audio = client.post('/admin/tts-test', headers=admin)
+    assert test_audio.status_code == 200 and test_audio.mimetype == 'audio/mpeg'
+    assert test_audio.data == MP3
+    result = client.post('/ai/tts/1', headers=user_headers).json
+    assert ready(cache, result['id'])['status'] == 'ready'
+    assert len(calls) == 2
+    for call in calls:
+        assert call['json']['response_format'] == call['json']['download_format'] == 'mp3'
+        assert call['headers']['Accept'] == 'audio/mpeg'
+    assert (cache.directory / (result['id'] + '.mp3')).exists()
+    audio = client.get('/ai/tts/audio/' + result['id'], headers=user_headers)
+    assert audio.status_code == 200 and audio.mimetype == 'audio/mpeg'
+    assert audio.headers['Content-Disposition'].endswith('news.mp3')
+    assert audio.data == MP3
+    audio.close()
 
 
 @pytest.mark.parametrize('kind', ['timeout','auth','html'])

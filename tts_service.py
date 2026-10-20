@@ -16,9 +16,17 @@ from bs4 import BeautifulSoup
 from ai_service import validate_ai_endpoint_base_url
 from network_safety import assert_ai_endpoint_url, safe_post
 
+NORMALIZATION_DEFAULTS = {
+    "normalize": True, "unit_normalization": False, "url_normalization": True,
+    "email_normalization": True, "optional_pluralization_normalization": True,
+    "phone_normalization": True, "replace_remaining_symbols": True,
+}
 DEFAULT_CONFIG = {
     "enabled": False, "endpoint": "", "model": "kokoro",
-    "voice": "zf_094", "lang_code": "z", "speed": 1.3,
+    "voice": "zf_001(0.5)+zf_022(0.5)", "lang_code": "z", "speed": 1.3,
+    "response_format": "mp3", "stream": False, "volume_multiplier": None,
+    "return_download_link": False, "download_format": None,
+    "normalization_options": None,
     "auth_type": "basic", "username": "", "password": "", "authorization": "",
     "revision": "initial",
 }
@@ -37,7 +45,12 @@ def get_config():
         stored = json.loads(get_app_state(CONFIG_KEY, "{}"))
     except (ValueError, TypeError):
         stored = {}
-    return {**DEFAULT_CONFIG, **(stored if isinstance(stored, dict) else {})}
+    config = {**DEFAULT_CONFIG, **(stored if isinstance(stored, dict) else {})}
+    # Older configurations may select formats that are no longer supported.
+    config["response_format"] = "mp3"
+    if config["download_format"] is not None:
+        config["download_format"] = "mp3"
+    return config
 
 
 def configured(config=None):
@@ -45,7 +58,7 @@ def configured(config=None):
     credentials = (bool(config.get("username") and config.get("password"))
                    if config.get("auth_type") == "basic" else bool(config.get("authorization")))
     return bool(config.get("enabled") and config.get("endpoint") and config.get("model")
-                and config.get("voice") and config.get("lang_code") and credentials)
+                and config.get("voice") and credentials)
 
 
 def public_config(config):
@@ -60,14 +73,27 @@ def save_config(data):
     clears = {"clear_password", "clear_authorization"}
     if not isinstance(data, dict) or set(data) - allowed - clears:
         raise ValueError("不支持的语音配置项")
-    for key in {"enabled", *clears} & data.keys():
+    for key in {"enabled", "stream", "return_download_link", *clears} & data.keys():
         if type(data[key]) is not bool:
             raise ValueError("开关值必须为布尔值")
-    for key in allowed - {"enabled", "speed"}:
+    for key in allowed - {"enabled", "speed", "stream", "return_download_link",
+                          "volume_multiplier", "download_format", "normalization_options", "lang_code"}:
         if key in data and (not isinstance(data[key], str) or len(data[key]) > 4096):
             raise ValueError("语音配置格式无效")
         if key in data and any(ord(c) < 32 or ord(c) == 127 for c in data[key]):
             raise ValueError("语音配置不能包含控制字符")
+    for key in ("download_format", "lang_code"):
+        if key in data and data[key] is not None and (
+            not isinstance(data[key], str) or len(data[key]) > 512 or
+            any(ord(c) < 32 or ord(c) == 127 for c in data[key])
+        ):
+            raise ValueError("语音配置格式无效")
+    if "normalization_options" in data and data["normalization_options"] is not None:
+        options = data["normalization_options"]
+        if not isinstance(options, dict) or set(options) != set(NORMALIZATION_DEFAULTS) or any(
+            type(value) is not bool for value in options.values()
+        ):
+            raise ValueError("文本规范化选项无效")
     # Serialize read/merge/write so saving unrelated fields cannot overwrite a
     # concurrent credential rotation. Empty secret fields preserve saved values.
     db = get_db()
@@ -85,11 +111,20 @@ def save_config(data):
         if ":" in config["username"]:
             raise ValueError("Basic Auth 用户名不能包含冒号")
         speed = config["speed"]
-        if type(speed) not in {int, float} or not math.isfinite(speed) or not 0.5 <= speed <= 2:
-            raise ValueError("合成语速应在 0.5 到 2 之间")
-        for key in ("endpoint", "model", "voice", "lang_code"):
+        if type(speed) not in {int, float} or not math.isfinite(speed) or not 0.25 <= speed <= 4:
+            raise ValueError("合成语速应在 0.25 到 4 之间")
+        volume = config["volume_multiplier"]
+        if volume is not None and (type(volume) not in {int, float} or not math.isfinite(volume) or volume < 0):
+            raise ValueError("音量倍数必须是非负数字")
+        if config["model"] not in {"kokoro", "tts-1", "tts-1-hd"}:
+            raise ValueError("不支持的语音模型")
+        if config["response_format"] != "mp3":
+            raise ValueError("语音播放仅支持 MP3 格式")
+        if config["download_format"] not in {None, "mp3"}:
+            raise ValueError("语音下载仅支持 MP3 格式")
+        for key in ("endpoint", "model", "voice"):
             if len(config[key]) > 512 or (config["enabled"] and not config[key]):
-                raise ValueError("请填写服务地址、模型、音色和语言代码")
+                raise ValueError("请填写服务地址、模型和音色")
         if config["endpoint"]:
             config["endpoint"] = validate_ai_endpoint_base_url(assert_ai_endpoint_url(config["endpoint"])).rstrip("/")
         if config["enabled"] and not configured(config):
@@ -185,9 +220,11 @@ def listening_text(title, body, summary=""):
 
 
 def synthesize(config, text, target: Path, *, max_bytes=64 * 1024 * 1024):
-    """stream:false is the Kokoro API contract; stream=True only bounds HTTP memory."""
+    """HTTP streaming bounds memory independently of Kokoro's stream option."""
     if not configured(config):
         raise TTSError("TTS_UNAVAILABLE", "语音服务暂未开放", 409)
+    if config.get("response_format", "mp3") != "mp3" or config.get("download_format") not in {None, "mp3"}:
+        raise TTSError("TTS_INVALID_FORMAT", "语音仅支持 MP3 格式", 400)
     headers = {"Content-Type": "application/json", "Accept": "audio/mpeg"}
     if config["auth_type"] == "basic":
         credentials = base64.b64encode((config["username"] + ":" + config["password"]).encode()).decode()
@@ -200,10 +237,17 @@ def synthesize(config, text, target: Path, *, max_bytes=64 * 1024 * 1024):
     except (ValueError, TypeError):
         timeout = 300
     try:
+        payload = {"model": config["model"], "input": text, "voice": config["voice"],
+                   "speed": config["speed"], "response_format": "mp3",
+                   "stream": config.get("stream", False),
+                   "return_download_link": config.get("return_download_link", False)}
+        if config.get("lang_code"):
+            payload["lang_code"] = config["lang_code"]
+        for key in ("volume_multiplier", "download_format", "normalization_options"):
+            if config.get(key) is not None:
+                payload[key] = config[key]
         with safe_post(validate_ai_endpoint_base_url(config["endpoint"]).rstrip("/") + "/audio/speech",
-                       headers=headers, json={"model": config["model"], "input": text,
-                       "voice": config["voice"], "speed": config["speed"], "lang_code": config["lang_code"],
-                       "response_format": "mp3", "stream": False}, timeout=(10, timeout), stream=True,
+                       headers=headers, json=payload, timeout=(10, timeout), stream=True,
                        max_redirects=0, allow_private=os.environ.get("AI_ALLOW_PRIVATE_ENDPOINTS", "").lower() in {"1", "true", "yes", "on"}) as response:
             if response.status_code != 200:
                 raise TTSError("TTS_UPSTREAM_ERROR", "语音服务暂时不可用，请稍后重试", 502,

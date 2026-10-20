@@ -44,8 +44,8 @@ class TTSCache:
             self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             self.directory.chmod(0o700)
             # Registry is process-local by design. Remove our own orphaned spool
-            # files on restart, including incomplete downloads, never other files.
-            for pattern in ("*.mp3", "*.part"):
+            # files on restart, including old audio formats and incomplete downloads.
+            for pattern in ("*.mp3", "*.opus", "*.flac", "*.wav", "*.part"):
                 for path in self.directory.glob(pattern):
                     if len(path.stem) == 32 and all(c in "0123456789abcdef" for c in path.stem):
                         path.unlink(missing_ok=True)
@@ -127,7 +127,7 @@ class TTSCache:
             with self.lock:
                 if self.jobs.get(job["id"]) is not job or job.get("invalid") or (valid and not valid()):
                     raise TTSError("TTS_EXPIRED", "文章已删除，请选择其他文章", 410)
-                # Account for in-progress downloads as well as completed MP3s.
+                # Account for in-progress downloads as well as completed audio.
                 # Reservations prevent two workers temporarily exceeding the
                 # spool budget before their finished files can be evicted.
                 ready = sorted((j for j in self.jobs.values() if j["status"] == "ready"), key=lambda j: j["last_used"])

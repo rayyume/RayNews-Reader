@@ -663,6 +663,14 @@ body.tts-active .scroll-top-btn{bottom:calc(102px + env(safe-area-inset-bottom,0
 .tts-config-actions .ai-save-btn{margin:0;width:auto;padding:9px 16px}
 .tts-config-status{font-size:12px;line-height:1.7;margin-top:12px;color:var(--text-2);overflow-wrap:anywhere}
 .tts-secret-clear{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2);margin-top:6px}
+.tts-config-grid .tts-option{display:flex;align-items:center;gap:8px;margin:12px 0 4px;line-height:1.5}
+.tts-config-grid .tts-option input{flex:none}
+.tts-config-note{font-size:12px;line-height:1.6;color:var(--text-2);margin:4px 0 0}
+.tts-normalization{margin-top:14px;padding:12px;border:1px solid var(--border);border-radius:10px}
+.tts-normalization summary{cursor:pointer;font-size:13px;font-weight:600}
+.tts-normalization-options{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
+.tts-normalization-options[hidden]{display:none}
+@media(max-width:600px){.tts-normalization-options{grid-template-columns:1fr}}
 @keyframes tts-spin{to{transform:rotate(360deg)}}
 @keyframes tts-rise{from{transform:translateY(24px);opacity:0}to{transform:translateY(0);opacity:1}}
 @media(min-width:769px){.tts-overlay{align-items:center}.tts-panel{border-radius:22px;padding-bottom:24px;max-height:calc(100dvh - 48px)}}
@@ -9890,10 +9898,29 @@ if (window.matchMedia) {
     <p class="ai-hint">由服务器调用 Kokoro，凭据不会发送给普通用户。修改后请先保存，再测试语音。</p>
     <div class="tts-config-grid">
       <div class="tts-config-wide"><label for="ttsEndpoint">Base URL</label><input class="ai-input" id="ttsEndpoint" type="url" placeholder="https://example.com/v1"></div>
-      <div><label for="ttsModel">模型</label><input class="ai-input" id="ttsModel" value="kokoro"></div>
-      <div><label for="ttsVoice">音色</label><input class="ai-input" id="ttsVoice" value="zf_094"></div>
-      <div><label for="ttsLang">语言代码</label><input class="ai-input" id="ttsLang" value="z"></div>
-      <div><label for="ttsSynthesisSpeed">合成语速</label><input class="ai-input" id="ttsSynthesisSpeed" type="number" min="0.5" max="2" step="0.1" value="1.3"></div>
+      <div><label for="ttsModel">模型</label><input class="ai-input" id="ttsModel" value="kokoro" readonly></div>
+      <div><label for="ttsLang">语言代码</label><input class="ai-input" id="ttsLang" value="z" placeholder="留空由音色推断"></div>
+      <div class="tts-config-wide"><label for="ttsVoice">音色或混合音色</label><input class="ai-input" id="ttsVoice" value="zf_001(0.5)+zf_022(0.5)" placeholder="zf_001(0.5)+zf_022(0.5)"><p class="tts-config-note">混合音色可用 voice(权重)+voice(权重)，例如 zf_001(0.5)+zf_022(0.5)。</p></div>
+      <div><label for="ttsSynthesisSpeed">合成语速（0.25～4）</label><input class="ai-input" id="ttsSynthesisSpeed" type="number" min="0.25" max="4" step="0.05" value="1.3"></div>
+      <div><label for="ttsVolumeMultiplier">音量倍数</label><input class="ai-input" id="ttsVolumeMultiplier" type="number" min="0" step="0.1" placeholder="留空使用接口默认 1.0"></div>
+      <div><label for="ttsResponseFormat">播放音频格式</label><input class="ai-input" id="ttsResponseFormat" value="MP3" readonly></div>
+      <div><label for="ttsDownloadFormat">下载链接格式</label><input class="ai-input" id="ttsDownloadFormat" value="MP3" readonly></div>
+      <label class="tts-option tts-config-wide"><input id="ttsStream" type="checkbox">请求流式生成（stream）</label>
+      <label class="tts-option tts-config-wide"><input id="ttsReturnDownloadLink" type="checkbox">请求上游生成下载链接</label>
+      <p class="tts-config-note tts-config-wide">播放和下载统一使用 MP3。RayNews 会在完整音频生成后播放；上游下载链接目前不会展示。</p>
+      <details class="tts-normalization tts-config-wide"><summary>文本规范化</summary>
+        <label class="tts-option"><input id="ttsNormalizationDefault" type="checkbox" checked>使用接口默认设置</label>
+        <p class="tts-config-note">RayNews 会先移除文章中的裸链接，因此网址规范化对已移除的链接不起作用。</p>
+        <div id="ttsNormalizationOptions" class="tts-normalization-options" hidden>
+          <label class="tts-option"><input id="ttsNormalize" type="checkbox" checked>启用文本规范化</label>
+          <label class="tts-option"><input id="ttsUnitNormalization" type="checkbox">展开单位（如 10KB）</label>
+          <label class="tts-option"><input id="ttsUrlNormalization" type="checkbox" checked>处理网址</label>
+          <label class="tts-option"><input id="ttsEmailNormalization" type="checkbox" checked>处理邮箱地址</label>
+          <label class="tts-option"><input id="ttsPluralNormalization" type="checkbox" checked>处理英文可选复数</label>
+          <label class="tts-option"><input id="ttsPhoneNormalization" type="checkbox" checked>处理电话号码</label>
+          <label class="tts-option"><input id="ttsRemainingSymbols" type="checkbox" checked>替换剩余符号</label>
+        </div>
+      </details>
       <div class="tts-config-wide"><label for="ttsAuthType">鉴权方式</label><select class="ai-input" id="ttsAuthType"><option value="basic">Basic Auth</option><option value="authorization">自定义 Authorization</option></select></div>
       <div class="tts-basic"><label for="ttsUsername">用户名</label><input class="ai-input" id="ttsUsername" autocomplete="off"></div>
       <div class="tts-basic"><label for="ttsPassword">密码</label><input class="ai-input" id="ttsPassword" type="password" autocomplete="new-password"><label class="tts-secret-clear"><input type="checkbox" id="ttsClearPassword">清除已保存密码</label></div>
@@ -9903,13 +9930,28 @@ if (window.matchMedia) {
     <p class="ai-hint" style="margin-top:12px">音频仅临时保留 1 小时，容量上限 256 MB，每 10 分钟自动清理，不写入持久化数据目录。用户需获得 TTS 权限，并在 AI 功能中开启语音阅读。</p>`;
   function authFields(){const basic=$('ttsAuthType').value==='basic';document.querySelectorAll('.tts-basic').forEach(el=>el.hidden=!basic);$('ttsCustomAuth').hidden=basic;}
   $('ttsAuthType').addEventListener('change',authFields);
+  const normalizationFields={ttsNormalize:'normalize',ttsUnitNormalization:'unit_normalization',ttsUrlNormalization:'url_normalization',
+    ttsEmailNormalization:'email_normalization',ttsPluralNormalization:'optional_pluralization_normalization',
+    ttsPhoneNormalization:'phone_normalization',ttsRemainingSymbols:'replace_remaining_symbols'};
+  const normalizationDefaults={normalize:true,unit_normalization:false,url_normalization:true,email_normalization:true,
+    optional_pluralization_normalization:true,phone_normalization:true,replace_remaining_symbols:true};
+  function normalizationFieldsVisible(){$('ttsNormalizationOptions').hidden=$('ttsNormalizationDefault').checked;}
+  $('ttsNormalizationDefault').addEventListener('change',normalizationFieldsVisible);
+  function downloadFields(){ $('ttsDownloadFormat').disabled=!$('ttsReturnDownloadLink').checked; }
+  $('ttsReturnDownloadLink').addEventListener('change',downloadFields);
   async function loadConfig() {
     const sequence=++adminSequence, token=authToken;
     try {
       const data=await requestData('/admin/tts-config');
       if(sequence!==adminSequence || token!==authToken)return;
-      const fields={ttsEndpoint:'endpoint',ttsModel:'model',ttsVoice:'voice',ttsLang:'lang_code',ttsSynthesisSpeed:'speed',ttsAuthType:'auth_type',ttsUsername:'username'};
+      const fields={ttsEndpoint:'endpoint',ttsVoice:'voice',ttsLang:'lang_code',ttsSynthesisSpeed:'speed',ttsAuthType:'auth_type',ttsUsername:'username'};
       for(const [id,key] of Object.entries(fields))$(id).value=data[key] ?? '';
+      $('ttsVolumeMultiplier').value=data.volume_multiplier ?? '';
+      $('ttsStream').checked=!!data.stream;
+      $('ttsReturnDownloadLink').checked=!!data.return_download_link;
+      $('ttsNormalizationDefault').checked=data.normalization_options == null;
+      for(const [id,key] of Object.entries(normalizationFields))$(id).checked=data.normalization_options?.[key] ?? normalizationDefaults[key];
+      normalizationFieldsVisible();downloadFields();
       $('ttsEnabled').checked=!!data.enabled;
       for(const [id,key] of [['ttsPassword','has_password'],['ttsAuthorization','has_authorization']]){$(id).value='';$(id).placeholder=data[key]?'已配置，留空保持不变':'尚未配置';}
       $('ttsClearPassword').checked=false;$('ttsClearAuthorization').checked=false;
@@ -9921,8 +9963,14 @@ if (window.matchMedia) {
     const button=$('ttsSaveConfig');button.disabled=true;
     const token=authToken;
     $('ttsConfigStatus').textContent='正在保存…';
-    const data={enabled:$('ttsEnabled').checked,endpoint:$('ttsEndpoint').value,model:$('ttsModel').value,voice:$('ttsVoice').value,
-      lang_code:$('ttsLang').value,speed:Number($('ttsSynthesisSpeed').value),auth_type:$('ttsAuthType').value,username:$('ttsUsername').value,
+    const data={enabled:$('ttsEnabled').checked,endpoint:$('ttsEndpoint').value,model:'kokoro',voice:$('ttsVoice').value,
+      lang_code:$('ttsLang').value || null,speed:Number($('ttsSynthesisSpeed').value),
+      response_format:'mp3',stream:$('ttsStream').checked,
+      volume_multiplier:$('ttsVolumeMultiplier').value===''?null:Number($('ttsVolumeMultiplier').value),
+      return_download_link:$('ttsReturnDownloadLink').checked,
+      download_format:$('ttsReturnDownloadLink').checked?'mp3':null,
+      normalization_options:$('ttsNormalizationDefault').checked?null:Object.fromEntries(Object.entries(normalizationFields).map(([id,key])=>[key,$(id).checked])),
+      auth_type:$('ttsAuthType').value,username:$('ttsUsername').value,
       password:$('ttsPassword').value,authorization:$('ttsAuthorization').value,clear_password:$('ttsClearPassword').checked,clear_authorization:$('ttsClearAuthorization').checked};
     try{await requestData('/admin/tts-config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
       if(token!==authToken)return;await loadConfig();await loadUserSettings();$('ttsConfigStatus').textContent='语音配置已保存。';

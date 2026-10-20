@@ -37,6 +37,12 @@ def setup_page(browser,viewport,theme='dark',role='user',failure=False):
     user={'id':7,'role':role,'nickname':'Reader','email':'reader@example.test'}
     context.add_init_script("localStorage.setItem('raynews_token','mock');localStorage.setItem('raynews_user',JSON.stringify(%s));localStorage.setItem('raynews_theme','%s');"%(json.dumps(user),theme))
     enabled={'tts':True,'summary':True};calls=[];control={'ready':True,'busy_for_2':False}
+    control['tts_config']={'enabled':False,'endpoint':'','model':'kokoro',
+                           'voice':'zf_001(0.5)+zf_022(0.5)','lang_code':'z','speed':1.3,
+                           'response_format':'mp3','stream':False,'volume_multiplier':None,
+                           'return_download_link':False,'download_format':None,
+                           'normalization_options':None,'auth_type':'basic','username':'',
+                           'has_password':False,'has_authorization':False,'available':False}
     def access():
         return {'permissions':{key:True for key in ('summary','translation','title_shortening','daily_digest','tts')},
                 'services':{'tts':True},'view_tts':enabled['tts'],'view_summary':enabled['summary'],
@@ -71,7 +77,12 @@ def setup_page(browser,viewport,theme='dark',role='user',failure=False):
         elif path=='/ai/result-updates':data={'items':[],'cursor':'test|0','has_more':False,'access':access()}
         elif path in ('/sources','/api/sources'):data={'sources':[],'categories':[]}
         elif path=='/notifications':data={'items':[],'unread':0}
-        elif path=='/admin/tts-config':data={'enabled':False,'endpoint':'','model':'kokoro','voice':'zf_094','lang_code':'z','speed':1.3,'auth_type':'basic','username':'','has_password':False,'has_authorization':False,'available':False}
+        elif path=='/admin/tts-config':
+            if r.request.method=='PUT':
+                control['saved_tts']=r.request.post_data_json
+                control['tts_config'].update({key:value for key,value in control['saved_tts'].items()
+                                              if key not in ('password','authorization','clear_password','clear_authorization')})
+            data=control['tts_config']
         elif path=='/admin/tts-test':r.fulfill(body=sample_audio(),content_type='audio/wav');return
         r.fulfill(json=data)
     context.route('**/*',route)
@@ -161,18 +172,45 @@ def test_error_retry_and_revoked_summary(browser):
 
 
 def test_admin_config_defaults_and_secret_fields(browser):
-    context,page,_,calls,errors,_=setup_page(browser,{'width':390,'height':844},role='admin')
+    context,page,_,calls,errors,control=setup_page(browser,{'width':390,'height':844},role='admin')
     try:
         page.evaluate('openAdminSettings();switchAdminTab("ai");switchAdminAiTab("tts")')
         expect(page.locator('#ttsEndpoint')).to_have_value('')
         expect(page.locator('#ttsUsername')).to_have_value('')
         expect(page.locator('#ttsLang')).to_have_value('z')
+        expect(page.locator('#ttsVoice')).to_have_value('zf_001(0.5)+zf_022(0.5)')
+        expect(page.locator('#ttsResponseFormat')).to_have_value('MP3')
+        expect(page.locator('#ttsResponseFormat')).to_have_attribute('readonly','')
         expect(page.locator('#ttsPassword')).to_have_value('')
         expect(page.locator('#ttsPassword')).to_have_attribute('placeholder','尚未配置')
         expect(page.locator('#ttsCustomAuth')).to_be_hidden()
         page.locator('#ttsAuthType').select_option('authorization')
         expect(page.locator('#ttsCustomAuth')).to_be_visible()
         expect(page.locator('#ttsPassword')).to_be_hidden()
+        page.locator('#ttsAuthType').select_option('basic')
+        page.locator('#ttsSynthesisSpeed').fill('3.5')
+        page.locator('#ttsVolumeMultiplier').fill('0.8')
+        page.locator('#ttsLang').fill('')
+        page.locator('#ttsStream').check()
+        page.locator('#ttsReturnDownloadLink').check()
+        expect(page.locator('#ttsDownloadFormat')).to_have_value('MP3')
+        expect(page.locator('#ttsDownloadFormat')).to_have_attribute('readonly','')
+        page.locator('.tts-normalization summary').click()
+        page.locator('#ttsNormalizationDefault').uncheck()
+        page.locator('#ttsUnitNormalization').check()
+        page.locator('#ttsUrlNormalization').uncheck()
+        page.locator('#ttsSaveConfig').click()
+        expect(page.locator('#ttsConfigStatus')).to_have_text('语音配置已保存。')
+        assert control['saved_tts']['voice']=='zf_001(0.5)+zf_022(0.5)'
+        assert control['saved_tts']['response_format']=='mp3'
+        assert control['saved_tts']['speed']==3.5
+        assert control['saved_tts']['lang_code'] is None
+        assert control['saved_tts']['stream'] is True
+        assert control['saved_tts']['volume_multiplier']==0.8
+        assert control['saved_tts']['download_format']=='mp3'
+        assert control['saved_tts']['normalization_options']['unit_normalization'] is True
+        assert control['saved_tts']['normalization_options']['url_normalization'] is False
+        expect(page.locator('#ttsResponseFormat')).to_have_value('MP3')
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         assert errors==[]
     finally:context.close()
