@@ -39,7 +39,7 @@ def test_upgrade_preserves_reingested_body(tmp_path, monkeypatch, has_full_conte
 
         for _ in range(2):
             with conn:
-                migrate_results(conn)
+                migrate_results(conn, accept_legacy_loss=True)
             row = conn.execute('SELECT body_html, original_body_html, has_full_content FROM articles').fetchone()
             assert tuple(row) == (latest, article['body_html'], int(has_full_content))
         assert conn.execute('SELECT COUNT(*) FROM ai_results').fetchone()[0] == 0

@@ -4416,7 +4416,9 @@ def _init_ai_results_table() -> bool:
                     conn.execute("ALTER TABLE ai_results ADD COLUMN updated_at TEXT")
                     conn.execute("UPDATE ai_results SET updated_at = datetime('now') WHERE updated_at IS NULL")
                 from server_ai_store import migrate_results
-                migration_report = migrate_results(conn)
+                migration_report = migrate_results(
+                    conn, accept_legacy_loss=os.environ.get("AI_V6_ACCEPT_LEGACY_LOSS") == "1"
+                )
                 ensure_result_versions(conn)
                 conn.commit()
             if migration_report is not None:

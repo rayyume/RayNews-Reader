@@ -16,6 +16,11 @@ GENERATION_FLAGS = ("auto_summary_enabled", "auto_title_summary_enabled",
 
 def migrate_accounts(db, schema):
     """Serialize a one-time backfill, including users without settings rows."""
+    if db.execute("SELECT 1 FROM app_state WHERE key='ai_access_v6'").fetchone() and all(
+        db.execute("SELECT 1 FROM sqlite_master WHERE type=? AND name=?", (kind, name)).fetchone()
+        for kind, name in (("table", "ai_permissions"), ("trigger", "ai_permissions_new_user"))
+    ):
+        return
     db.execute("BEGIN IMMEDIATE")
     try:
         db.execute("CREATE TABLE IF NOT EXISTS ai_permissions (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, "
@@ -78,6 +83,9 @@ def daily_enabled(user_id):
 
 
 def set_permissions(user_id, updates):
+    if (not isinstance(updates, dict) or not updates or set(updates) - set(SERVICES)
+            or any(type(value) is not bool for value in updates.values())):
+        raise ValueError("权限必须为五项服务的布尔值")
     from models import get_db
     db = get_db()
     db.execute("BEGIN IMMEDIATE")

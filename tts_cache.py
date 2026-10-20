@@ -13,10 +13,22 @@ from pathlib import Path
 from tts_service import TTSError, synthesize
 
 
+def _env_limit(name, default, minimum, maximum):
+    try:
+        value = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if minimum <= value <= maximum else default
+
+
 class TTSCache:
-    def __init__(self, directory=None, *, ttl=3600, max_bytes=256 * 1024 * 1024, workers=2):
+    def __init__(self, directory=None, *, ttl=3600, max_bytes=None, workers=None):
         self.directory = Path(directory or os.environ.get("TTS_TEMP_DIR") or
                               (Path(tempfile.gettempdir()) / ("raynews-tts-" + str(os.getuid()))))
+        if max_bytes is None:
+            max_bytes = _env_limit("TTS_CACHE_MAX_MB", 256, 64, 2048) * 1024 * 1024
+        if workers is None:
+            workers = _env_limit("TTS_WORKERS", 2, 1, 8)
         self.ttl, self.max_bytes = ttl, max_bytes
         self.lock = threading.RLock()
         self.jobs, self.keys = {}, {}

@@ -40,14 +40,14 @@ def test_real_reingest_supersedes_legacy_title_before_or_after_upgrade(news, upg
     seed_legacy_ai_title(news)
     if upgrade_first:
         with news:
-            migrate_results(news)
+            migrate_results(news, accept_legacy_loss=True)
     fetcher.upsert_articles(news, [{'id': 1, 'title': 'Latest source headline', 'timestamp': 101}])
     row = news.execute('SELECT title, original_title, title_source, title_updated_at FROM articles').fetchone()
     assert tuple(row[:3]) == ('Latest source headline', 'Latest source headline', None)
     assert row['title_updated_at'] is not None
     for _ in range(2):
         with news:
-            migrate_results(news)
+            migrate_results(news, accept_legacy_loss=True)
         assert news.execute('SELECT title FROM articles').fetchone()[0] == 'Latest source headline'
     assert json.loads(refresh_server.api_news_detail(1))['title'] == 'Latest source headline'
     assert json.loads(refresh_server.api_news_list({}))['items'][0]['title'] == 'Latest source headline'
@@ -66,7 +66,7 @@ def test_unmarked_snapshot_does_not_override_title_in_upgrade_or_reads(news, sou
     assert json.loads(refresh_server.api_news_list({'q': ['Current source headline']}))['total'] == 1
     assert json.loads(refresh_server.api_news_list({'q': ['First source title']}))['total'] == 0
     with news:
-        migrate_results(news)
+        migrate_results(news, accept_legacy_loss=True)
     assert news.execute('SELECT title FROM articles').fetchone()[0] == item['title']
 
 
@@ -81,7 +81,7 @@ def test_actual_legacy_ai_title_still_restores_or_hides_original(news, source, o
     assert refresh_server._clean_article_display_fields(dict(item))['title'] == expected
     assert web_server._original_article_meta(dict(item))['title'] == expected
     with news:
-        migrate_results(news)
+        migrate_results(news, accept_legacy_loss=True)
     assert news.execute('SELECT title, title_source FROM articles').fetchone()[:] == (expected, None)
 
 

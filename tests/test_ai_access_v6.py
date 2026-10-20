@@ -33,6 +33,25 @@ def authorize(user, **grants):
     ai_access.set_permissions(user, grants)
 
 
+def test_permission_helper_rejects_unknown_or_non_boolean_keys(app):
+    _, _, _, user, _ = app
+    for updates in ({'summary; DROP TABLE users': True}, {'summary': 1}, {}):
+        with pytest.raises(ValueError):
+            ai_access.set_permissions(user, updates)
+    assert not any(ai_access.permissions(user).values())
+
+
+def test_completed_account_migration_does_not_take_write_lock(app):
+    db = models.get_db()
+    statements = []
+    db.set_trace_callback(statements.append)
+    try:
+        ai_access.migrate_accounts(db, models.SCHEMA_SQL)
+    finally:
+        db.set_trace_callback(None)
+    assert not any('BEGIN IMMEDIATE' in statement for statement in statements)
+
+
 def test_new_users_closed_admins_open(app):
     client, admin_headers, headers, user, admin = app
     assert not any(ai_access.permissions(user).values())
@@ -162,7 +181,7 @@ def test_result_upgrade_quarantines_unknown_sources_and_restores_original_title(
     from server_ai_store import migrate_results
     db=sqlite3.connect(tmp_path/'legacy-news.db')
     db.executescript("CREATE TABLE ai_results(article_id INTEGER PRIMARY KEY,summary TEXT,translation TEXT); INSERT INTO ai_results VALUES(1,'browser content','legacy translation'); CREATE TABLE articles(id INTEGER PRIMARY KEY,title TEXT,original_title TEXT,title_source TEXT,title_updated_at TEXT,body_html TEXT,original_body_html TEXT); INSERT INTO articles VALUES(1,'AI title','Original','translation',NULL,'Current body','Earlier body');")
-    db.execute('BEGIN IMMEDIATE');migrate_results(db);db.commit()
+    db.execute('BEGIN IMMEDIATE');migrate_results(db, accept_legacy_loss=True);db.commit()
     assert db.execute('SELECT COUNT(*) FROM ai_results').fetchone()[0] == 0
     assert db.execute('SELECT summary FROM ai_results_legacy_v5').fetchone()[0] == 'browser content'
     assert db.execute('SELECT title,body_html FROM articles').fetchone() == ('Original','Current body')

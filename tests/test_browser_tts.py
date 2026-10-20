@@ -71,7 +71,7 @@ def setup_page(browser,viewport,theme='dark',role='user',failure=False):
         elif path=='/ai/result-updates':data={'items':[],'cursor':'test|0','has_more':False,'access':access()}
         elif path in ('/sources','/api/sources'):data={'sources':[],'categories':[]}
         elif path=='/notifications':data={'items':[],'unread':0}
-        elif path=='/admin/tts-config':data={'enabled':True,'endpoint':'https://tts.rayyu.me/v1','model':'kokoro','voice':'zf_094','lang_code':'z','speed':1.3,'auth_type':'basic','username':'rayyu','has_password':True,'has_authorization':False,'available':True}
+        elif path=='/admin/tts-config':data={'enabled':False,'endpoint':'','model':'kokoro','voice':'zf_094','lang_code':'z','speed':1.3,'auth_type':'basic','username':'','has_password':False,'has_authorization':False,'available':False}
         elif path=='/admin/tts-test':r.fulfill(body=sample_audio(),content_type='audio/wav');return
         r.fulfill(json=data)
     context.route('**/*',route)
@@ -164,10 +164,11 @@ def test_admin_config_defaults_and_secret_fields(browser):
     context,page,_,calls,errors,_=setup_page(browser,{'width':390,'height':844},role='admin')
     try:
         page.evaluate('openAdminSettings();switchAdminTab("ai");switchAdminAiTab("tts")')
-        expect(page.locator('#ttsEndpoint')).to_have_value('https://tts.rayyu.me/v1')
+        expect(page.locator('#ttsEndpoint')).to_have_value('')
+        expect(page.locator('#ttsUsername')).to_have_value('')
         expect(page.locator('#ttsLang')).to_have_value('z')
         expect(page.locator('#ttsPassword')).to_have_value('')
-        expect(page.locator('#ttsPassword')).to_have_attribute('placeholder','已配置，留空保持不变')
+        expect(page.locator('#ttsPassword')).to_have_attribute('placeholder','尚未配置')
         expect(page.locator('#ttsCustomAuth')).to_be_hidden()
         page.locator('#ttsAuthType').select_option('authorization')
         expect(page.locator('#ttsCustomAuth')).to_be_visible()

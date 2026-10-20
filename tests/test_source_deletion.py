@@ -27,6 +27,9 @@ ARTICLES_DDL = (
 @pytest.fixture
 def source_deletion_env(tmp_path, monkeypatch):
     """Build isolated application/news databases for source-group deletion."""
+    # The fixture deliberately seeds pre-v6 AI rows before initializing either
+    # database; acknowledge their isolation just as an upgrade operator must.
+    monkeypatch.setenv("AI_V6_ACCEPT_LEGACY_LOSS", "1")
     old_db_file = models.DB_FILE
     models.close_db()
     models.DB_FILE = tmp_path / "raynews.db"

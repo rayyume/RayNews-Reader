@@ -17,9 +17,9 @@ from ai_service import validate_ai_endpoint_base_url
 from network_safety import assert_ai_endpoint_url, safe_post
 
 DEFAULT_CONFIG = {
-    "enabled": False, "endpoint": "https://tts.rayyu.me/v1", "model": "kokoro",
+    "enabled": False, "endpoint": "", "model": "kokoro",
     "voice": "zf_094", "lang_code": "z", "speed": 1.3,
-    "auth_type": "basic", "username": "rayyu", "password": "", "authorization": "",
+    "auth_type": "basic", "username": "", "password": "", "authorization": "",
     "revision": "initial",
 }
 CONFIG_KEY = "system_tts_config"
@@ -45,7 +45,7 @@ def configured(config=None):
     credentials = (bool(config.get("username") and config.get("password"))
                    if config.get("auth_type") == "basic" else bool(config.get("authorization")))
     return bool(config.get("enabled") and config.get("endpoint") and config.get("model")
-                and config.get("voice") and credentials)
+                and config.get("voice") and config.get("lang_code") and credentials)
 
 
 def public_config(config):
@@ -88,9 +88,10 @@ def save_config(data):
         if type(speed) not in {int, float} or not math.isfinite(speed) or not 0.5 <= speed <= 2:
             raise ValueError("合成语速应在 0.5 到 2 之间")
         for key in ("endpoint", "model", "voice", "lang_code"):
-            if not config[key] or len(config[key]) > 512:
+            if len(config[key]) > 512 or (config["enabled"] and not config[key]):
                 raise ValueError("请填写服务地址、模型、音色和语言代码")
-        config["endpoint"] = validate_ai_endpoint_base_url(assert_ai_endpoint_url(config["endpoint"])).rstrip("/")
+        if config["endpoint"]:
+            config["endpoint"] = validate_ai_endpoint_base_url(assert_ai_endpoint_url(config["endpoint"])).rstrip("/")
         if config["enabled"] and not configured(config):
             raise ValueError("启用语音服务前请填写完整的鉴权信息")
         config["revision"] = uuid.uuid4().hex

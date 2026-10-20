@@ -4,11 +4,7 @@
 
 ## 参考与实现证据
 
-- 视觉参考：`/config/.codex/generated_images/01a153f0-02d1-7663-99c8-e0c2ecac33ee/exec-d8544d4b-20c1-432e-9c54-ae58a04bc106.png`。
-- 手机深色播放器：`/tmp/raynews-tts-qa/tts-player-390-dark.png`。
-- 手机悬浮碟片：`/tmp/raynews-tts-qa/tts-disc-390-dark.png`。
-- 手机浅色播放器：`/tmp/raynews-tts-qa/tts-player-390-light.png`。
-- 桌面播放器：`/tmp/raynews-tts-qa/tts-player-1280-dark.png`。
+- 设计参考和验收截图仅用于开发时的视觉检查，未作为仓库资产保存；可重复的浏览器交互检查见 `tests/test_browser_tts.py`。
 - 实现视口：390 × 844、1280 × 900 CSS px，deviceScaleFactor 为 1，截图像素与 CSS 视口一致。参考为 1487 × 1058 像素的双状态概念板，比较其内部手机区域的组件层级、比例与交互结构，不把概念板外部留白或尺寸视为产品布局；没有拉伸或修改参考图。
 - 浏览器插件不可用，使用已有 Playwright Chromium。真实页面、真实媒体元素和可解码的受控 WAV 样本用于验证播放器，后端另有独立的 MP3 与 Kokoro 请求契约测试；没有使用或探测生产凭据。
 

@@ -4,6 +4,7 @@ import sqlite3
 import sys
 import unittest
 import uuid
+from unittest.mock import patch
 from datetime import datetime
 from pathlib import Path
 
@@ -306,7 +307,8 @@ class TitleProcessingTests(unittest.TestCase):
             conn.close()
 
             web_server.NEWS_DB = str(db_path)
-            self.assertTrue(web_server._init_ai_results_table())
+            with patch.dict(os.environ, {'AI_V6_ACCEPT_LEGACY_LOSS': '1'}):
+                self.assertTrue(web_server._init_ai_results_table())
             conn = sqlite3.connect(db_path)
             self.assertEqual(conn.execute("SELECT title_summary FROM ai_results_legacy_v5 WHERE article_id=1").fetchone()[0], "3998")
             self.assertEqual(conn.execute("SELECT title FROM articles WHERE id=1").fetchone()[0], original)

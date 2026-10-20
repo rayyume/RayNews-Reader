@@ -46,7 +46,8 @@ def app(tmp_path, monkeypatch):
 
 
 def enable(client, admin, user):
-    response = client.put('/admin/tts-config', headers=admin, json={'enabled':True,'password':'secret'})
+    response = client.put('/admin/tts-config', headers=admin, json={
+        'enabled':True,'endpoint':'https://tts.example.test/v1','username':'reader','password':'secret'})
     assert response.status_code == 200
     ai_access.set_permissions(user, {'tts':True})
     models.set_user_settings(user, view_tts=1)
@@ -60,6 +61,25 @@ def ready(cache, job_id):
             return job
         time.sleep(.005)
     pytest.fail('TTS worker did not finish')
+
+
+def test_new_tts_config_requires_own_endpoint_and_username(app):
+    client, admin, _, _, _ = app
+    assert tts_service.DEFAULT_CONFIG['endpoint'] == ''
+    assert tts_service.DEFAULT_CONFIG['username'] == ''
+    assert client.put('/admin/tts-config', headers=admin,
+                      json={'enabled':True,'password':'secret'}).status_code == 400
+    assert client.put('/admin/tts-config', headers=admin,
+                      json={'enabled':False,'voice':'zf_094'}).status_code == 200
+
+
+def test_tts_capacity_and_workers_can_be_configured(tmp_path, monkeypatch):
+    monkeypatch.setenv('TTS_CACHE_MAX_MB', '128')
+    monkeypatch.setenv('TTS_WORKERS', '4')
+    cache = tts_cache.TTSCache(tmp_path / 'spool')
+    assert cache.max_bytes == 128 * 1024 * 1024
+    assert cache.pool._max_workers == 4
+    cache.pool.shutdown()
 
 
 def test_listening_text_preserves_facts_and_removes_reading_noise():
@@ -92,7 +112,8 @@ def test_table_markdown_and_empty_content():
 def test_config_is_admin_only_secrets_preserved_and_auth_modes_exclusive(app):
     client, admin, headers, user, _ = app
     assert client.get('/admin/tts-config', headers=headers).status_code == 403
-    response = client.put('/admin/tts-config', headers=admin, json={'enabled':True,'password':'private-password'})
+    response = client.put('/admin/tts-config', headers=admin, json={
+        'enabled':True,'endpoint':'https://tts.example.test/v1','username':'reader','password':'private-password'})
     assert response.status_code == 200
     assert response.json['has_password'] and 'password' not in response.json and 'authorization' not in response.json
     assert response.headers['Cache-Control'] == 'private, no-store'
@@ -154,7 +175,8 @@ def test_service_availability_and_preference(app):
     client, admin, headers, user, _ = app
     ai_access.set_permissions(user, {'tts':True})
     assert client.put('/settings', headers=headers, json={'view_tts':True}).status_code == 409
-    client.put('/admin/tts-config', headers=admin, json={'enabled':True,'password':'secret'})
+    client.put('/admin/tts-config', headers=admin, json={
+        'enabled':True,'endpoint':'https://tts.example.test/v1','username':'reader','password':'secret'})
     assert client.put('/settings', headers=headers, json={'view_tts':True}).status_code == 200
     assert client.get('/settings', headers=headers).json['access']['view_tts']
     client.put('/settings', headers=headers, json={'view_tts':False})
@@ -262,13 +284,14 @@ def test_kokoro_request_contract_and_custom_auth(tmp_path, monkeypatch):
     calls=[]
     def post(url,**kwargs):calls.append((url,kwargs));return ProviderResponse()
     monkeypatch.setattr(tts_service,'safe_post',post)
-    config={**tts_service.DEFAULT_CONFIG,'enabled':True,'password':'密码'}
+    config={**tts_service.DEFAULT_CONFIG,'enabled':True,'endpoint':'https://tts.example.test/v1',
+            'username':'reader','password':'密码'}
     target=tmp_path/'audio.mp3'
     tts_service.synthesize(config,'标题。正文。',target)
     url,kw=calls[0]
-    assert url=='https://tts.rayyu.me/v1/audio/speech'
+    assert url=='https://tts.example.test/v1/audio/speech'
     assert kw['json']=={'model':'kokoro','input':'标题。正文。','voice':'zf_094','speed':1.3,'lang_code':'z','response_format':'mp3','stream':False}
-    assert kw['headers']['Authorization']=='Basic '+base64.b64encode('rayyu:密码'.encode()).decode()
+    assert kw['headers']['Authorization']=='Basic '+base64.b64encode('reader:密码'.encode()).decode()
     assert kw['stream'] is True and kw['max_redirects']==0 and target.read_bytes()==MP3
     config.update(auth_type='authorization',authorization='Basic custom-header')
     tts_service.synthesize(config,'正文。',target)
@@ -285,6 +308,8 @@ def test_provider_failures_are_safe_and_actionable(tmp_path,monkeypatch,kind):
         return response
     monkeypatch.setattr(tts_service,'safe_post',post)
     with pytest.raises(TTSError) as error:
-        tts_service.synthesize({**tts_service.DEFAULT_CONFIG,'enabled':True,'password':'secret'},'正文',tmp_path/'a.mp3')
+        tts_service.synthesize({**tts_service.DEFAULT_CONFIG,'enabled':True,
+                                'endpoint':'https://tts.example.test/v1','username':'reader',
+                                'password':'secret'},'正文',tmp_path/'a.mp3')
     assert error.value.code=={'timeout':'TTS_TIMEOUT','auth':'TTS_UPSTREAM_ERROR','html':'TTS_INVALID_AUDIO'}[kind]
     assert 'do-not-leak' not in str(error.value)
