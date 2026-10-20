@@ -32,6 +32,8 @@ from image_cache import (
     open_cached_image,
 )
 from news_schema import (
+    SOURCE_TITLE_SQL,
+    source_article_title,
     enable_wal_mode,
     ensure_article_schema,
     ensure_article_title_columns as _ensure_article_title_columns_shared,
@@ -1142,6 +1144,7 @@ def _sanitize_article_html(value: str | None) -> str | None:
 
 
 def _clean_article_display_fields(item: dict) -> dict:
+    item["title"] = source_article_title(item)
     for field in ("summary", "body_html"):
         if field in item:
             item[field] = _strip_display_attribution(item.get(field))
@@ -1178,7 +1181,7 @@ def api_news_list(params: dict) -> bytes:
         if query:
             pattern = f"%{query.lower()}%"
             clauses.append(
-                "(lower(title) LIKE ? "
+                f"(lower({SOURCE_TITLE_SQL}) LIKE ? "
                 f"OR lower({source_expr}) LIKE ? "
                 "OR lower(origin_source) LIKE ? "
                 "OR lower(summary) LIKE ?)"
@@ -1214,7 +1217,7 @@ def api_news_list(params: dict) -> bytes:
             since_where = f"{where_sql}{' AND' if where_sql else ' WHERE'} timestamp >= ?"
             since_args = (*args, since_ts)
             rows = conn.execute(
-                "SELECT id, title, original_title, COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source) AS source, "
+                "SELECT id, title, original_title, title_source, COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source) AS source, "
                 "       feed_source, group_source, publisher_domain, origin_source, "
                 "       time, date, timestamp, thumb, has_full_content, telegraph_url, summary "
                 f"FROM articles{since_where} ORDER BY timestamp DESC LIMIT ?",
@@ -1227,7 +1230,7 @@ def api_news_list(params: dict) -> bytes:
         else:
             offset = (page - 1) * size
             base_select = (
-                "SELECT id, title, original_title, COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source) AS source, "
+                "SELECT id, title, original_title, title_source, COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source) AS source, "
                 "       feed_source, group_source, publisher_domain, origin_source, "
                 "       time, date, timestamp, thumb, has_full_content, telegraph_url, summary "
                 "FROM articles"
@@ -1288,7 +1291,7 @@ def api_title_updates(params: dict) -> bytes:
             "ORDER BY title_updated_at ASC, id ASC LIMIT 500",
             (since_ts, since_ts, since_id),
         ).fetchall()
-        items = [dict(r) for r in rows]
+        items = [_clean_article_display_fields(dict(r)) for r in rows]
         if items:
             for item in items:
                 _evict_cached_article(int(item["id"]))
@@ -1341,11 +1344,10 @@ def _build_news_detail_response(article_id: int) -> bytes:
         item["feed_source"] = item.get("feed_source") or item.get("source") or ""
         item["origin_source"] = item.get("origin_source") or ""
         item["source"] = item["group_source"]
-        # /api/news/<id> is intentionally unauthenticated. Shared translated
-        # HTML is delivered only by the authenticated /ai/result endpoint.
-        item["body_html"] = (
-            item.get("original_body_html") or item.get("body_html") or ""
-        )
+        # body_html is the current source body. original_body_html is only a
+        # first-ingest snapshot and may still contain an obsolete excerpt.
+        # Translations live exclusively behind the authenticated /ai/result API.
+        item["body_html"] = item.get("body_html") or ""
         item.pop("original_body_html", None)
         item = _clean_article_display_fields(item)
         result = json.dumps(item, ensure_ascii=False).encode()

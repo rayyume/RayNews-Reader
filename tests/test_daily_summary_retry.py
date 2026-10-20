@@ -184,7 +184,7 @@ def test_same_daily_outage_sends_only_system_ai_alert(
         isolated_app_db, news_db, clock, alerts, monkeypatch):
     """A notified AI incident replaces, but does not erase, the daily alert."""
     def failing(_date):
-        web_server._note_system_ai_failure("每日摘要", "401 invalid key")
+        web_server._note_system_ai_failure("每日总结", "401 invalid key")
         web_server._set_daily_summary_error("AI 生成失败")
         return None
 
@@ -252,7 +252,7 @@ def test_daily_alert_remains_when_system_incident_was_cooldown_suppressed(
     monkeypatch.setattr(web_server.time, "time", lambda: health_clock["now"])
 
     def failing(_date):
-        web_server._note_system_ai_failure("每日摘要", "401 invalid key")
+        web_server._note_system_ai_failure("每日总结", "401 invalid key")
         web_server._set_daily_summary_error("AI 生成失败")
         return None
 
@@ -341,7 +341,7 @@ def test_generation_reason_is_captured_when_the_day_has_no_articles(news_db, mon
     monkeypatch.setattr(web_server, "get_system_ai_config",
                         lambda: {"enabled": True, "api_key": "k", "endpoint": "e", "model": "m"})
     monkeypatch.setattr(web_server, "_fetch_articles_by_date",
-                        lambda date_str, include_shared_summary=False: [])
+                        lambda date_str, include_ai_summary=False: [])
     assert web_server._generate_daily_summary_global(TODAY) is None
     assert "没有可用于生成摘要的文章" in web_server._daily_summary_last_error
 
@@ -462,3 +462,8 @@ def test_inline_pinch_zoom_is_suppressed_so_only_fullscreen_zooms():
     assert "['gesturestart', 'gesturechange', 'gestureend']" in html
     image_rule = html.split(".article-body img{", 1)[1].split("}", 1)[0]
     assert "touch-action:manipulation" in image_rule
+
+@pytest.fixture(autouse=True)
+def authorized_daily_reader(monkeypatch):
+    monkeypatch.setattr(web_server, 'ai_permissions', lambda uid:{'daily_digest':True})
+    monkeypatch.setattr(web_server, 'daily_enabled', lambda uid:True)

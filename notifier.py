@@ -255,7 +255,7 @@ hr{{border:none;border-top:1px solid rgba(255,255,255,0.08);margin:16px 0}}
 .footer{{margin-top:24px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.06);font-size:12px;color:#55556a}}
 </style></head>
 <body>
-<h1>📰 RayNews 每日摘要</h1>
+<h1>📰 RayNews 每日总结</h1>
 <p class="date">{subtitle}</p>
 <div class="summary">
 {summary_html}
@@ -265,7 +265,7 @@ hr{{border:none;border-top:1px solid rgba(255,255,255,0.08);margin:16px 0}}
 </html>"""
     return send_email(
         api_key, to_email,
-        f"RayNews 每日摘要 — {__import__('datetime').date.today()}",
+        f"RayNews 每日总结 — {__import__('datetime').date.today()}",
         html,
         idempotency_key=idempotency_key,
     )

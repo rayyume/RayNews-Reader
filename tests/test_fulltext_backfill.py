@@ -457,7 +457,7 @@ def test_backfill_leaves_row_downgraded_when_fetch_still_fails(tmp_path, monkeyp
     conn.close()
 
 
-def test_upsert_keeps_existing_fulltext_and_title_migration_state_on_empty_reingest(
+def test_upsert_keeps_existing_fulltext_but_refreshes_title_state_on_empty_reingest(
     tmp_path, monkeypatch
 ):
     _patch_paths(monkeypatch, tmp_path)
@@ -506,12 +506,13 @@ def test_upsert_keeps_existing_fulltext_and_title_migration_state_on_empty_reing
         "has_full_content, telegraph_url, body_html, original_body_html, summary, "
         "original_title, title_updated_at, title_source FROM articles WHERE id = 13"
     ).fetchone()
-    assert tuple(row) == (
+    assert tuple(row[:14]) == (
         "Fresh incoming title", "New feed", "New feed", "New origin", "09:00",
         "2026-08-02", 200, "https://img/new.jpg", 1,
         "https://telegra.ph/original", original_body, original_body, "Existing summary",
-        "Original incoming title", "2026-08-01 08:01:00", "title_summary",
+        "Fresh incoming title",
     )
+    assert row[14] is not None and row[15] is None
 
     fetcher.upsert_articles(conn, [{
         "id": 13,

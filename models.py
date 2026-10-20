@@ -1,4 +1,4 @@
-"""RayNews data models — user auth, favorites, AI configs, settings."""
+"""RayNews data models — user auth, favorites, server AI configuration and preferences."""
 
 import sqlite3
 import json
@@ -37,46 +37,21 @@ CREATE TABLE IF NOT EXISTS favorites (
     UNIQUE(user_id, article_id)
 );
 
-CREATE TABLE IF NOT EXISTS ai_configs (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-    provider    TEXT    NOT NULL DEFAULT 'openai',
-    api_key     TEXT    NOT NULL DEFAULT '',
-    endpoint    TEXT    NOT NULL DEFAULT 'https://api.openai.com/v1',
-    model       TEXT    NOT NULL DEFAULT 'gpt-4o-mini',
-    provider_type TEXT NOT NULL DEFAULT 'openai'
-                    CHECK(provider_type IN ('openai', 'claude')),
-    enabled     INTEGER NOT NULL DEFAULT 0,
-    revision    INTEGER NOT NULL DEFAULT 1
-);
-
 CREATE TABLE IF NOT EXISTS user_settings (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id                 INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-    auto_translate_title    INTEGER NOT NULL DEFAULT 0,
-    auto_translate_content  INTEGER NOT NULL DEFAULT 0,
-    auto_title_summary_enabled INTEGER NOT NULL DEFAULT 0,
-    auto_summary_enabled    INTEGER NOT NULL DEFAULT 0,
     daily_summary_enabled   INTEGER NOT NULL DEFAULT 0,
     -- The in-app copy of the daily summary is on by default; the email copy
     -- (daily_summary_enabled above) stays opt-in because it needs an address.
     daily_summary_inapp_enabled INTEGER NOT NULL DEFAULT 1,
     theme_preference        TEXT    NOT NULL DEFAULT 'system',
     notification_config     TEXT    NOT NULL DEFAULT '{}',
-    share_ai_results        INTEGER NOT NULL DEFAULT 0,
-    share_view_title        INTEGER NOT NULL DEFAULT 0,
-    share_view_translation  INTEGER NOT NULL DEFAULT 0,
-    share_view_summary      INTEGER NOT NULL DEFAULT 0,
-    share_suspended         INTEGER NOT NULL DEFAULT 0,
-    share_last_check_at     TEXT,
-    share_last_check_ok     INTEGER,
-    share_last_check_error  TEXT,
-    share_last_check_revision INTEGER,
-    share_revalidation_failure_streak INTEGER NOT NULL DEFAULT 0,
-    share_revalidation_failure_revision INTEGER,
-    share_revalidation_last_failure_at TEXT,
-    share_revalidation_last_failure_error TEXT,
-    share_intent_revision   INTEGER NOT NULL DEFAULT 1
+    view_summary INTEGER NOT NULL DEFAULT 0,
+    view_title_translation INTEGER NOT NULL DEFAULT 0,
+    view_translation INTEGER NOT NULL DEFAULT 0,
+    view_title_shortening INTEGER NOT NULL DEFAULT 0,
+    view_daily_digest INTEGER NOT NULL DEFAULT 0,
+    view_tts INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS user_access_log (
@@ -201,14 +176,6 @@ def _initialize_db(db: sqlite3.Connection) -> None:
     """Create and migrate the model database on a newly opened connection."""
     db.executescript(SCHEMA_SQL)
     for table, column, definition in (
-        ("ai_configs", "provider_type", "TEXT NOT NULL DEFAULT 'openai'"),
-        ("ai_configs", "revision", "INTEGER NOT NULL DEFAULT 1"),
-        ("user_settings", "auto_summary_enabled", "INTEGER NOT NULL DEFAULT 0"),
-        (
-            "user_settings",
-            "auto_title_summary_enabled",
-            "INTEGER NOT NULL DEFAULT 0",
-        ),
         (
             "user_settings",
             "theme_preference",
@@ -225,32 +192,6 @@ def _initialize_db(db: sqlite3.Connection) -> None:
         ("users", "visit_count", "INTEGER NOT NULL DEFAULT 0"),
         ("users", "last_seen_at", "TEXT NOT NULL DEFAULT ''"),
         ("users", "token_version", "INTEGER NOT NULL DEFAULT 0"),
-        ("user_settings", "share_ai_results", "INTEGER NOT NULL DEFAULT 0"),
-        ("user_settings", "share_view_title", "INTEGER NOT NULL DEFAULT 0"),
-        (
-            "user_settings",
-            "share_view_translation",
-            "INTEGER NOT NULL DEFAULT 0",
-        ),
-        ("user_settings", "share_view_summary", "INTEGER NOT NULL DEFAULT 0"),
-        ("user_settings", "share_suspended", "INTEGER NOT NULL DEFAULT 0"),
-        ("user_settings", "share_last_check_at", "TEXT"),
-        ("user_settings", "share_last_check_ok", "INTEGER"),
-        ("user_settings", "share_last_check_error", "TEXT"),
-        ("user_settings", "share_last_check_revision", "INTEGER"),
-        (
-            "user_settings",
-            "share_revalidation_failure_streak",
-            "INTEGER NOT NULL DEFAULT 0",
-        ),
-        ("user_settings", "share_revalidation_failure_revision", "INTEGER"),
-        ("user_settings", "share_revalidation_last_failure_at", "TEXT"),
-        ("user_settings", "share_revalidation_last_failure_error", "TEXT"),
-        (
-            "user_settings",
-            "share_intent_revision",
-            "INTEGER NOT NULL DEFAULT 1",
-        ),
         # notifications gained a body format ('plain'|'markdown') after the
         # table already shipped, so existing DBs need the column backfilled.
         ("notifications", "format", "TEXT NOT NULL DEFAULT 'plain'"),
@@ -260,13 +201,6 @@ def _initialize_db(db: sqlite3.Connection) -> None:
     # Backfill existing accounts that predate this requirement: keep their
     # nickname if they set one, otherwise fall back to their email.
     db.execute("UPDATE users SET nickname = email WHERE nickname = ''")
-    # Auto-summary/auto-translate are now admin-only; zero out any
-    # leftover opt-in flags on non-admin accounts from before this change.
-    db.execute(
-        "UPDATE user_settings SET auto_translate_title = 0, auto_translate_content = 0, "
-        "auto_title_summary_enabled = 0, auto_summary_enabled = 0 "
-        "WHERE user_id NOT IN (SELECT id FROM users WHERE role = 'admin')"
-    )
     # The "preview" role has been retired: registration now grants "user"
     # directly, and "who's pending" is tracked via unused invitation_codes
     # instead. Promote any leftover preview accounts from before this change.
@@ -276,6 +210,8 @@ def _initialize_db(db: sqlite3.Connection) -> None:
     # tighten it; the application layer already never assigns 'preview'.)
     db.execute("UPDATE users SET role = 'user' WHERE role = 'preview'")
     db.commit()
+    from ai_access import migrate_accounts
+    migrate_accounts(db, SCHEMA_SQL)
 
 
 def close_db() -> None:
@@ -999,43 +935,6 @@ def count_article_favorites(article_id: int) -> int:
 # ─── AI Config ─────────────────────────────────────────────
 
 
-def get_ai_config(user_id: int) -> dict | None:
-    db = get_db()
-    row = db.execute(
-        "SELECT id, provider, api_key, endpoint, model, provider_type, enabled, revision "
-        "FROM ai_configs WHERE user_id = ?",
-        (user_id,),
-    ).fetchone()
-    return dict(row) if row else None
-
-
-def set_ai_config(user_id: int, **kwargs) -> dict:
-    """Upsert AI config. Allowed keys: provider, api_key, endpoint, model, provider_type, enabled."""
-    allowed = {"provider", "api_key", "endpoint", "model", "provider_type", "enabled"}
-    updates = {k: v for k, v in kwargs.items() if k in allowed}
-    if not updates:
-        return get_ai_config(user_id) or {}
-    db = get_db()
-    existing = get_ai_config(user_id)
-    if existing:
-        sets = ", ".join([*(f"{k} = ?" for k in updates), "revision = revision + 1"])
-        vals = list(updates.values()) + [user_id]
-        db.execute(f"UPDATE ai_configs SET {sets} WHERE user_id = ?", vals)
-    else:
-        keys = ", ".join(updates.keys())
-        placeholders = ", ".join("?" for _ in updates)
-        vals = list(updates.values())
-        db.execute(
-            f"INSERT INTO ai_configs (user_id, {keys}) VALUES (?, {placeholders})",
-            [user_id] + vals,
-        )
-    db.commit()
-    return get_ai_config(user_id)
-
-
-# ─── System AI Config (admin-managed, drives background jobs) ──
-
-
 def get_system_ai_config() -> dict:
     db = get_db()
     row = db.execute(
@@ -1069,25 +968,7 @@ def set_system_ai_config(**kwargs) -> dict:
 
 
 def get_user_settings(user_id: int) -> dict | None:
-    db = get_db()
-    row = db.execute(
-        "SELECT s.id, s.auto_translate_title, s.auto_translate_content, "
-        "s.auto_title_summary_enabled, s.auto_summary_enabled, "
-        "s.daily_summary_enabled, s.daily_summary_inapp_enabled, "
-        "s.theme_preference, s.notification_config, "
-        "s.share_ai_results, s.share_view_title, s.share_view_translation, s.share_view_summary, "
-        "s.share_suspended, s.share_last_check_at, s.share_last_check_ok, "
-        "s.share_last_check_error, s.share_last_check_revision, "
-        "s.share_revalidation_failure_streak, "
-        "s.share_revalidation_failure_revision, "
-        "s.share_revalidation_last_failure_at, "
-        "s.share_revalidation_last_failure_error, "
-        "s.share_intent_revision, "
-        "c.revision AS share_current_config_revision "
-        "FROM user_settings AS s LEFT JOIN ai_configs AS c ON c.user_id = s.user_id "
-        "WHERE s.user_id = ?",
-        (user_id,),
-    ).fetchone()
+    row = get_db().execute("SELECT * FROM user_settings WHERE user_id = ?", (user_id,)).fetchone()
     return dict(row) if row else None
 
 
@@ -1321,12 +1202,7 @@ def complete_app_state_incident_if_stable(
 
 
 def get_daily_summary_inapp_user_ids() -> list[int]:
-    """User ids that should receive the in-app copy of the daily summary.
-
-    LEFT JOIN rather than a plain filter on user_settings: an account that has
-    never opened the settings page has no settings row at all, and the in-app
-    copy is on by default — such a user must still be a recipient.
-    """
+    """Recipients with digest access, the master switch and in-app delivery on."""
     db = get_db()
     rows = db.execute(
         "SELECT u.id FROM users AS u "
@@ -1334,297 +1210,20 @@ def get_daily_summary_inapp_user_ids() -> list[int]:
         "WHERE COALESCE(s.daily_summary_inapp_enabled, 1) = 1 "
         "ORDER BY u.id"
     ).fetchall()
-    return [int(r["id"]) for r in rows]
-
-
-def get_users_with_share_enabled() -> list[int]:
-    """User ids that currently have the AI-result sharing master switch on."""
-    db = get_db()
-    rows = db.execute(
-        "SELECT user_id FROM user_settings WHERE share_ai_results = 1"
-    ).fetchall()
-    return [int(r["user_id"]) for r in rows]
+    from ai_access import daily_enabled
+    return [int(r["id"]) for r in rows if daily_enabled(int(r["id"]))]
 
 
 def set_user_settings(user_id: int, **kwargs) -> dict:
-    """Upsert user-owned settings and sharing intent.
-
-    Connectivity health is server-owned and must go through
-    ``set_share_health`` or ``apply_share_connectivity_transition``.
-    """
-    allowed = {"auto_translate_title", "auto_translate_content",
-               "auto_title_summary_enabled", "auto_summary_enabled", "daily_summary_enabled",
-               "daily_summary_inapp_enabled",
-               "theme_preference", "notification_config",
-               "share_ai_results", "share_view_title", "share_view_translation", "share_view_summary"}
-    updates = {k: v for k, v in kwargs.items() if k in allowed}
-    if not updates:
-        return get_user_settings(user_id) or {}
-    db = get_db()
-    existing = get_user_settings(user_id)
-    share_intent_fields = {
-        "share_ai_results",
-        "share_view_title",
-        "share_view_translation",
-        "share_view_summary",
-    }
-    if existing:
-        sets = [f"{k} = ?" for k in updates]
-        if share_intent_fields.intersection(updates):
-            sets.append("share_intent_revision = share_intent_revision + 1")
-        vals = list(updates.values()) + [user_id]
-        db.execute(f"UPDATE user_settings SET {', '.join(sets)} WHERE user_id = ?", vals)
-    else:
-        keys = ", ".join(updates.keys())
-        placeholders = ", ".join("?" for _ in updates)
-        vals = list(updates.values())
-        db.execute(
-            f"INSERT INTO user_settings (user_id, {keys}) VALUES (?, {placeholders})",
-            [user_id] + vals,
-        )
-    db.commit()
-    return get_user_settings(user_id)
-
-
-def set_share_health(user_id: int, **kwargs) -> dict:
-    """Update server-owned sharing connectivity state."""
-    allowed = {
-        "share_suspended",
-        "share_last_check_at",
-        "share_last_check_ok",
-        "share_last_check_error",
-        "share_last_check_revision",
-        "share_revalidation_failure_streak",
-        "share_revalidation_failure_revision",
-        "share_revalidation_last_failure_at",
-        "share_revalidation_last_failure_error",
-    }
+    from ai_access import PREFERENCES
+    allowed = set(PREFERENCES) | {"daily_summary_enabled", "daily_summary_inapp_enabled", "theme_preference", "notification_config"}
     updates = {key: value for key, value in kwargs.items() if key in allowed}
-    if not updates:
-        return get_user_settings(user_id) or {}
     db = get_db()
-    existing = get_user_settings(user_id)
-    if existing:
-        sets = ", ".join(f"{key} = ?" for key in updates)
-        db.execute(
-            f"UPDATE user_settings SET {sets} WHERE user_id = ?",
-            list(updates.values()) + [user_id],
-        )
-    else:
-        keys = ", ".join(updates)
-        placeholders = ", ".join("?" for _ in updates)
-        db.execute(
-            f"INSERT INTO user_settings (user_id, {keys}) VALUES (?, {placeholders})",
-            [user_id] + list(updates.values()),
-        )
-    db.commit()
-    return get_user_settings(user_id)
-
-
-def set_user_settings_for_ai_config_revision(
-    user_id: int,
-    expected_config_revision: int,
-    expected_intent_revision: int,
-    **kwargs,
-) -> dict | None:
-    """Persist settings only while the validated config and user intent are current."""
-    allowed = {
-        "auto_translate_title", "auto_translate_content",
-        "auto_title_summary_enabled", "auto_summary_enabled", "daily_summary_enabled",
-        "daily_summary_inapp_enabled",
-        "theme_preference", "notification_config",
-        "share_ai_results", "share_view_title", "share_view_translation", "share_view_summary",
-    }
-    updates = {k: v for k, v in kwargs.items() if k in allowed}
-    if not updates:
-        return None
-    try:
-        expected_config_revision = int(expected_config_revision)
-        expected_intent_revision = int(expected_intent_revision)
-    except (TypeError, ValueError):
-        return None
-
-    db = get_db()
-    share_intent_fields = {
-        "share_ai_results",
-        "share_view_title",
-        "share_view_translation",
-        "share_view_summary",
-    }
-    sets = [f"{key} = ?" for key in updates]
-    if share_intent_fields.intersection(updates):
-        sets.append("share_intent_revision = share_intent_revision + 1")
-    values = list(updates.values())
-    updated = db.execute(
-        f"UPDATE user_settings SET {', '.join(sets)} "
-        "WHERE user_id = ? AND share_intent_revision = ? "
-        "AND COALESCE((SELECT revision FROM ai_configs WHERE user_id = ?), 0) = ?",
-        values + [
-            user_id,
-            expected_intent_revision,
-            user_id,
-            expected_config_revision,
-        ],
-    ).rowcount == 1
-    if not updated:
-        keys = ", ".join(updates.keys())
-        placeholders = ", ".join("?" for _ in updates)
-        inserted = db.execute(
-            f"INSERT OR IGNORE INTO user_settings (user_id, {keys}) "
-            f"SELECT ?, {placeholders} "
-            "WHERE ? = 0 "
-            "AND NOT EXISTS (SELECT 1 FROM user_settings WHERE user_id = ?) "
-            "AND COALESCE((SELECT revision FROM ai_configs WHERE user_id = ?), 0) = ?",
-            [user_id]
-            + values
-            + [
-                expected_intent_revision,
-                user_id,
-                user_id,
-                expected_config_revision,
-            ],
-        ).rowcount == 1
-        if not inserted:
-            db.commit()
-            return None
-    db.commit()
-    return get_user_settings(user_id)
-
-
-def apply_share_connectivity_transition(
-    user_id: int,
-    expected_suspended: int,
-    expected_config_revision: int,
-    next_suspended: int,
-    checked_at: str,
-    check_ok: int,
-    error: str | None,
-) -> bool:
-    """Atomically apply a share-health result if the observed state is current.
-
-    The conditional update is the notification ownership claim: only the
-    caller whose observed suspension state and tested AI-config revision still
-    match can report a state transition. ``share_ai_results = 1`` also makes
-    an opt-out that committed after the read win over a delayed background
-    probe. A missing config is revision zero, so a probe that started before
-    the first save cannot claim state after that save.
-    """
-    db = get_db()
-    changed = db.execute(
-        "UPDATE user_settings "
-        "SET share_suspended = ?, share_last_check_at = ?, "
-        "share_last_check_ok = ?, share_last_check_error = ?, "
-        "share_last_check_revision = ?, "
-        "share_revalidation_failure_streak = 0, "
-        "share_revalidation_failure_revision = NULL, "
-        "share_revalidation_last_failure_at = NULL, "
-        "share_revalidation_last_failure_error = NULL "
-        "WHERE user_id = ? AND share_ai_results = 1 AND share_suspended = ? "
-        "AND COALESCE((SELECT revision FROM ai_configs WHERE user_id = ?), 0) = ?",
-        (
-            int(next_suspended),
-            checked_at,
-            int(check_ok),
-            error,
-            int(expected_config_revision),
-            user_id,
-            int(expected_suspended),
-            user_id,
-            int(expected_config_revision),
-        ),
-    ).rowcount == 1
-    db.commit()
-    return changed
-
-
-def record_share_revalidation_failure(
-    user_id: int,
-    config_revision: int,
-    checked_at: str,
-    error: str,
-) -> str:
-    """Persist one cycle's failure and claim the fixed two-strike edge."""
-    config_revision = int(config_revision)
-    db = get_db()
-    try:
-        db.execute("BEGIN IMMEDIATE")
-        row = db.execute(
-            "SELECT s.share_ai_results, s.share_suspended, "
-            "s.share_revalidation_failure_streak, "
-            "s.share_revalidation_failure_revision, "
-            "s.share_revalidation_last_failure_at, "
-            "COALESCE(c.revision, 0) AS current_config_revision "
-            "FROM user_settings AS s "
-            "LEFT JOIN ai_configs AS c ON c.user_id = s.user_id "
-            "WHERE s.user_id = ?",
-            (user_id,),
-        ).fetchone()
-        if row is None or row["share_ai_results"] != 1:
-            db.rollback()
-            return "not_opted_in"
-        if row["current_config_revision"] != config_revision:
-            db.rollback()
-            return "stale"
-        if (
-            row["share_revalidation_failure_revision"] == config_revision
-            and row["share_revalidation_last_failure_at"] == checked_at
-        ):
-            db.rollback()
-            return "unchanged"
-        if row["share_suspended"]:
-            db.rollback()
-            return "unchanged"
-
-        prior_streak = (
-            int(row["share_revalidation_failure_streak"] or 0)
-            if row["share_revalidation_failure_revision"] == config_revision
-            else 0
-        )
-        next_streak = prior_streak + 1
-        if next_streak < 2:
-            db.execute(
-                "UPDATE user_settings "
-                "SET share_revalidation_failure_streak = ?, "
-                "share_revalidation_failure_revision = ?, "
-                "share_revalidation_last_failure_at = ?, "
-                "share_revalidation_last_failure_error = ? "
-                "WHERE user_id = ?",
-                (next_streak, config_revision, checked_at, error, user_id),
-            )
-            db.commit()
-            return "pending_failure"
-
-        db.execute(
-            "UPDATE user_settings "
-            "SET share_revalidation_failure_streak = ?, "
-            "share_revalidation_failure_revision = ?, "
-            "share_revalidation_last_failure_at = ?, "
-            "share_revalidation_last_failure_error = ?, "
-            "share_suspended = 1, "
-            "share_last_check_at = ?, "
-            "share_last_check_ok = 0, "
-            "share_last_check_error = ?, "
-            "share_last_check_revision = ? "
-            "WHERE user_id = ?",
-            (
-                next_streak,
-                config_revision,
-                checked_at,
-                error,
-                checked_at,
-                error,
-                config_revision,
-                user_id,
-            ),
-        )
+    if updates:
+        db.execute("INSERT OR IGNORE INTO user_settings(user_id) VALUES(?)", (user_id,))
+        db.execute("UPDATE user_settings SET " + ",".join(key + "=?" for key in updates) + " WHERE user_id=?", [*updates.values(), user_id])
         db.commit()
-        return "suspended"
-    except Exception:
-        db.rollback()
-        raise
-
-
-# ─── In-App Notifications ──────────────────────────────────
+    return get_user_settings(user_id) or {}
 
 
 def add_notification(user_id: int, ntype: str, title: str, body: str = "",
@@ -1636,7 +1235,7 @@ def add_notification(user_id: int, ntype: str, title: str, body: str = "",
     every client render path escapes/sanitizes, so markup here is inert.
     """
     db = get_db()
-    # Local time, same convention as user_settings.share_last_check_at.
+    # Local timestamps match other account notification records.
     now = datetime.now().isoformat(timespec="seconds")
     cur = db.execute(
         "INSERT INTO notifications (user_id, type, title, body, format, created_at) "
@@ -1739,14 +1338,16 @@ def list_notifications(user_id: int, limit: int = 100) -> list[dict]:
     chronological order and adds up to `limit` unread rows that would otherwise
     be hidden. As those are marked read, the next unread window becomes visible.
     """
+    from ai_access import daily_enabled
+    digest_filter = "" if daily_enabled(user_id) else " AND type != 'daily_summary'"
     db = get_db()
     rows = db.execute(
         "WITH recent AS ("
         "  SELECT id, type, title, body, format, created_at, read_at "
-        "  FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT ?"
+        f"  FROM notifications WHERE user_id = ? {digest_filter} ORDER BY id DESC LIMIT ?"
         "), unread AS ("
         "  SELECT id, type, title, body, format, created_at, read_at "
-        "  FROM notifications WHERE user_id = ? AND read_at IS NULL "
+        f"  FROM notifications WHERE user_id = ? AND read_at IS NULL {digest_filter} "
         "  ORDER BY id DESC LIMIT ?"
         ") "
         "SELECT * FROM recent UNION SELECT * FROM unread ORDER BY id DESC",
@@ -1756,11 +1357,9 @@ def list_notifications(user_id: int, limit: int = 100) -> list[dict]:
 
 
 def count_unread_notifications(user_id: int) -> int:
-    db = get_db()
-    row = db.execute(
-        "SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read_at IS NULL",
-        (user_id,),
-    ).fetchone()
+    from ai_access import daily_enabled
+    condition = "" if daily_enabled(user_id) else " AND type != 'daily_summary'"
+    row = get_db().execute("SELECT COUNT(*) FROM notifications WHERE user_id=? AND read_at IS NULL" + condition, (user_id,)).fetchone()
     return int(row[0])
 
 

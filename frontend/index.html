@@ -519,6 +519,20 @@ body.body-scroll-lock{overflow:hidden!important}
 .ai-hint{font-size:11px;color:var(--text-3);margin-top:4px}
 .ai-toggle{display:flex;align-items:center;gap:10px;margin-top:14px;padding:12px 16px;background:var(--bg);border-radius:10px;cursor:pointer}
 .ai-toggle input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent);cursor:pointer}
+
+.ai-feature-row{justify-content:space-between;gap:12px;cursor:default}
+.ai-feature-copy{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0}
+.ai-grant-state{display:inline-block;font-size:11px;font-weight:500;white-space:nowrap}
+.ai-grant-state[data-authorized="false"]{color:#f0a1ad}
+.ai-grant-state[data-authorized="true"]{color:#98d4af}
+html[data-theme="light"] .ai-grant-state[data-authorized="false"]{color:#c66c7a}
+html[data-theme="light"] .ai-grant-state[data-authorized="true"]{color:#509b72}
+.ai-feature-switch{flex-shrink:0;min-width:74px;padding:7px 12px;border:1px solid var(--border-hover);border-radius:999px;background:var(--bg-card);color:var(--text-2);font:600 12px var(--font);cursor:pointer;transition:background .15s,border-color .15s,color .15s}
+.ai-feature-switch[aria-pressed="true"]{background:var(--accent-dim);border-color:var(--accent);color:var(--accent)}
+.ai-feature-switch:hover{border-color:var(--accent)}
+.ai-feature-switch:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.ai-feature-switch:disabled{opacity:.6;cursor:wait}
+
 .ai-toggle span{font-size:13px;font-weight:600;color:var(--text)}
 .ai-save-btn{width:100%;padding:10px;margin-top:16px;border:none;border-radius:10px;background:var(--accent);color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font);transition:opacity 0.15s}
 .ai-save-btn:hover{opacity:0.85}
@@ -545,6 +559,7 @@ body.body-scroll-lock{overflow:hidden!important}
 .ai-hidden{display:none}
 
 /* ═══ Settings Tabs ══════════════════════════════════════ */
+.settings-tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px;border-bottom:1px solid var(--border)}
 .settings-tab{padding:8px 16px;border:none;background:none;color:var(--text-3);font-size:13px;font-weight:600;cursor:pointer;font-family:var(--font);border-bottom:2px solid transparent;margin-bottom:-1px;transition:all 0.15s}
 .settings-tab:hover{color:var(--text)}
 .settings-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
@@ -595,6 +610,66 @@ body.body-scroll-lock{overflow:hidden!important}
   .admin-stat-ring{width:64px;height:64px}
   .admin-stat-ring::before{width:52px;height:52px}
 }
+
+/* ═══ TTS Player ═════════════════════════════════ */
+/* TTS follows the reader's shared dark/light tokens. */
+.tts-speaker{display:inline-flex;align-items:center;justify-content:center;width:32px;padding:6px!important;color:var(--text-2)}
+.tts-speaker svg,.tts-icon{display:block;width:20px;height:20px;flex-shrink:0}
+.tts-speaker.active{color:var(--accent);background:var(--accent-dim)}
+.tts-disc[hidden],.tts-overlay[hidden]{display:none!important}
+.tts-disc{position:fixed;right:24px;bottom:calc(24px + env(safe-area-inset-bottom,0px));z-index:570;width:60px;height:60px;padding:3px;border:0;border-radius:50%;background:conic-gradient(var(--accent) calc(var(--tts-progress,0)*1%),var(--border-hover) 0);box-shadow:0 5px 22px rgba(0,0,0,.28);cursor:pointer;color:#fff;touch-action:manipulation}
+.tts-record{display:block;width:54px;height:54px;padding:6px;border:2px solid #26262e;border-radius:50%;background:#111114}
+.tts-record img{display:block;width:100%;height:100%;object-fit:cover;border-radius:50%;animation:tts-spin 16s linear infinite;animation-play-state:paused}
+.tts-disc.playing .tts-record img{animation-play-state:running}
+.tts-disc-badge{position:absolute;right:-2px;bottom:-2px;display:flex;align-items:center;justify-content:center;width:23px;height:23px;border-radius:50%;background:var(--accent);border:2px solid var(--bg);color:#fff}
+.tts-disc-badge .tts-icon{width:12px;height:12px}
+.tts-disc.busy .tts-disc-badge{background:var(--bg-card)}
+.tts-spinner{display:inline-block;width:15px;height:15px;border:2px solid var(--border-hover);border-top-color:var(--accent);border-radius:50%;animation:tts-spin .85s linear infinite}
+body.tts-active .scroll-top-btn{bottom:calc(102px + env(safe-area-inset-bottom,0px))}
+.tts-overlay{position:fixed;inset:0;z-index:700;display:flex;align-items:flex-end;justify-content:center;background:rgba(0,0,0,.5);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px)}
+.tts-panel{position:relative;display:flex;flex-direction:column;align-items:center;width:min(100%,440px);max-height:calc(100dvh - env(safe-area-inset-top,0px) - 24px);overflow-y:auto;overscroll-behavior:contain;background:var(--bg-card);border:1px solid var(--border-hover);border-radius:22px 22px 0 0;padding:12px 28px calc(24px + env(safe-area-inset-bottom,0px));box-shadow:0 -12px 50px rgba(0,0,0,.15);animation:tts-rise .22s ease-out;scrollbar-width:thin}
+.tts-handle{width:36px;height:4px;flex-shrink:0;border-radius:4px;background:var(--text-3);margin:0 0 12px}
+.tts-panel-top{display:flex;align-items:center;justify-content:space-between;align-self:stretch;font-size:12px;color:var(--text-2);margin-bottom:14px;min-height:32px}
+.tts-plain{display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--text-2);cursor:pointer;font:inherit;min-width:44px;min-height:44px;border-radius:10px}
+.tts-plain:hover{color:var(--text);background:var(--bg-surface)}
+.tts-cover{display:block;width:min(220px,54vw);height:auto;aspect-ratio:1;object-fit:cover;border-radius:12px;background:var(--bg-surface);flex-shrink:0}
+.tts-title{font-size:20px;font-weight:700;line-height:1.45;letter-spacing:-.02em;text-align:center;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;margin:20px 0 6px;color:var(--text)}
+.tts-source{font-size:12px;line-height:1.5;text-align:center;color:var(--text-2)}
+.tts-status{min-height:20px;margin:10px 0 8px;font-size:12px;line-height:1.6;text-align:center;color:var(--text-2)}
+.tts-status.error{color:#df7785}
+.tts-seek-wrap{align-self:stretch;margin-top:4px}
+.tts-seek{width:100%;height:20px;margin:0;accent-color:var(--accent);cursor:pointer}
+.tts-seek{-webkit-appearance:none;appearance:none;background:transparent}
+.tts-seek::-webkit-slider-runnable-track{height:3px;border-radius:3px;background:linear-gradient(to right,var(--accent) var(--tts-seek-progress,0%),var(--border-hover) var(--tts-seek-progress,0%))}
+.tts-seek::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;margin-top:-5.5px;border:0;border-radius:50%;background:var(--accent)}
+.tts-seek::-moz-range-track{height:3px;border-radius:3px;background:var(--border-hover)}
+.tts-seek::-moz-range-progress{height:3px;background:var(--accent)}
+.tts-seek::-moz-range-thumb{width:14px;height:14px;border:0;border-radius:50%;background:var(--accent)}
+.tts-times{display:flex;justify-content:space-between;font-size:11px;font-variant-numeric:tabular-nums;color:var(--text-2)}
+.tts-controls{display:flex;align-items:center;justify-content:center;gap:36px;margin:20px 0 16px}
+.tts-controls .tts-icon{width:26px;height:26px}
+.tts-play{display:flex;align-items:center;justify-content:center;width:68px;height:68px;border:0;border-radius:50%;background:var(--accent);color:#fff;cursor:pointer}
+.tts-play .tts-icon{width:30px;height:30px}
+.tts-play:disabled,.tts-plain:disabled{opacity:.35;cursor:default}
+.tts-secondary{display:flex;align-items:center;justify-content:space-between;width:100%;border-top:1px solid var(--border);padding-top:10px;font-size:12px;gap:8px}
+.tts-speed{font:inherit;font-size:12px;color:var(--text-2);background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;min-height:36px;padding:4px 8px}
+.tts-retry{border:1px solid var(--border-hover);background:var(--accent-dim);color:var(--accent);border-radius:8px;padding:6px 16px;font:inherit;font-size:12px;cursor:pointer;margin-bottom:4px}
+.tts-panel button:focus-visible,.tts-disc:focus-visible,.tts-speaker:focus-visible,.tts-seek:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+.tts-config-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
+.tts-config-grid label{display:block;font-size:12px;color:var(--text-2);margin:12px 0 4px}
+.tts-config-wide{grid-column:1/-1}
+.tts-config-grid .ai-input{width:100%;box-sizing:border-box}
+.tts-config-actions{display:flex;gap:10px;margin-top:16px}
+.tts-config-actions .ai-save-btn{margin:0;width:auto;padding:9px 16px}
+.tts-config-status{font-size:12px;line-height:1.7;margin-top:12px;color:var(--text-2);overflow-wrap:anywhere}
+.tts-secret-clear{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2);margin-top:6px}
+@keyframes tts-spin{to{transform:rotate(360deg)}}
+@keyframes tts-rise{from{transform:translateY(24px);opacity:0}to{transform:translateY(0);opacity:1}}
+@media(min-width:769px){.tts-overlay{align-items:center}.tts-panel{border-radius:22px;padding-bottom:24px;max-height:calc(100dvh - 48px)}}
+@media(max-width:768px){.tts-disc{right:14px;bottom:calc(18px + env(safe-area-inset-bottom,0px))}.tts-title{font-size:19px}.tts-controls{margin:16px 0}.tts-panel{padding-left:24px;padding-right:24px}}
+@media(max-height:700px){.tts-cover{width:min(160px,35vw)}.tts-title{font-size:17px;margin-top:12px}.tts-status{margin-top:6px}.tts-controls{margin:10px 0}.tts-panel-top{margin-bottom:6px}}
+@media(prefers-reduced-motion:reduce){.tts-record img,.tts-panel{animation:none}.tts-spinner{animation:none}}
+
 </style>
 </head>
 <body>
@@ -715,190 +790,142 @@ body.body-scroll-lock{overflow:hidden!important}
 <!-- ═══ Admin Settings Panel ═══════════════════════════════ -->
 <div class="ai-overlay" id="adminSettingsOverlay">
   <div class="ai-backdrop" onclick="closeAdminSettings()" style="position:absolute;inset:0"></div>
-  <div class="ai-panel">
-    <div class="ai-header">
-      <h2>🛠️ 管理员设置</h2>
-      <button class="ai-close" onclick="closeAdminSettings()">✕</button>
-    </div>
-    <div class="ai-body" id="adminSettingsBody">
-      <!-- Tabs -->
-      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:0">
-        <button class="admin-settings-tab active" data-admin-tab="users" onclick="switchAdminTab('users')">用户管理</button>
-        <button class="admin-settings-tab" data-admin-tab="summary" onclick="switchAdminTab('summary')">摘要</button>
-        <button class="admin-settings-tab" data-admin-tab="sources" onclick="switchAdminTab('sources')">订阅源</button>
-        <button class="admin-settings-tab" data-admin-tab="translate" onclick="switchAdminTab('translate')">翻译</button>
-        <button class="admin-settings-tab" data-admin-tab="systemapi" onclick="switchAdminTab('systemapi')">服务端API</button>
-        <button class="admin-settings-tab" data-admin-tab="notify" onclick="switchAdminTab('notify')">通知</button>
-        <button class="admin-settings-tab" data-admin-tab="server" onclick="switchAdminTab('server')">资源占用</button>
-      </div>
-      <div id="adminSettingsStatus" class="settings-toast" role="status" aria-live="polite"></div>
-
-      <!-- Users Tab -->
-      <div id="adminTabUsers">
-        <div class="admin-body" id="adminBody">
-          <div class="admin-loading">加载中...</div>
-        </div>
-      </div>
-
-      <!-- Summary Tab -->
-      <div id="adminTabSummary" style="display:none">
-        <div class="ai-toggle" onclick="document.getElementById('autoSummaryEnabled').click()">
-          <input type="checkbox" id="autoSummaryEnabled" onclick="event.stopPropagation()">
-          <span>📝 自动生成文章摘要</span>
-        </div>
-        <p class="ai-hint" style="margin-top:8px">开启后，系统会用下方"服务端API"配置的系统 Key，在后台小批量为新文章生成摘要，结果对所有用户共享。</p>
-
-        <div class="ai-toggle" onclick="document.getElementById('autoTitleSummaryEnabled').click()" style="margin-top:12px">
-          <input type="checkbox" id="autoTitleSummaryEnabled" onclick="event.stopPropagation()">
-          <span>🏷️ 自动简写过长文章标题</span>
-        </div>
-        <p class="ai-hint" style="margin-top:8px">开启后，抓取到当天标题超过 30 个中文字符的文章时，会在后台用系统 API 简写标题，结果对所有用户共享。</p>
-
-        <button class="ai-save-btn" onclick="saveSummarySettings()" style="margin-top:16px">保存摘要设置</button>
-      </div>
-
-      <!-- Sources Tab -->
-      <div id="adminTabSources" style="display:none">
-        <div class="source-step">
-          <div class="source-step-title">1. 识别文章来源标签</div>
-          <p class="ai-hint">根据文章底部链接或纯文本 via 识别待分类来源；已手工或批量分类的历史文章保持原分类，并为新文章提供匹配依据。</p>
-          <div class="source-step-actions source-admin-only">
-            <button class="ai-save-btn" id="sourceRedetectBtn" onclick="redetectArticleSources()" style="margin:0;width:auto;padding:8px 12px">重新识别来源</button>
-          </div>
-        </div>
-        <div class="source-step">
-          <div class="source-step-title">2. 订阅源分类与合并</div>
-          <p class="ai-hint">媒体来源由域名和明确署名识别。AI 只为来源建议分类，高置信度结果自动应用；人工设置优先。</p>
-          <div class="source-step-actions source-admin-only">
-            <button class="ai-save-btn" onclick="classifySources(false)" style="margin:0;width:auto;padding:8px 12px">AI处理待分类</button>
-            <button class="ai-save-btn" onclick="classifySourcesAll(false)" style="margin:0;width:auto;padding:8px 12px">后台处理全部</button>
-            <button class="ai-save-btn" onclick="classifySources(true)" style="margin:0;width:auto;padding:8px 12px;background:var(--bg-card);color:var(--text);border:1px solid var(--border)">重新分类非手动来源</button>
-          </div>
-        </div>
-        <div class="source-step">
-          <div class="source-step-title">分类模板</div>
-          <p class="ai-hint">分类配置保存在本实例数据库中。新增、改名、排序或停用分类不会改变媒体来源身份。</p>
-          <div id="sourceCategoryDefinitions"></div>
-          <button class="ai-save-btn source-admin-only" onclick="addSourceCategory()" style="margin-top:8px;width:auto;padding:7px 10px">新增分类</button>
-        </div>
-        <div class="source-step">
-          <div class="source-step-title">媒体域名映射</div>
-          <p class="ai-hint">域名用于识别媒体身份，不绑定分类；未知域名会先按完整根域名归组。</p>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">
-            <input class="ai-input" id="publisherDomainInput" placeholder="例如 news.example.com" style="flex:1;min-width:160px">
-            <input class="ai-input" id="publisherNameInput" placeholder="规范媒体名" style="flex:1;min-width:140px">
-            <button class="ai-save-btn source-admin-only" onclick="savePublisherDomainFromForm()" style="width:auto;padding:7px 10px">保存域名</button>
-          </div>
-          <div id="publisherDomainList"></div>
-        </div>
-        <div id="sourceManagerStatus" class="ai-hint" style="margin-bottom:8px"></div>
-        <input class="ai-input" id="sourceSearchInput" type="text" placeholder="🔍 搜索订阅源..." oninput="renderSourceManager(sourceRows)" style="margin-bottom:8px">
-        <div class="source-manager" id="sourceManagerList">
-          <div class="fav-empty">加载中...</div>
-        </div>
-      </div>
-
-      <!-- Translate Tab -->
-      <div id="adminTabTranslate" style="display:none">
-        <div class="ai-toggle" onclick="document.getElementById('autoTranslateTitle').click()">
-          <input type="checkbox" id="autoTranslateTitle" onclick="event.stopPropagation()">
-          <span>🌐 自动翻译标题</span>
-        </div>
-
-        <div class="ai-toggle" onclick="document.getElementById('autoTranslateContent').click()" style="margin-top:8px">
-          <input type="checkbox" id="autoTranslateContent" onclick="event.stopPropagation()">
-          <span>📄 自动翻译内容</span>
-        </div>
-        <p class="ai-hint" style="margin-top:8px">开启后，系统会用系统 API 在后台小批量翻译英文标题或正文，结果对所有用户共享。</p>
-
-        <button class="ai-save-btn" onclick="saveGeneralSettings()" style="margin-top:16px">保存翻译设置</button>
-      </div>
-
-      <!-- System API Tab -->
-      <div id="adminTabSystemapi" style="display:none">
-        <label class="ai-label">API 格式</label>
-        <select class="ai-select" id="sysAiProviderType">
-          <option value="openai">OpenAI 兼容格式</option>
-          <option value="claude">Claude/Anthropic 格式</option>
-        </select>
-        <p class="ai-hint">DeepSeek/Ollama 选 OpenAI；Anthropic 选 Claude</p>
-
-        <label class="ai-label">API 端点</label>
-        <input class="ai-input" id="sysAiEndpoint" placeholder="https://api.openai.com/v1">
-
-        <label class="ai-label">API Key</label>
-        <input class="ai-input" id="sysAiApiKey" type="password" placeholder="sk-..." autocomplete="off">
-
-        <label class="ai-label">模型</label>
-        <input class="ai-input" id="sysAiModel" placeholder="gpt-4o-mini / deepseek-chat">
-
-        <label class="ai-label">服务商名称</label>
-        <input class="ai-input" id="sysAiProvider" placeholder="DeepSeek">
-
-        <div class="ai-toggle" onclick="document.getElementById('sysAiEnabled').click()">
-          <input type="checkbox" id="sysAiEnabled" onclick="event.stopPropagation()">
-          <span>启用系统 AI</span>
-        </div>
-
-        <button class="ai-save-btn" onclick="saveSystemAiConfig()">💾 保存服务端API配置</button>
-        <p class="ai-hint" style="margin:6px 0 0;text-align:center;font-size:11px;color:var(--text-3)">💡 修改配置后请先保存，再点击下方测试</p>
-        <button class="ai-save-btn" onclick="testSystemAiConnection()" style="margin-top:10px;background:var(--bg-card);color:var(--text);border:1px solid var(--border)">🔌 测试 API 连接</button>
-        <p class="ai-hint" style="margin-top:8px">此 Key 仅供后台自动摘要/自动翻译使用，与每个用户在"用户设置→AI"中配置的个人 Key 互相独立。</p>
-      </div>
-
-      <!-- Notification Publish Tab -->
-      <div id="adminTabNotify" style="display:none">
-        <label class="ai-label">标题</label>
-        <input class="ai-input" id="notifPubTitle" maxlength="200" placeholder="通知标题" oninput="renderNotifPreview()">
-
-        <label class="ai-label">格式</label>
-        <select class="ai-select" id="notifPubFormat" onchange="renderNotifPreview()">
-          <option value="markdown">Markdown</option>
-          <option value="plain">纯文本</option>
-        </select>
-
-        <label class="ai-label">正文</label>
-        <textarea class="ai-textarea" id="notifPubBody" rows="8" placeholder="支持 Markdown 排版；插入外链图片用 ![说明](https://图片地址)" oninput="renderNotifPreview()"></textarea>
-        <p class="ai-hint">Markdown 模式支持标题/加粗/斜体/列表/链接/行内代码及外链图片 <code>![](url)</code>（图片经服务器缓存代理）；纯文本模式原样显示。</p>
-
-        <div class="ai-toggle" onclick="document.getElementById('notifPubEmail').click()">
-          <input type="checkbox" id="notifPubEmail" onclick="event.stopPropagation()">
-          <span>同时邮件推送给所有用户</span>
-        </div>
-        <p class="ai-hint" style="margin-top:6px">勾选后除站内通知外，会给每个设置了邮箱的用户各发一封邮件（后台发送，未配置发信服务时自动跳过）。Markdown 模式会在邮件中同步保留文字排版和图片（图片经服务器缓存代理）；纯文本模式仍按输入内容原样显示。</p>
-
-        <label class="ai-label" style="margin-top:14px">预览</label>
-        <div id="notifPubPreview" class="notif-detail-body notif-markdown" style="border:1px solid var(--border);border-radius:10px;padding:12px;min-height:48px;background:var(--bg-surface)"></div>
-
-        <button class="ai-save-btn" onclick="publishBroadcast()" style="margin-top:16px">📣 发布通知</button>
-        <p class="ai-hint" style="margin-top:8px">发布后立即推送到全部用户（含你自己）的「我的通知」。</p>
-      </div>
-
-      <!-- Server Tab -->
-      <div id="adminTabServer" style="display:none">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-          <div class="source-step-title" style="margin:0">📊 服务器统计</div>
-        </div>
-        <div id="serverStatsBody">
-          <div class="admin-loading">加载中...</div>
-        </div>
-
-        <div class="source-step" style="margin-top:20px">
-          <div class="source-step-title">🗑️ 清理历史文章</div>
-          <p class="ai-hint">删除所选日期<strong>及之前</strong>的所有历史文章，连同其图片缓存一并删除。<strong>已被任何用户收藏的文章会被自动排除</strong>，不会删除。此操作不可撤销。</p>
-          <div class="source-step-actions source-admin-only" style="align-items:center">
-            <input class="ai-input" type="text" id="purgeBeforeDate" placeholder="YYYY/MM/DD" inputmode="numeric" pattern="\d{4}/\d{2}/\d{2}" style="width:auto;margin:0">
-            <button class="ai-save-btn" type="button" id="purgeDatePickerBtn" onclick="openPurgeDatePicker()" title="选择日期" style="margin:0;width:auto;padding:8px 10px;background:var(--bg-card);color:var(--text);border:1px solid var(--border)">📅</button>
-            <input type="date" id="purgeDatePicker" aria-hidden="true" tabindex="-1" onchange="applyPurgeDatePicker()" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none">
-            <button class="ai-save-btn" id="purgePreviewBtn" onclick="previewPurge()" style="margin:0;width:auto;padding:8px 12px">预览</button>
-            <button class="ai-save-btn" id="purgeConfirmBtn" onclick="confirmPurge()" disabled style="margin:0;width:auto;padding:8px 12px;background:rgba(239,68,68,0.12);color:#ef4444;border:1px solid rgba(239,68,68,0.3)">确认删除</button>
-          </div>
-          <div id="purgeStatus" class="ai-hint" style="margin-top:8px"></div>
-        </div>
-      </div>
-    </div>
-  </div>
+  <div class="ai-panel"><div class="ai-header"><h2>🛠️ 管理员设置</h2><button class="ai-close" onclick="closeAdminSettings()">✕</button></div>
+  <div class="ai-body" id="adminSettingsBody"><div class="settings-tabs"><button class="admin-settings-tab active" data-admin-tab="users" onclick="switchAdminTab('users')">用户管理</button><button class="admin-settings-tab" data-admin-tab="ai" onclick="switchAdminTab('ai')">AI 服务</button><button class="admin-settings-tab" data-admin-tab="sources" onclick="switchAdminTab('sources')">订阅源</button><button class="admin-settings-tab" data-admin-tab="notify" onclick="switchAdminTab('notify')">通知发布</button><button class="admin-settings-tab" data-admin-tab="server" onclick="switchAdminTab('server')">系统维护</button></div>
+  <div id="adminSettingsStatus" class="settings-toast" role="status" aria-live="polite"></div>
+  <div id="adminTabUsers">
+<div class="admin-body" id="adminBody">
+<div class="admin-loading">加载中...</div>
 </div>
+</div>
+  <div id="adminTabAi" style="display:none"><div class="settings-tabs"><button class="settings-tab" data-ai-admin-tab="systemapi" onclick="switchAdminAiTab('systemapi')">接口配置</button><button class="settings-tab" data-ai-admin-tab="summary" onclick="switchAdminAiTab('summary')">摘要</button><button class="settings-tab" data-ai-admin-tab="translate" onclick="switchAdminAiTab('translate')">翻译</button><button class="settings-tab" data-ai-admin-tab="title" onclick="switchAdminAiTab('title')">标题简写</button><button class="settings-tab" data-ai-admin-tab="digest" onclick="switchAdminAiTab('digest')">每日总结</button><button class="settings-tab" data-ai-admin-tab="tts" onclick="switchAdminAiTab('tts')">语音阅读</button></div><div id="adminTabSystemapi" style="display:none">
+<label class="ai-label">API 格式</label>
+<select class="ai-select" id="sysAiProviderType">
+<option value="openai">OpenAI 兼容格式</option>
+<option value="claude">Claude/Anthropic 格式</option>
+</select>
+<p class="ai-hint">DeepSeek/Ollama 选 OpenAI；Anthropic 选 Claude</p>
+<label class="ai-label">API 端点</label>
+<input class="ai-input" id="sysAiEndpoint" placeholder="https://api.openai.com/v1"/>
+<label class="ai-label">API Key</label>
+<input autocomplete="off" class="ai-input" id="sysAiApiKey" placeholder="sk-..." type="password"/>
+<label class="ai-label">模型</label>
+<input class="ai-input" id="sysAiModel" placeholder="gpt-4o-mini / deepseek-chat"/>
+<label class="ai-label">服务商名称</label>
+<input class="ai-input" id="sysAiProvider" placeholder="DeepSeek"/>
+<div class="ai-toggle" onclick="document.getElementById('sysAiEnabled').click()">
+<input id="sysAiEnabled" onclick="event.stopPropagation()" type="checkbox"/>
+<span>启用系统 AI</span>
+</div>
+<button class="ai-save-btn" onclick="saveSystemAiConfig()">💾 保存接口配置</button>
+<p class="ai-hint" style="margin:6px 0 0;text-align:center;font-size:11px;color:var(--text-3)">💡 修改配置后请先保存，再点击下方测试</p>
+<button class="ai-save-btn" onclick="testSystemAiConnection()" style="margin-top:10px;background:var(--bg-card);color:var(--text);border:1px solid var(--border)">🔌 测试 API 连接</button>
+<p class="ai-hint" style="margin-top:8px">此 Key 仅在服务端使用，供摘要、翻译、标题简写、每日总结和来源分类使用，不会发送给普通用户。</p>
+</div><div id="adminTabSummary" style="display:none">
+<div class="ai-toggle" onclick="document.getElementById('autoSummaryEnabled').click()">
+<input id="autoSummaryEnabled" onclick="event.stopPropagation()" type="checkbox"/>
+<span>📝 自动生成文章摘要</span>
+</div>
+<p class="ai-hint" style="margin-top:8px">开启后，系统会用“接口配置”配置的系统 Key，在后台小批量为新文章生成摘要，结果供已授权的用户查看。</p>
+
+
+<button class="ai-save-btn" onclick="saveSummarySettings()" style="margin-top:16px">保存摘要设置</button>
+</div><div id="adminTabTranslate" style="display:none">
+<div class="ai-toggle" onclick="document.getElementById('autoTranslateTitle').click()">
+<input id="autoTranslateTitle" onclick="event.stopPropagation()" type="checkbox"/>
+<span>🌐 自动翻译标题</span>
+</div>
+<div class="ai-toggle" onclick="document.getElementById('autoTranslateContent').click()" style="margin-top:8px">
+<input id="autoTranslateContent" onclick="event.stopPropagation()" type="checkbox"/>
+<span>📄 自动翻译内容</span>
+</div>
+<p class="ai-hint" style="margin-top:8px">开启后，系统会用系统 API 在后台小批量翻译英文标题或正文，结果供已授权的用户查看。</p>
+<button class="ai-save-btn" onclick="saveGeneralSettings()" style="margin-top:16px">保存翻译设置</button>
+</div><div id="adminTabTitle" style="display:none"><div class="ai-toggle" onclick="document.getElementById('autoTitleSummaryEnabled').click()" style="margin-top:12px">
+<input id="autoTitleSummaryEnabled" onclick="event.stopPropagation()" type="checkbox"/>
+<span>🏷️ 自动简写过长文章标题</span>
+</div><p class="ai-hint" style="margin-top:8px">开启后，抓取到当天标题超过 30 个中文字符的文章时，会在后台用系统 API 简写标题，结果供已授权的用户查看。</p><button class="ai-save-btn" onclick="saveSummarySettings()">保存标题简写设置</button></div>
+<div id="adminTabDigest" style="display:none"><p class="ai-hint">每日总结由服务器按现有计划统一生成，默认北京时间 21:00。失败自动重试，管理员可在每日总结面板查看失败状态并重试。用户需获得每日总结权限并开启功能，才能查看或接收推送。</p></div>
+<div id="adminTabTts" style="display:none"></div></div>
+  <div id="adminTabSources" style="display:none">
+<div class="source-step">
+<div class="source-step-title">1. 识别文章来源标签</div>
+<p class="ai-hint">根据文章底部链接或纯文本 via 识别待分类来源；已手工或批量分类的历史文章保持原分类，并为新文章提供匹配依据。</p>
+<div class="source-step-actions source-admin-only">
+<button class="ai-save-btn" id="sourceRedetectBtn" onclick="redetectArticleSources()" style="margin:0;width:auto;padding:8px 12px">重新识别来源</button>
+</div>
+</div>
+<div class="source-step">
+<div class="source-step-title">2. 订阅源分类与合并</div>
+<p class="ai-hint">媒体来源由域名和明确署名识别。AI 只为来源建议分类，高置信度结果自动应用；人工设置优先。</p>
+<div class="source-step-actions source-admin-only">
+<button class="ai-save-btn" onclick="classifySources(false)" style="margin:0;width:auto;padding:8px 12px">AI处理待分类</button>
+<button class="ai-save-btn" onclick="classifySourcesAll(false)" style="margin:0;width:auto;padding:8px 12px">后台处理全部</button>
+<button class="ai-save-btn" onclick="classifySources(true)" style="margin:0;width:auto;padding:8px 12px;background:var(--bg-card);color:var(--text);border:1px solid var(--border)">重新分类非手动来源</button>
+</div>
+</div>
+<div class="source-step">
+<div class="source-step-title">分类模板</div>
+<p class="ai-hint">分类配置保存在本实例数据库中。新增、改名、排序或停用分类不会改变媒体来源身份。</p>
+<div id="sourceCategoryDefinitions"></div>
+<button class="ai-save-btn source-admin-only" onclick="addSourceCategory()" style="margin-top:8px;width:auto;padding:7px 10px">新增分类</button>
+</div>
+<div class="source-step">
+<div class="source-step-title">媒体域名映射</div>
+<p class="ai-hint">域名用于识别媒体身份，不绑定分类；未知域名会先按完整根域名归组。</p>
+<div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">
+<input class="ai-input" id="publisherDomainInput" placeholder="例如 news.example.com" style="flex:1;min-width:160px"/>
+<input class="ai-input" id="publisherNameInput" placeholder="规范媒体名" style="flex:1;min-width:140px"/>
+<button class="ai-save-btn source-admin-only" onclick="savePublisherDomainFromForm()" style="width:auto;padding:7px 10px">保存域名</button>
+</div>
+<div id="publisherDomainList"></div>
+</div>
+<div class="ai-hint" id="sourceManagerStatus" style="margin-bottom:8px"></div>
+<input class="ai-input" id="sourceSearchInput" oninput="renderSourceManager(sourceRows)" placeholder="🔍 搜索订阅源..." style="margin-bottom:8px" type="text"/>
+<div class="source-manager" id="sourceManagerList">
+<div class="fav-empty">加载中...</div>
+</div>
+</div><div id="adminTabNotify" style="display:none">
+<label class="ai-label">标题</label>
+<input class="ai-input" id="notifPubTitle" maxlength="200" oninput="renderNotifPreview()" placeholder="通知标题"/>
+<label class="ai-label">格式</label>
+<select class="ai-select" id="notifPubFormat" onchange="renderNotifPreview()">
+<option value="markdown">Markdown</option>
+<option value="plain">纯文本</option>
+</select>
+<label class="ai-label">正文</label>
+<textarea class="ai-textarea" id="notifPubBody" oninput="renderNotifPreview()" placeholder="支持 Markdown 排版；插入外链图片用 ![说明](https://图片地址)" rows="8"></textarea>
+<p class="ai-hint">Markdown 模式支持标题/加粗/斜体/列表/链接/行内代码及外链图片 <code>![](url)</code>（图片经服务器缓存代理）；纯文本模式原样显示。</p>
+<div class="ai-toggle" onclick="document.getElementById('notifPubEmail').click()">
+<input id="notifPubEmail" onclick="event.stopPropagation()" type="checkbox"/>
+<span>同时邮件推送给所有用户</span>
+</div>
+<p class="ai-hint" style="margin-top:6px">勾选后除站内通知外，会给每个设置了邮箱的用户各发一封邮件（后台发送，未配置发信服务时自动跳过）。Markdown 模式会在邮件中同步保留文字排版和图片（图片经服务器缓存代理）；纯文本模式仍按输入内容原样显示。</p>
+<label class="ai-label" style="margin-top:14px">预览</label>
+<div class="notif-detail-body notif-markdown" id="notifPubPreview" style="border:1px solid var(--border);border-radius:10px;padding:12px;min-height:48px;background:var(--bg-surface)"></div>
+<button class="ai-save-btn" onclick="publishBroadcast()" style="margin-top:16px">📣 发布通知</button>
+<p class="ai-hint" style="margin-top:8px">发布后立即推送到全部用户（含你自己）的「我的通知」。</p>
+</div><div id="adminTabServer" style="display:none">
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+<div class="source-step-title" style="margin:0">📊 服务器统计</div>
+</div>
+<div id="serverStatsBody">
+<div class="admin-loading">加载中...</div>
+</div>
+<div class="source-step" style="margin-top:20px">
+<div class="source-step-title">🗑️ 清理历史文章</div>
+<p class="ai-hint">删除所选日期<strong>及之前</strong>的所有历史文章，连同其图片缓存一并删除。<strong>已被任何用户收藏的文章会被自动排除</strong>，不会删除。此操作不可撤销。</p>
+<div class="source-step-actions source-admin-only" style="align-items:center">
+<input class="ai-input" id="purgeBeforeDate" inputmode="numeric" pattern="\d{4}/\d{2}/\d{2}" placeholder="YYYY/MM/DD" style="width:auto;margin:0" type="text"/>
+<button class="ai-save-btn" id="purgeDatePickerBtn" onclick="openPurgeDatePicker()" style="margin:0;width:auto;padding:8px 10px;background:var(--bg-card);color:var(--text);border:1px solid var(--border)" title="选择日期" type="button">📅</button>
+<input aria-hidden="true" id="purgeDatePicker" onchange="applyPurgeDatePicker()" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none" tabindex="-1" type="date"/>
+<button class="ai-save-btn" id="purgePreviewBtn" onclick="previewPurge()" style="margin:0;width:auto;padding:8px 12px">预览</button>
+<button class="ai-save-btn" disabled="" id="purgeConfirmBtn" onclick="confirmPurge()" style="margin:0;width:auto;padding:8px 12px;background:rgba(239,68,68,0.12);color:#ef4444;border:1px solid rgba(239,68,68,0.3)">确认删除</button>
+</div>
+<div class="ai-hint" id="purgeStatus" style="margin-top:8px"></div>
+</div>
+</div>
+  </div></div></div>
 
 <input type="file" id="avatarInput" accept="image/jpeg,image/png,image/gif,image/webp" style="display:none">
 
@@ -963,79 +990,38 @@ body.body-scroll-lock{overflow:hidden!important}
       <button class="ai-close" onclick="closeAISettings()">✕</button>
     </div>
     <div class="ai-body" id="settingsBody">
-      <!-- Tabs -->
-      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:0">
-        <button class="settings-tab active" data-tab="account" onclick="switchSettingsTab('account')">账号</button>
-        <button class="settings-tab" data-tab="ai" onclick="switchSettingsTab('ai')">AI</button>
-        <button class="settings-tab" data-tab="share" onclick="switchSettingsTab('share')">共享</button>
-        <button class="settings-tab" data-tab="notify" onclick="switchSettingsTab('notify')">通知</button>
-        <button class="settings-tab" data-tab="theme" onclick="switchSettingsTab('theme')">主题</button>
-      </div>
-      <div id="settingsStatus" class="settings-toast" role="status" aria-live="polite"></div>
-
-      <!-- AI Tab -->
-      <div id="settingsTabAi">
-        <label class="ai-label">API 格式</label>
-        <select class="ai-select" id="aiProviderType">
-          <option value="openai">OpenAI 兼容格式</option>
-          <option value="claude">Claude/Anthropic 格式</option>
-        </select>
-        <p class="ai-hint">DeepSeek/Ollama 选 OpenAI；Anthropic 选 Claude</p>
-
-        <label class="ai-label">API 端点</label>
-        <input class="ai-input" id="aiEndpoint" placeholder="https://api.openai.com/v1">
-        <p class="ai-hint">例如：https://api.deepseek.com</p>
-
-        <label class="ai-label">API Key</label>
-        <input class="ai-input" id="aiApiKey" type="password" placeholder="sk-..." autocomplete="off" disabled>
-
-        <label class="ai-label">模型</label>
-        <input class="ai-input" id="aiModel" placeholder="gpt-4o-mini / deepseek-chat">
-
-        <label class="ai-label">服务商名称</label>
-        <input class="ai-input" id="aiProvider" placeholder="DeepSeek">
-
-        <div class="ai-toggle" onclick="document.getElementById('aiEnabled').click()">
-          <input type="checkbox" id="aiEnabled" onclick="event.stopPropagation()">
-          <span>启用 AI 功能</span>
-        </div>
-
-        <button class="ai-save-btn" onclick="saveAIConfig()">💾 保存 AI 配置</button>
-        <p class="ai-hint" style="margin:6px 0 0;text-align:center;font-size:11px;color:var(--text-3)">💡 修改配置后请先保存，再点击下方测试</p>
-        <button class="ai-save-btn" onclick="testAIConnection()" style="margin-top:10px;background:var(--bg-card);color:var(--text);border:1px solid var(--border)" id="testAiBtn">🔌 测试 API 连接</button>
-      </div>
-
-      <!-- Share Tab -->
-      <div id="settingsTabShare" style="display:none">
-        <div class="ai-toggle" onclick="document.getElementById('shareAiResults').click()">
-          <input type="checkbox" id="shareAiResults" onclick="event.stopPropagation()" onchange="updateShareSubToggleState()">
-          <span>共享 AI 结果</span>
-        </div>
-        <p class="ai-hint">人人为我，我为人人。开启共享的用户相互共享 AI 结果，并有权查看服务端 AI 结果。</p>
-
-        <div class="ai-toggle" onclick="document.getElementById('shareViewTitle').click()" style="margin-top:14px">
-          <input type="checkbox" id="shareViewTitle" onclick="event.stopPropagation()" disabled>
-          <span>查看服务端共享的标题翻译</span>
-        </div>
-        <div class="ai-toggle" onclick="document.getElementById('shareViewTranslation').click()">
-          <input type="checkbox" id="shareViewTranslation" onclick="event.stopPropagation()" disabled>
-          <span>查看服务端共享的文章翻译</span>
-        </div>
-        <div class="ai-toggle" onclick="document.getElementById('shareViewSummary').click()">
-          <input type="checkbox" id="shareViewSummary" onclick="event.stopPropagation()" disabled>
-          <span>查看服务端共享的文章摘要</span>
-        </div>
-        <p class="ai-hint" id="shareSubHint">需先开启共享 AI 结果</p>
-
-        <button class="ai-save-btn" onclick="saveShareConfig()" id="saveShareBtn" style="margin-top:10px">💾 保存共享设置</button>
-        <p class="ai-hint" id="shareCheckStatus" style="margin-top:10px;text-align:center"></p>
-        <p class="ai-hint" style="margin-top:2px;text-align:center;font-size:11px;color:var(--text-3)">系统会定期复测连通性，失败将自动取消共享资格。</p>
-      </div>
-
+<div class="settings-tabs"><button class="settings-tab active" data-tab="account" onclick="switchSettingsTab('account')">账号</button><button class="settings-tab" data-tab="notify" onclick="switchSettingsTab('notify')">通知</button><button class="settings-tab" data-tab="theme" onclick="switchSettingsTab('theme')">主题</button><button class="settings-tab" data-tab="ai" onclick="switchSettingsTab('ai')">AI 功能</button></div><div id="settingsStatus" class="settings-toast" role="status" aria-live="polite"></div>
+<div id="settingsTabAi" style="display:none">
+  <p class="ai-hint">AI 内容由服务端统一生成。管理员授予查看权限后，你可以选择显示哪些内容。</p>
+  <div class="ai-toggle ai-feature-row">
+    <span class="ai-feature-copy"><span id="view_summaryLabel">显示文章摘要</span><small id="view_summaryState" class="ai-grant-state"></small></span>
+    <button type="button" class="ai-feature-switch" id="view_summary" aria-pressed="false" aria-labelledby="view_summaryLabel view_summary" onclick="saveAIPreference('view_summary', 'summary', this)">已关闭</button>
+  </div>
+  <div class="ai-toggle ai-feature-row">
+    <span class="ai-feature-copy"><span id="view_title_shorteningLabel">显示简写标题</span><small id="view_title_shorteningState" class="ai-grant-state"></small></span>
+    <button type="button" class="ai-feature-switch" id="view_title_shortening" aria-pressed="false" aria-labelledby="view_title_shorteningLabel view_title_shortening" onclick="saveAIPreference('view_title_shortening', 'title_shortening', this)">已关闭</button>
+  </div>
+  <div class="ai-toggle ai-feature-row">
+    <span class="ai-feature-copy"><span id="view_title_translationLabel">显示标题翻译</span><small id="view_title_translationState" class="ai-grant-state"></small></span>
+    <button type="button" class="ai-feature-switch" id="view_title_translation" aria-pressed="false" aria-labelledby="view_title_translationLabel view_title_translation" onclick="saveAIPreference('view_title_translation', 'translation', this)">已关闭</button>
+  </div>
+  <div class="ai-toggle ai-feature-row">
+    <span class="ai-feature-copy"><span id="view_translationLabel">显示正文翻译</span><small id="view_translationState" class="ai-grant-state"></small></span>
+    <button type="button" class="ai-feature-switch" id="view_translation" aria-pressed="false" aria-labelledby="view_translationLabel view_translation" onclick="saveAIPreference('view_translation', 'translation', this)">已关闭</button>
+  </div>
+  <div class="ai-toggle ai-feature-row">
+    <span class="ai-feature-copy"><span id="view_daily_digestLabel">启用每日总结</span><small id="view_daily_digestState" class="ai-grant-state"></small></span>
+    <button type="button" class="ai-feature-switch" id="view_daily_digest" aria-pressed="false" aria-labelledby="view_daily_digestLabel view_daily_digest" onclick="saveAIPreference('view_daily_digest', 'daily_digest', this)">已关闭</button>
+  </div>
+  <div class="ai-toggle ai-feature-row">
+    <span class="ai-feature-copy"><span id="view_ttsLabel">启用语音阅读</span><small id="view_ttsState" class="ai-grant-state"></small></span>
+    <button type="button" class="ai-feature-switch" id="view_tts" aria-pressed="false" aria-labelledby="view_ttsLabel view_tts" onclick="saveAIPreference('view_tts', 'tts', this)">已关闭</button>
+  </div>
+</div>
       <!-- Notification Tab -->
       <div id="settingsTabNotify" style="display:none">
         <div id="dailySummaryPushSection">
-          <label class="ai-label">每日摘要推送</label>
+          <label class="ai-label">每日总结推送</label><p class="ai-hint" id="dailySummaryAccessHint"></p>
           <div class="ai-toggle" onclick="document.getElementById('dailySummaryInappToggle').click()">
             <input type="checkbox" id="dailySummaryInappToggle" onclick="event.stopPropagation()">
             <span>🔔 站内通知</span>
@@ -1052,7 +1038,7 @@ body.body-scroll-lock{overflow:hidden!important}
 
         <label class="ai-label" style="margin-top:14px">接收邮箱</label>
         <input class="ai-input" id="notifyToEmail" type="email" placeholder="you@example.com">
-        <p class="ai-hint">用于接收每日摘要和测试通知。发件人由服务端 RAYNEWS_FROM_EMAIL 配置。</p>
+        <p class="ai-hint">用于接收每日总结和测试通知。发件人由服务端 RAYNEWS_FROM_EMAIL 配置。</p>
 
         <button class="ai-save-btn" onclick="saveNotifyConfig()" style="margin-top:14px">保存通知配置</button>
         <button class="ai-save-btn" onclick="testNotification()" style="margin-top:8px;background:var(--bg-card);color:var(--text);border:1px solid var(--border)">📧 发送测试邮件</button>
@@ -1090,7 +1076,7 @@ body.body-scroll-lock{overflow:hidden!important}
   <div class="ai-backdrop" onclick="closeDailySummary()" style="position:absolute;inset:0"></div>
   <div class="ai-panel" style="width:600px">
     <div class="ai-header">
-      <h2>📊 每日摘要</h2>
+      <h2>📊 每日总结</h2>
       <button class="ai-close" onclick="closeDailySummary()">✕</button>
     </div>
     <!-- Placeholder only: renderDailySummaryBody() replaces this as soon as the
@@ -1098,7 +1084,7 @@ body.body-scroll-lock{overflow:hidden!important}
     <div class="ai-body" id="dailySummaryBody">
       <div style="text-align:center;padding:36px;color:var(--text-3)">
         <div style="font-size:20px;margin-bottom:10px">🕘</div>
-        <p>每日摘要将在北京时间每天晚 9 点（21:00）生成显示</p>
+        <p>每日总结将在北京时间每天晚 9 点（21:00）生成显示</p>
       </div>
     </div>
   </div>
@@ -1268,13 +1254,13 @@ function applyThemePreference(pref) {
 }
 
 // ═══ Auth State ══════════════════════════════════════════
-let sharedSessionGeneration = 0;
-let sharedAccessGeneration = 0;
-let sharedSettingsRequestSequence = 0;
-let sharedSettingsRetryTimer = null;
-let sharedSettingsRetryCount = 0;
-const sharedResultReads = new Map();
-const sharedResultVersions = new Map();
+let aiSessionGeneration = 0;
+let aiAccessGeneration = 0;
+let aiSettingsRequestSequence = 0;
+let aiSettingsRetryTimer = null;
+let aiSettingsRetryCount = 0;
+const aiResultReads = new Map();
+const aiResultVersions = new Map();
 let authToken = null;
 let authUser = null;
 let authMode = 'login'; // 'login' | 'register'
@@ -1293,19 +1279,19 @@ function loadAuth() {
 
 async function verifyToken() {
   if (!authToken) return;
-  const verificationSession = sharedSessionGeneration;
+  const verificationSession = aiSessionGeneration;
   const verificationToken = authToken;
   try {
     const resp = await fetch('/auth/me', {
       headers: { 'Authorization': 'Bearer ' + authToken },
     });
-    if (verificationSession !== sharedSessionGeneration || verificationToken !== authToken) return;
+    if (verificationSession !== aiSessionGeneration || verificationToken !== authToken) return;
     if (resp.status === 401) {
       logout();
     } else if (resp.ok) {
       // Update cached user data with fresh info from server
       const data = await resp.json();
-      if (verificationSession !== sharedSessionGeneration || verificationToken !== authToken) return;
+      if (verificationSession !== aiSessionGeneration || verificationToken !== authToken) return;
       const freshUser = data && (data.user || (data.id ? data : null));
       if (freshUser) {
         authUser = freshUser;
@@ -1315,7 +1301,6 @@ async function verifyToken() {
       // Load user settings for auto-translate decisions
       loadUserSettings();
       refreshNotifStatus();
-      syncDailySummaryToday();
     }
   } catch (e) {
     // Network error — keep existing auth state, user can re-try later
@@ -1482,14 +1467,14 @@ function compressImage(file, maxBytes) {
 }
 
 function saveAuth(token, user) {
-  clearTimeout(sharedSettingsRetryTimer);
-  sharedSettingsRetryTimer = null;
-  sharedSettingsRetryCount = 0;
+  clearTimeout(aiSettingsRetryTimer);
+  aiSettingsRetryTimer = null;
+  aiSettingsRetryCount = 0;
   userAutoSettings = null;
-  sharedSessionGeneration++;
-  clearAccountShareViews();
+  aiSessionGeneration++;
+  clearAccountAIViews();
   resetAIResultUpdates();
-  cancelSharedResultReads();
+  cancelAIResultReads();
   authToken = token;
   authUser = user;
   localStorage.setItem('raynews_token', token);
@@ -1499,25 +1484,29 @@ function saveAuth(token, user) {
 }
 
 function logout() {
-  clearTimeout(sharedSettingsRetryTimer);
-  sharedSettingsRetryTimer = null;
-  sharedSettingsRetryCount = 0;
-  sharedSessionGeneration++;
+  window.RayNewsTTS?.stop();
+  clearTimeout(aiSettingsRetryTimer);
+  aiSettingsRetryTimer = null;
+  aiSettingsRetryCount = 0;
+  aiSessionGeneration++;
   resetAIResultUpdates();
-  cancelSharedResultReads();
+  cancelAIResultReads();
   userAutoSettings = null;
-  clearAccountShareViews();
+  clearAccountAIViews();
   authToken = null;
   authUser = null;
   localStorage.removeItem('raynews_token');
   localStorage.removeItem('raynews_user');
   closeUserMenu();
-  // Drop per-account cached state: article bodies may hold shared AI results
-  // gated on the previous account's share_active/share_view_* flags, and
+  // Drop per-account cached state: article bodies may hold protected AI results
+  // gated on the previous account's access flags, and
   // userAutoSettings itself drives displayTitle() — neither may leak into the
   // next (possibly guest or different-user) session. seenArticleIds stays: it's
   // a session-lifetime dedup guard, not per-account data.
   userAutoSettings = null;
+  userStoredAISettings = {};
+  favoriteAIItems=[];
+  resetAITitleResults();
   Object.values(articleBodyControllers).forEach(controller => {
     try { controller.abort(); } catch (e) {}
   });
@@ -2495,7 +2484,6 @@ async function submitAuth() {
       showToast(authMode === 'login' ? '✅ 登录成功' : '✅ 注册成功');
       loadUserSettings();
       refreshNotifStatus();
-      syncDailySummaryToday();
       renderList();
       if (nextAction === 'search') openSearch();
     }
@@ -2585,10 +2573,6 @@ document.addEventListener('mousedown', e => {
 });
 
 // ═══ Settings (AI + Notification + General) ═════════════
-function setSettingsSensitiveInputsEnabled(enabled) {
-  const apiKey = document.getElementById('aiApiKey');
-  if (apiKey) apiKey.disabled = !enabled;
-}
 
 function openSettings() {
   if (isRestrictedUser()) { closeUserMenu(); return; }
@@ -2596,7 +2580,7 @@ function openSettings() {
   document.getElementById('aiOverlay').classList.add('open');
   lockBodyScroll();
   switchSettingsTab('account');
-  loadAIConfig();
+  loadUserSettings();
   loadNotifyConfig();
   loadThemeSettings();
   loadAccountTab();
@@ -2605,21 +2589,19 @@ function openSettings() {
 
 function closeAISettings() {
   document.getElementById('aiOverlay').classList.remove('open');
-  setSettingsSensitiveInputsEnabled(false);
   unlockBodyScroll();
 }
 
 function switchSettingsTab(tab) {
   document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
   document.querySelector('.settings-tab[data-tab="' + tab + '"]').classList.add('active');
-  ['account','ai','share','notify','theme'].forEach(t => {
+  ['account','notify','theme','ai'].forEach(t => {
     document.getElementById('settingsTab' + t.charAt(0).toUpperCase() + t.slice(1)).style.display = t === tab ? '' : 'none';
   });
-  setSettingsSensitiveInputsEnabled(tab === 'ai' && document.getElementById('aiOverlay').classList.contains('open'));
   // Load avatar preview when switching to account tab
   if (tab === 'account') loadAccountTab();
   if (tab === 'theme') loadThemeSettings();
-  if (tab === 'share') loadShareTab();
+  if (tab === 'ai') loadAIFunctions();
 }
 
 // ═══ Admin Settings (Users + Summary + Sources + Translate + System API) ═══
@@ -2639,19 +2621,24 @@ function closeAdminSettings() {
 
 function switchAdminTab(tab) {
   if (!authUser || authUser.role !== 'admin') return;
-  document.querySelectorAll('.admin-settings-tab').forEach(t => t.classList.remove('active'));
-  document.querySelector('.admin-settings-tab[data-admin-tab="' + tab + '"]').classList.add('active');
-  ['users','summary','sources','translate','systemapi','notify','server'].forEach(t => {
-    document.getElementById('adminTab' + t.charAt(0).toUpperCase() + t.slice(1)).style.display = t === tab ? '' : 'none';
+  document.querySelectorAll('.admin-settings-tab').forEach(t => t.classList.toggle('active', t.dataset.adminTab === tab));
+  ['users','ai','sources','notify','server'].forEach(t => {
+    document.getElementById('adminTab'+t.charAt(0).toUpperCase()+t.slice(1)).style.display = t === tab ? '' : 'none';
   });
   if (tab === 'users') loadAdminUsers();
-  if (tab === 'summary') loadSummarySettings();
+  if (tab === 'ai') { loadGenerationSettings(); switchAdminAiTab('systemapi'); }
   if (tab === 'sources') loadSourcesTab();
-  if (tab === 'translate') loadGeneralSettings();
-  if (tab === 'systemapi') loadSystemAiConfig();
   if (tab === 'notify') loadNotifyPublish();
-  if (tab === 'server') startServerStatsPolling();
-  else stopServerStatsPolling();
+  if (tab === 'server') startServerStatsPolling(); else stopServerStatsPolling();
+}
+
+function switchAdminAiTab(tab) {
+  document.querySelectorAll('[data-ai-admin-tab]').forEach(t => t.classList.toggle('active', t.dataset.aiAdminTab === tab));
+  ['systemapi','summary','translate','title','digest','tts'].forEach(t => {
+    document.getElementById('adminTab'+t.charAt(0).toUpperCase()+t.slice(1)).style.display = t === tab ? '' : 'none';
+  });
+  if (tab === 'systemapi') loadSystemAiConfig();
+  if (tab === 'tts') window.RayNewsTTS?.loadConfig();
 }
 
 // Identifies one publish attempt across a manual retry: minted lazily on the
@@ -3161,6 +3148,7 @@ function openSourceHistoryArticle(id) {
 }
 
 function renderSourceArticles(items) {
+  if (authToken && (userAutoSettings?.view_title_translation || userAutoSettings?.view_title_shortening)) queueMicrotask(()=>loadVisibleAITitles().catch(()=>{}));
   const body = document.getElementById('sourceArticlesBody');
   if (!items.length) {
     body.innerHTML = '<div class="fav-empty">暂无历史文章</div>';
@@ -3496,236 +3484,78 @@ async function redetectArticleSources() {
   }
 }
 
-// ─── AI Config ───────────────────────────────────────────
+for (const key of ['aiRelayOrigins','aiDirectOkOrigins']) { try { localStorage.removeItem(key); } catch (_) {} }
+let userStoredAISettings = {};
+const aiPreferences = {view_summary:'summary',view_title_shortening:'title_shortening',view_title_translation:'translation',view_translation:'translation',view_daily_digest:'daily_digest',view_tts:'tts'};
 
-async function loadAIConfig() {
-  try {
-    const data = await apiFetch('/ai/config');
-    if (!data) return;
-    document.getElementById('aiProviderType').value = data.provider_type || 'openai';
-    document.getElementById('aiEndpoint').value = data.endpoint || '';
-    document.getElementById('aiModel').value = data.model || '';
-    document.getElementById('aiProvider').value = data.provider || '';
-    document.getElementById('aiEnabled').checked = !!data.enabled;
-    // Show "已配置" if API key exists, empty field if not
-    const keyInput = document.getElementById('aiApiKey');
-    if (data.has_api_key) {
-      keyInput.value = '';
-      keyInput.placeholder = '✅ 已配置，留空保持不变';
-    } else {
-      keyInput.value = '';
-      keyInput.placeholder = '输入 API Key';
-    }
-  } catch (e) {}
+function normalizeAIAccess(access = {}) {
+  return {...access, ai_active:Object.keys(aiPreferences).some(key => !!access[key])};
 }
 
-async function saveAIConfig() {
-  showSettingsStatus('⏳ 保存中...', 'ok');
-  try {
-    const payload = {
-      provider: document.getElementById('aiProvider').value,
-      endpoint: document.getElementById('aiEndpoint').value,
-      model: document.getElementById('aiModel').value,
-      provider_type: document.getElementById('aiProviderType').value,
-      enabled: document.getElementById('aiEnabled').checked ? 1 : 0,
-    };
-    const endpointLower = (payload.endpoint || '').toLowerCase();
-    const modelLower = (payload.model || '').trim().toLowerCase();
-    if (endpointLower.includes('deepseek.com') && (!modelLower || modelLower === 'gpt-4o-mini' || modelLower.startsWith('gpt-'))) {
-      showSettingsStatus('请将 DeepSeek 模型设置为 deepseek-chat 或 deepseek-reasoner', 'err');
-      return;
-    }
-    // Only include api_key if user typed something new
-    const keyVal = document.getElementById('aiApiKey').value;
-    if (keyVal) {
-      payload.api_key = keyVal;
-    }
-    const resp = await fetch('/ai/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
-      body: JSON.stringify(payload),
-    });
-    if (resp.status === 401) { logout(); showSettingsStatus('❌ 登录已过期，请重新登录', 'err'); return; }
-    const text = await resp.text();
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch (parseErr) {
-      console.error('saveAIConfig: JSON parse failed, got text:', text);
-      showSettingsStatus('❌ 服务器返回异常: ' + text.substring(0, 200), 'err');
-      return;
-    }
-    await refreshShareStateAfterCheck(data.share_check);
-    if (data.error) {
-      showSettingsStatus('❌ ' + data.error, 'err');
-      return;
-    }
-    if (data.share_check?.restored) {
-      showSettingsStatus('✅ AI 配置已保存，共享状态已自动恢复', 'ok');
-    } else if (data.share_check?.error) {
-      showSettingsStatus(
-        '⚠️ AI 配置已保存，但连接校验失败，共享仍处于暂停状态：'
-          + data.share_check.error,
-        'err',
-      );
-    } else {
-      showSettingsStatus('✅ AI 配置已保存');
-    }
-    loadAIConfig();
-  } catch (e) { showSettingsStatus('❌ 保存失败: ' + e.message, 'err'); }
-}
-
-async function testAIConnection() {
-  showSettingsStatus('⏳ 测试中...', 'ok');
-  try {
-    // Trigger a quick test call (expects saved config on server)
-    const testResp = await fetch('/ai/test-connection', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + authToken },
-    });
-    if (testResp.status === 401) { logout(); showSettingsStatus('❌ 登录已过期，请重新登录', 'err'); return; }
-    const testText = await testResp.text();
-    let testData;
-    try {
-      testData = JSON.parse(testText);
-    } catch (parseErr) {
-      console.error('testAIConnection: JSON parse failed, got text:', testText);
-      // Detect common HTML error pages and show a more useful message
-      if (testText.includes('cloudflare') || testText.includes('Bad gateway') || testText.includes('502')) {
-        showSettingsStatus('❌ 服务器无法连接 AI 服务（Cloudflare 502）。可能是代理链路问题，请检查 Docker 容器的 HTTP_PROXY 环境变量配置', 'err');
-      } else if (testText.includes('504') || testText.includes('Gateway Timeout')) {
-        showSettingsStatus('❌ AI 服务请求超时。请检查 API 地址是否正确，或网络代理配置', 'err');
-      } else {
-        showSettingsStatus('❌ 服务器返回异常（非 JSON）。可在浏览器控制台查看详情', 'err');
-      }
-      return;
-    }
-    await refreshShareStateAfterCheck(testData.share_check);
-    if (testData.error) {
-      showSettingsStatus('❌ ' + testData.error, 'err');
-      return;
-    }
-    if (testData.share_check?.restored) {
-      showSettingsStatus('✅ 连接成功，共享状态已自动恢复！模型响应：' + (testData.response || 'ok'), 'ok');
-    } else {
-      showSettingsStatus('✅ 连接成功！模型响应：' + (testData.response || 'ok'), 'ok');
-    }
-  } catch (e) { showSettingsStatus('❌ 测试失败: ' + e.message, 'err'); }
-}
-
-// Every share_check is authoritative, including stale/unchanged/error results.
-// Reloading settings centralizes all visible access revocation/recovery.
-async function refreshShareStateAfterCheck(shareCheck) {
-  if (shareCheck) await loadUserSettings();
-}
-
-// ─── Share Tab (opt-in access to shared server-side AI results) ──
-
-function updateShareSubToggleState() {
-  const masterOn = document.getElementById('shareAiResults').checked;
-  const suspended = !!userAutoSettings?.share_suspended;
-  const temporarilyUnavailable =
-    masterOn
-    && !!userAutoSettings?.share_ai_results
-    && !suspended
-    && !userAutoSettings?.share_active;
-  ['shareViewTitle', 'shareViewTranslation', 'shareViewSummary'].forEach(id => {
-    const el = document.getElementById(id);
-    el.disabled = !masterOn || suspended || temporarilyUnavailable;
-    if (!masterOn) el.checked = false;
-  });
-  const hint = document.getElementById('shareSubHint');
-  hint.textContent = !masterOn
-    ? '需先开启共享 AI 结果'
-    : (suspended
-      ? 'API 校验失败，共享已暂停。更新 API 并校验成功后会自动恢复，无需重新开启。'
-      : (temporarilyUnavailable
-        ? '当前 AI 配置尚未通过校验，共享暂时不可用。完成校验后选项会自动恢复。'
-        : ''));
-  hint.style.display = hint.textContent ? '' : 'none';
-}
-
-async function loadShareTab() {
-  await loadUserSettings();
-  const s = userAutoSettings || {};
-  document.getElementById('shareAiResults').checked = !!s.share_ai_results;
-  document.getElementById('shareViewTitle').checked = !!s.share_view_title;
-  document.getElementById('shareViewTranslation').checked = !!s.share_view_translation;
-  document.getElementById('shareViewSummary').checked = !!s.share_view_summary;
-  updateShareSubToggleState();
-  const statusEl = document.getElementById('shareCheckStatus');
-  if (s.share_suspended) {
-    statusEl.textContent =
-      '⏸ API 校验失败，共享已暂停。原有选项已保留，API 恢复后会自动重新生效。'
-      + (s.share_last_check_error ? ' 原因：' + s.share_last_check_error : '');
-    statusEl.style.color = '#e5a84d';
-  } else if (
-    s.share_active
-    && Number(s.share_revalidation_failure_streak || 0) === 1
-  ) {
-    statusEl.textContent =
-      '⚠️ 后台复核暂时失败（1/2），共享仍在运行；'
-      + '下次复核成功将自动清除，连续失败才会暂停。'
-      + (s.share_revalidation_last_failure_error
-        ? ' 原因：' + s.share_revalidation_last_failure_error
-        : '');
-    statusEl.style.color = '#e5a84d';
-  } else if (s.share_ai_results && !s.share_active) {
-    statusEl.textContent =
-      '⚠️ 当前 AI 配置尚未通过校验，共享暂时不可用。'
-      + '请保存共享设置或测试连接以完成校验。';
-    statusEl.style.color = '#e5a84d';
-  } else if (!s.share_last_check_at) {
-    statusEl.textContent = '';
-  } else if (s.share_last_check_ok) {
-    statusEl.textContent = '✅ 上次校验成功：' + s.share_last_check_at;
-    statusEl.style.color = '';
-  } else {
-    statusEl.textContent = '❌ 上次校验失败（' + s.share_last_check_at + '）：' + (s.share_last_check_error || '未知错误');
-    statusEl.style.color = '#e5484d';
+function renderAIFunctions() {
+  const grants = userAutoSettings?.permissions || {};
+  for (const [key,service] of Object.entries(aiPreferences)) {
+    const button = document.getElementById(key);
+    const available = service !== 'tts' || !!userAutoSettings?.services?.tts;
+    setAIFeatureButton(button, !!userStoredAISettings[key] && !!grants[service] && available);
+    const status = document.getElementById(key+'State');
+    status.dataset.authorized = String(!!grants[service]);
+    status.textContent = !grants[service] ? '未授权' : !available ? '已授权 · 服务暂未开放' : '已授权';
   }
+  const hint = document.getElementById('dailySummaryAccessHint');
+  if (hint) hint.textContent = !grants.daily_digest ? '无权限，请联系管理员；每日总结推送已暂停。' : !userAutoSettings?.view_daily_digest ? '每日总结已关闭，推送暂停；订阅选择已保留。' : '';
 }
 
-async function saveShareConfig() {
-  const btn = document.getElementById('saveShareBtn');
-  const masterOn = document.getElementById('shareAiResults').checked;
-  btn.disabled = true;
-  btn.textContent = masterOn ? '🔌 校验中...' : '保存中...';
-  showSettingsStatus(masterOn ? '⏳ 正在校验 API 连通性...' : '⏳ 保存中...', 'ok');
+async function loadAIFunctions() { await loadUserSettings(); renderAIFunctions(); }
+
+function setAIFeatureButton(button, enabled) {
+  button.setAttribute('aria-pressed', String(enabled));
+  button.textContent = enabled ? '已开启' : '已关闭';
+}
+
+async function saveAIPreference(key, service, button) {
+  const previous = button.getAttribute('aria-pressed') === 'true';
+  const enabled = !previous;
+  if (enabled && !userAutoSettings?.permissions?.[service]) {
+    showSettingsStatus('无权限，请联系管理员','err');
+    return;
+  }
+  if (enabled && service === 'tts' && !userAutoSettings?.services?.tts) {
+    showSettingsStatus('语音服务暂未开放','err');
+    return;
+  }
+  button.disabled = true;
+  setAIFeatureButton(button, enabled);
   try {
-    const payload = {
-      share_ai_results: masterOn,
-      share_view_title: document.getElementById('shareViewTitle').checked,
-      share_view_translation: document.getElementById('shareViewTranslation').checked,
-      share_view_summary: document.getElementById('shareViewSummary').checked,
-    };
-    const resp = await fetch('/settings', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
-      body: JSON.stringify(payload),
+    const response = await fetch('/settings', {
+      method:'PUT',
+      headers:{'Content-Type':'application/json',Authorization:'Bearer '+authToken},
+      body:JSON.stringify({[key]:enabled}),
     });
-    if (resp.status === 401) { logout(); showSettingsStatus('❌ 登录已过期，请重新登录', 'err'); return; }
-    const data = await resp.json();
-    if (data.error) { showSettingsStatus('❌ ' + data.error, 'err'); await loadShareTab(); return; }
-    showSettingsStatus('✅ 共享设置已保存', 'ok');
-    await loadShareTab();
-    renderList();
-  } catch (e) {
-    showSettingsStatus('❌ 保存失败: ' + e.message, 'err');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '保存失败');
+    await loadUserSettings();
+    showSettingsStatus('设置已保存','ok');
+  } catch (error) {
+    setAIFeatureButton(button, previous);
+    showSettingsStatus(error.message,'err');
   } finally {
-    btn.disabled = false;
-    btn.textContent = '💾 保存共享设置';
+    button.disabled = false;
   }
 }
 
-// ─── Server statistics & storage maintenance (admin) ──
+async function loadGenerationSettings() {
+  const data=await apiFetch('/admin/ai-generation');
+  if (!data || data.error) return;
+  for (const [key,id] of Object.entries({auto_summary_enabled:'autoSummaryEnabled',auto_title_summary_enabled:'autoTitleSummaryEnabled',auto_translate_title:'autoTranslateTitle',auto_translate_content:'autoTranslateContent'})) document.getElementById(id).checked=!!data[key];
+}
 
-function formatBytes(n) {
-  if (n === null || n === undefined) return 'N/A';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let v = n, i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-  return (i === 0 ? v : v.toFixed(1)) + ' ' + units[i];
+async function saveGenerationSettings() {
+  const body={};
+  for (const [key,id] of Object.entries({auto_summary_enabled:'autoSummaryEnabled',auto_title_summary_enabled:'autoTitleSummaryEnabled',auto_translate_title:'autoTranslateTitle',auto_translate_content:'autoTranslateContent'})) body[key]=document.getElementById(id).checked;
+  const response=await fetch('/admin/ai-generation',{method:'PUT',headers:{'Content-Type':'application/json',Authorization:'Bearer '+authToken},body:JSON.stringify(body)});
+  const data=await response.json();
+  showSettingsStatus(response.ok ? '生成设置已保存' : data.error, response.ok ? 'ok':'err');
 }
 
 let serverStatsTimer = null;
@@ -3914,7 +3744,7 @@ async function saveSystemAiConfig() {
     if (resp.status === 401) { logout(); showSettingsStatus('❌ 登录已过期，请重新登录', 'err'); return; }
     const data = await resp.json();
     if (data.error) { showSettingsStatus('❌ ' + data.error, 'err'); return; }
-    showSettingsStatus('✅ 服务端API配置已保存');
+    showSettingsStatus('✅ 接口配置已保存');
     loadSystemAiConfig();
   } catch (e) { showSettingsStatus('❌ 保存失败: ' + e.message, 'err'); }
 }
@@ -3949,44 +3779,14 @@ async function testSystemAiConnection() {
 
 // ─── Notification Config ─────────────────────────────────
 
-async function loadSummarySettings() {
-  try {
-    const data = await apiFetch('/settings');
-    if (!data || settingsSequence !== sharedSettingsRequestSequence || settingsSession !== sharedSessionGeneration || settingsToken !== authToken) return;
-    document.getElementById('autoSummaryEnabled').checked = !!data.auto_summary_enabled;
-    document.getElementById('autoTitleSummaryEnabled').checked = !!data.auto_title_summary_enabled;
-  } catch (e) {}
-}
+async function loadSummarySettings() { await loadGenerationSettings(); }
 
-async function saveSummarySettings() {
-  try {
-    const resp = await fetch('/settings', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
-      body: JSON.stringify({
-        auto_summary_enabled: document.getElementById('autoSummaryEnabled').checked ? 1 : 0,
-        auto_title_summary_enabled: document.getElementById('autoTitleSummaryEnabled').checked ? 1 : 0,
-      }),
-    });
-    const data = await resp.json();
-    if (data.error) {
-      showSettingsStatus('❌ ' + data.error, 'err');
-      loadSummarySettings();
-      return;
-    }
-    userAutoSettings = {
-      ...(userAutoSettings || {}),
-      auto_summary_enabled: !!document.getElementById('autoSummaryEnabled').checked,
-      auto_title_summary_enabled: !!document.getElementById('autoTitleSummaryEnabled').checked,
-    };
-    showSettingsStatus('✅ 摘要设置已保存');
-  } catch (e) { showSettingsStatus('❌ 保存失败', 'err'); }
-}
+async function saveSummarySettings() { await saveGenerationSettings(); }
 
 async function loadNotifyConfig() {
   try {
     const data = await apiFetch('/settings');
-    if (!data || settingsSequence !== sharedSettingsRequestSequence || settingsSession !== sharedSessionGeneration || settingsToken !== authToken) return;
+    if (!data) return;
     const nc = data.notification_config || {};
     const resend = nc.resend || {};
     document.getElementById('notifyToEmail').value = resend.to_email || '';
@@ -4045,65 +3845,39 @@ async function testNotification() {
 }
 
 function scheduleUserSettingsRetry() {
-  if (sharedSettingsRetryTimer || !authToken || document.hidden) return;
-  const session = sharedSessionGeneration;
+  if (aiSettingsRetryTimer || !authToken || document.hidden) return;
+  const session = aiSessionGeneration;
   const token = authToken;
-  const delayMs = Math.min(30000, 2000 * 2 ** Math.min(sharedSettingsRetryCount++, 4));
-  sharedSettingsRetryTimer = setTimeout(() => {
-    sharedSettingsRetryTimer = null;
-    if (session === sharedSessionGeneration && token === authToken && !document.hidden) {
+  const delayMs = Math.min(30000, 2000 * 2 ** Math.min(aiSettingsRetryCount++, 4));
+  aiSettingsRetryTimer = setTimeout(() => {
+    aiSettingsRetryTimer = null;
+    if (session === aiSessionGeneration && token === authToken && !document.hidden) {
       loadUserSettings();
     }
   }, delayMs);
 }
 
 async function loadUserSettings() {
-  const settingsSequence = ++sharedSettingsRequestSequence;
-  const settingsSession = sharedSessionGeneration;
-  const settingsToken = authToken;
+  const sequence=++aiSettingsRequestSequence, session=aiSessionGeneration, token=authToken;
   try {
-    const data = await apiFetch('/settings', { cache: 'no-store' });
-    if (settingsSequence !== sharedSettingsRequestSequence || settingsSession !== sharedSessionGeneration || settingsToken !== authToken) return false;
-    if (!data || data.error || typeof data.share_active !== 'boolean') {
-      scheduleUserSettingsRetry();
-      return false;
-    }
-    clearTimeout(sharedSettingsRetryTimer);
-    sharedSettingsRetryTimer = null;
-    sharedSettingsRetryCount = 0;
-    const nextSettings = {
-      auto_translate_title: !!data.auto_translate_title,
-      auto_translate_content: !!data.auto_translate_content,
-      auto_summary_enabled: !!data.auto_summary_enabled,
-      theme_preference: data.theme_preference || 'system',
-      share_ai_results: !!data.share_ai_results,
-      share_view_title: !!data.share_view_title,
-      share_view_translation: !!data.share_view_translation,
-      share_view_summary: !!data.share_view_summary,
-      share_suspended: !!data.share_suspended,
-      share_active: !!data.share_active,
-      share_last_check_at: data.share_last_check_at || null,
-      share_last_check_ok: data.share_last_check_ok,
-      share_last_check_error: data.share_last_check_error || null,
-      share_revalidation_failure_streak:
-        Number(data.share_revalidation_failure_streak || 0),
-      share_revalidation_last_failure_at:
-        data.share_revalidation_last_failure_at || null,
-      share_revalidation_last_failure_error:
-        data.share_revalidation_last_failure_error || null,
-    };
-    applyThemePreference(nextSettings.theme_preference);
-    await synchronizeShareAccessState(nextSettings);
+    const data=await apiFetch('/settings',{cache:'no-store'});
+    if (sequence!==aiSettingsRequestSequence || session!==aiSessionGeneration || token!==authToken) return false;
+    if (!data || data.error || !data.access?.permissions) { scheduleUserSettingsRetry(); return false; }
+    clearTimeout(aiSettingsRetryTimer); aiSettingsRetryTimer=null; aiSettingsRetryCount=0;
+    userStoredAISettings=data;
+    applyThemePreference(data.theme_preference || 'system');
+    await synchronizeAIAccessState(normalizeAIAccess(data.access));
+    if (sequence!==aiSettingsRequestSequence || session!==aiSessionGeneration || token!==authToken) return false;
+    renderAIFunctions();
+    // Login/resume may have attempted this before access settings existed.
+    // Start it here, without waiting for unrelated title or favorite requests.
+    syncDailySummaryToday();
+    await loadVisibleAITitles();
     return true;
-  } catch (e) {
-    if (settingsSequence === sharedSettingsRequestSequence && settingsSession === sharedSessionGeneration && settingsToken === authToken) {
-      scheduleUserSettingsRetry();
-    }
-    return false;
-  }
+  } catch (_) { scheduleUserSettingsRetry(); return false; }
 }
 
-function findOpenArticleShareData(articleId) {
+function findOpenArticleData(articleId) {
   const numericId = Number(articleId);
   return cachedArticleBody(numericId)
     || news.find(item => Number(item.id) === numericId)
@@ -4112,7 +3886,7 @@ function findOpenArticleShareData(articleId) {
     || null;
 }
 
-function synchronizeOpenArticleShareView(previousSettings, nextSettings) {
+function synchronizeOpenArticleAIView(previousSettings, nextSettings) {
   const overlay = document.getElementById('overlay');
   if (!overlay || !overlay.classList.contains('open')) return 0;
   const articleId = Number(overlay.dataset.articleId);
@@ -4121,15 +3895,15 @@ function synchronizeOpenArticleShareView(previousSettings, nextSettings) {
   const bodyEl = document.getElementById('articleBody');
   const wrap = document.getElementById('articleWrap');
   const h1 = wrap ? wrap.querySelector('h1') : null;
-  const article = findOpenArticleShareData(articleId);
+  const article = findOpenArticleData(articleId);
   const canViewTranslation = !!(
-    nextSettings.share_active && nextSettings.share_view_translation
+    nextSettings.ai_active && nextSettings.view_translation
   );
   const canViewSummary = !!(
-    nextSettings.share_active && nextSettings.share_view_summary
+    nextSettings.ai_active && nextSettings.view_summary
   );
   const canViewTitle = !!(
-    nextSettings.share_active && nextSettings.share_view_title
+    nextSettings.ai_active && nextSettings.view_title_translation
   );
 
   if (!canViewSummary) {
@@ -4145,7 +3919,7 @@ function synchronizeOpenArticleShareView(previousSettings, nextSettings) {
     delete bodyEl.dataset.translatedHtml;
     delete bodyEl.dataset.translatedTitle;
     delete bodyEl.dataset.showingTranslation;
-    delete bodyEl.dataset.sharedTranslation;
+    delete bodyEl.dataset.serverTranslation;
   } else if (bodyEl && !canViewTitle && bodyEl.dataset.translatedTitle) {
     bodyEl.dataset.translatedTitle = '';
   }
@@ -4160,18 +3934,33 @@ function synchronizeOpenArticleShareView(previousSettings, nextSettings) {
   }
 
   return (
-    previousSettings && nextSettings.share_active
-    && (!previousSettings.share_active || ['share_view_title', 'share_view_translation', 'share_view_summary']
+    previousSettings && nextSettings.ai_active
+    && (!previousSettings.ai_active || ['view_title_translation', 'view_translation', 'view_summary', 'view_title_shortening']
       .some(key => nextSettings[key] && !previousSettings[key]))
   ) ? articleId : 0;
 }
 
-async function synchronizeShareAccessState(nextSettings) {
+async function synchronizeAIAccessState(nextSettings) {
+  if (nextSettings?.ai_active === false) {
+    // An authenticated result read was rejected. Clear every effective display
+    // flag so stale cached content and in-flight reads cannot stay authorized.
+    nextSettings = {...nextSettings, ...Object.fromEntries(Object.keys(aiPreferences).map(key => [key, false]))};
+  }
   const previousSettings = userAutoSettings || {};
+  const accessChanged=aiAccessKey(previousSettings)!==aiAccessKey(nextSettings);
+  if (accessChanged) resetAITitleResults();
   userAutoSettings = nextSettings || {};
-  if (sharedPermissionKey(previousSettings) !== sharedPermissionKey(userAutoSettings)) {
-    sharedAccessGeneration++;
-    cancelSharedResultReads();
+  window.RayNewsTTS?.accessChanged();
+  if (aiAccessKey(previousSettings) !== aiAccessKey(userAutoSettings)) {
+    aiAccessGeneration++;
+    cancelAIResultReads();
+  }
+  if (!userAutoSettings.view_daily_digest && previousSettings.view_daily_digest) {
+    if (document.getElementById('dailySummaryOverlay')?.classList.contains('open')) closeDailySummary();
+    setDailySummaryState({status:'disabled',result:null,error:'',unread:false});
+    notifRequestSeq++; notifItems=notifItems.filter(item=>item.type!=='daily_summary'); notifDetailId=null;
+    if (document.getElementById('notifOverlay')?.classList.contains('open')) showNotifList();
+    refreshNotifStatus();
   }
   renderList();
 
@@ -4188,7 +3977,7 @@ async function synchronizeShareAccessState(nextSettings) {
     renderSourceArticles(sourceArticlesState.items || []);
   }
 
-  const recoveredArticleId = synchronizeOpenArticleShareView(
+  const recoveredArticleId = synchronizeOpenArticleAIView(
     previousSettings,
     userAutoSettings,
   );
@@ -4202,12 +3991,7 @@ async function synchronizeShareAccessState(nextSettings) {
 
 // ─── General Settings ────────────────────────────────────
 
-async function loadGeneralSettings() {
-  await loadUserSettings();
-  // Apply to UI
-  document.getElementById('autoTranslateTitle').checked = !!userAutoSettings?.auto_translate_title;
-  document.getElementById('autoTranslateContent').checked = !!userAutoSettings?.auto_translate_content;
-}
+async function loadGeneralSettings() { await loadGenerationSettings(); }
 
 async function loadThemeSettings() {
   try {
@@ -4241,27 +4025,7 @@ async function saveThemePreference() {
   }
 }
 
-async function saveGeneralSettings() {
-  try {
-    const resp = await fetch('/settings', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
-      body: JSON.stringify({
-        auto_translate_title: document.getElementById('autoTranslateTitle').checked ? 1 : 0,
-        auto_translate_content: document.getElementById('autoTranslateContent').checked ? 1 : 0,
-      }),
-    });
-    const data = await resp.json();
-    if (data.error) { showSettingsStatus('❌ ' + data.error, 'err'); return; }
-    // Update cache after save
-    userAutoSettings = {
-      ...(userAutoSettings || {}),
-      auto_translate_title: !!document.getElementById('autoTranslateTitle').checked,
-      auto_translate_content: !!document.getElementById('autoTranslateContent').checked,
-    };
-    showSettingsStatus('✅ 翻译设置已保存');
-  } catch (e) { showSettingsStatus('❌ 保存失败', 'err'); }
-}
+async function saveGeneralSettings() { await saveGenerationSettings(); }
 
 function formatBeijingDateTime(sqliteUtc, withTime = true) {
   // SQLite's datetime('now') default always stores UTC ("YYYY-MM-DD HH:MM:SS"),
@@ -4345,6 +4109,7 @@ let dailySummaryState = {
   canRetry: false,
 };
 let dailySummaryRetryInFlight = false;
+let dailySummaryRequestSequence = 0;
 
 function isDailySummaryFailureState() {
   return dailySummaryState.status === 'failed' || dailySummaryState.status === 'retrying';
@@ -4362,11 +4127,11 @@ function updateDailySummaryButton() {
   btn.classList.toggle('ready', dailySummaryState.status === 'completed' && dailySummaryState.unread);
   btn.classList.toggle('failed', isDailySummaryFailureState());
   if (isDailySummaryFailureState()) {
-    btn.title = dailySummaryState.status === 'failed' ? '每日摘要生成失败' : '每日摘要生成失败，重试中';
+    btn.title = dailySummaryState.status === 'failed' ? '每日总结生成失败' : '每日总结生成失败，重试中';
   } else if (dailySummaryState.status === 'generating') {
-    btn.title = '每日摘要生成中';
+    btn.title = '每日总结生成中';
   } else if (dailySummaryState.status === 'completed' && dailySummaryState.unread) {
-    btn.title = '每日摘要已生成';
+    btn.title = '每日总结已生成';
   } else {
     btn.title = '每日总结';
   }
@@ -4387,7 +4152,7 @@ function openDailySummaryPushSettings() {
 
 function dailySummaryPushSettingsButton(marginTop) {
   return '<button class="ai-save-btn" onclick="openDailySummaryPushSettings()" style="width:auto;margin:' +
-    (marginTop || '14px') + ' auto 0;padding:8px 16px;font-size:12px">🔔 每日摘要推送设置</button>';
+    (marginTop || '14px') + ' auto 0;padding:8px 16px;font-size:12px">🔔 每日总结推送设置</button>';
 }
 
 function isDailySummaryAdmin() {
@@ -4406,6 +4171,7 @@ function dailySummaryRetryCountdownText(intervalMinutes) {
 // rendered only in the failure states, and the server refuses the route unless
 // today actually has a failure record — manual generation stays retired.
 async function retryDailySummary() {
+  const verificationSession=aiSessionGeneration, verificationToken=authToken;
   if (dailySummaryRetryInFlight) return;
   dailySummaryRetryInFlight = true;
   renderDailySummaryBody();
@@ -4414,14 +4180,14 @@ async function retryDailySummary() {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + authToken },
     });
-    if (verificationSession !== sharedSessionGeneration || verificationToken !== authToken) return;
+    if (verificationSession !== aiSessionGeneration || verificationToken !== authToken) return;
     if (resp.status === 401) {
       logout();
       return;
     }
     const data = await parseJsonResponse(resp);
     if (resp.ok && data && data.status === 'completed') {
-      showToast('✅ 每日摘要生成成功');
+      showToast('✅ 每日总结生成成功');
     } else if (resp.status === 202) {
       showToast('⏳ 正在生成，请稍候');
     } else {
@@ -4501,7 +4267,7 @@ function renderDailySummaryBody() {
       '<div style="text-align:center;padding:36px;color:var(--text-3)">' +
       '<div style="font-size:20px;margin-bottom:10px">🌙</div>' +
       '<p>今日暂无可用摘要。</p>' +
-      '<p class="ai-hint" style="margin-top:8px">明天 ' + esc(generateAt) + ' 会生成新的每日摘要。</p>' +
+      '<p class="ai-hint" style="margin-top:8px">明天 ' + esc(generateAt) + ' 会生成新的每日总结。</p>' +
       dailySummaryPushSettingsButton() +
       '</div>';
     return;
@@ -4514,7 +4280,7 @@ function renderDailySummaryBody() {
   body.innerHTML =
     '<div style="text-align:center;padding:36px;color:var(--text-3)">' +
     '<div style="font-size:20px;margin-bottom:10px">🕘</div>' +
-    '<p>每日摘要将在北京时间每天晚 9 点（' + esc(generateAt) + '）生成显示</p>' +
+    '<p>每日总结将在北京时间每天晚 9 点（' + esc(generateAt) + '）生成显示</p>' +
     dailySummaryPushSettingsButton() +
     '</div>';
 }
@@ -4573,18 +4339,22 @@ function formatDailySummaryTime(value) {
 }
 
 async function syncDailySummaryToday() {
-  if (!authToken) return;
+  if (!authToken || !userAutoSettings?.view_daily_digest) return;
+  const requestSequence = ++dailySummaryRequestSequence;
+  const verificationSession=aiSessionGeneration, verificationToken=authToken, digestAccess=aiAccessKey();
   try {
     const resp = await fetch('/ai/daily-summary/today', {
       headers: { 'Authorization': 'Bearer ' + authToken },
       cache: 'no-store',
     });
-    if (verificationSession !== sharedSessionGeneration || verificationToken !== authToken) return;
+    if (requestSequence !== dailySummaryRequestSequence || verificationSession !== aiSessionGeneration || verificationToken !== authToken) return;
     if (resp.status === 401) {
       logout();
       return;
     }
     const data = await parseJsonResponse(resp);
+    if (requestSequence !== dailySummaryRequestSequence || verificationSession !== aiSessionGeneration || verificationToken !== authToken
+        || digestAccess!==aiAccessKey() || !userAutoSettings?.view_daily_digest) return;
     if (!data || !data.status) return;
     if (data.status === 'completed') {
       // Only flag it unread the first time this session sees it, so reopening
@@ -4651,6 +4421,8 @@ function handleDailySummaryLinkClick(e) {
 }
 
 async function showDailySummary() {
+  if (!userAutoSettings?.permissions?.daily_digest) { showToast('无权限，请联系管理员'); return; }
+  if (!userAutoSettings.view_daily_digest) { showToast('请先在 AI 功能中开启每日总结'); return; }
   const body = document.getElementById('dailySummaryBody');
   if (body && !body.dataset.linkHandlerBound) {
     body.addEventListener('click', handleDailySummaryLinkClick);
@@ -4687,398 +4459,28 @@ function closeSidebar() {
 
 // ═══ AI Actions on Article ═══════════════════════════════
 
-// ═══ Browser-side AI (manual summarize/translate) ═════════
-// Manual summarize/translate no longer proxies through the server: if the
-// server has no shared cached result yet, the browser calls the LLM
-// provider directly using the current user's own saved API key, then POSTs
-// the result back to the server so every other user can reuse it.
-
-async function fetchMyAiConfig() {
-  try {
-    return await apiFetch('/ai/config/client');
-  } catch (e) {
-    return null;
-  }
-}
-
-function normalizeCjkQuotes(text) {
-  if (!text) return text;
-  text = text.replace(/"([^"]+)"/g, '「$1」');
-  text = text.replace(/“([^”]+)”/g, '「$1」');
-  text = text.replace(/'([^']+)'/g, (m, p1) => (/[一-鿿]/.test(p1) ? `「${p1}」` : m));
-  text = text.replace(/‘([^’]+)’/g, (m, p1) => (/[一-鿿]/.test(p1) ? `「${p1}」` : m));
-  return text;
-}
-
-function buildSummarizeMessages(title, text) {
-  const truncated = (text || '').trim().slice(0, 12000);
-  let prompt = '请为以下文章生成一个简洁的中文摘要，200字以内。';
-  if (title) prompt = `文章标题：${title}\n\n${prompt}`;
-  return [
-    { role: 'system', content: '你是一个专业的新闻摘要助手。请用简洁的语言概括文章核心内容。' },
-    { role: 'user', content: `${prompt}\n\n文章内容：\n${truncated}` },
-  ];
-}
-
-function buildTranslateFullMessages(html, title) {
-  const langName = '中文';
-  const parts = [];
-  if (title) parts.push(`文章标题（请翻译并保持格式）：${title}`);
-  parts.push(`文章正文 HTML（请翻译标签内文本，保持所有 HTML 结构不变）：\n${html}`);
-  const userContent = parts.join('\n\n');
-
-  let prompt = `请将以下文章翻译为${langName}。\n\n要求：\n`;
-  if (title) prompt += '0. 第一行输出翻译后的标题，不要任何标记或引号\n';
-  prompt += '1. 只翻译标签内的文本内容，保持所有 HTML 标签不变\n';
-  prompt += '2. 保持原文的段落、换行、超链接（<a>标签）、加粗（<b>）、斜体（<i>）等所有格式\n';
-  prompt += '3. 不要添加、删除或修改任何 HTML 标签和属性\n';
-  prompt += '4. 直接输出翻译后的 HTML，不要包含 ```html 代码块标记或任何额外说明文字\n\n';
-  if (title) prompt += '输出格式：\n第一行：翻译后的标题\n之后：翻译后的完整 HTML\n\n';
-
-  return [
-    { role: 'system', content: `你是一个专业的翻译助手。将文章翻译为${langName}，保持全部 HTML 标签和结构不变。` },
-    { role: 'user', content: prompt + userContent },
-  ];
-}
-
-function isDeepSeekModel(model) {
-  return (model || '').toLowerCase().includes('deepseek');
-}
-
-function isOpenCodeGoEndpoint(endpoint) {
-  try {
-    const url = new URL(endpoint);
-    const path = url.pathname.toLowerCase().replace(/\/$/, '');
-    return url.hostname.toLowerCase() === 'opencode.ai'
-      && (path === '/zen/go' || path.startsWith('/zen/go/'));
-  } catch (e) {
-    return false;
-  }
-}
-
-async function callOpenAiChat(config, messages, maxTokens, temperature) {
-  const base = (config.endpoint || '').replace(/\/$/, '');
-  const url = base.includes('/v1') ? base + '/chat/completions' : base + '/v1/chat/completions';
-  const body = { model: config.model, messages, max_tokens: maxTokens, temperature };
-  if (isDeepSeekModel(config.model)) body.thinking = { type: 'disabled' };
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': 'Bearer ' + config.api_key,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw new Error(`AI API HTTP ${resp.status}: ${text.slice(0, 300)}`);
-  }
-  const data = await resp.json();
-  return data.choices[0].message.content;
-}
-
-async function callClaudeChat(config, messages, maxTokens, temperature) {
-  const base = (config.endpoint || '').replace(/\/$/, '');
-  const url = base.includes('/v1') ? base + '/messages' : base + '/v1/messages';
-  let system = '';
-  const claudeMessages = [];
-  messages.forEach(m => {
-    if (m.role === 'system') system = m.content;
-    else claudeMessages.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content });
-  });
-  const body = { model: config.model, max_tokens: maxTokens, messages: claudeMessages, temperature };
-  if (system) body.system = system;
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'x-api-key': config.api_key,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw new Error(`AI API HTTP ${resp.status}: ${text.slice(0, 300)}`);
-  }
-  const data = await resp.json();
-  return data.content[0].text;
-}
-
-// Per-origin verdicts for the user's AI endpoint, remembered in localStorage:
-//   aiRelayOrigins   — known CORS-blocked (e.g. opencode.ai/zen); go straight to relay.
-//   aiDirectOkOrigins — known CORS-friendly (a direct call has succeeded); never relay.
-// A never-seen origin is "unknown" and gets one direct attempt.
-function aiEndpointOrigin(endpoint) {
-  try { return new URL(endpoint).origin; } catch (e) { return ''; }
-}
-
-function aiOriginSet(key) {
-  try { return new Set(JSON.parse(localStorage.getItem(key) || '[]')); } catch (e) { return new Set(); }
-}
-
-function aiOriginAdd(key, endpoint) {
-  const origin = aiEndpointOrigin(endpoint);
-  if (!origin) return;
-  const set = aiOriginSet(key);
-  if (set.has(origin)) return;
-  set.add(origin);
-  try { localStorage.setItem(key, JSON.stringify([...set])); } catch (e) {}
-}
-
-function aiOriginHas(key, endpoint) {
-  const origin = aiEndpointOrigin(endpoint);
-  return !!origin && aiOriginSet(key).has(origin);
-}
-
-const aiRelayNeeded = endpoint => aiOriginHas('aiRelayOrigins', endpoint);
-const aiDirectOk = endpoint => aiOriginHas('aiDirectOkOrigins', endpoint);
-
-// A blocked CORS request (or a genuine network drop) rejects with a TypeError that has
-// no HTTP status — "Load failed" / "Failed to fetch" / "NetworkError". A real API error
-// (4xx/5xx) is thrown by callOpenAiChat/callClaudeChat as "AI API HTTP ..." and must NOT
-// be silently rerouted, so only the former is even considered for the relay fallback.
-function isCorsOrNetworkError(e) {
-  return (e instanceof TypeError)
-    || /load failed|failed to fetch|networkerror/i.test((e && e.message) || '');
-}
-
-// Same-origin relay: the server forwards the chat to the user's endpoint (no CORS) using
-// their stored config, so the api_key isn't sent from here.
-async function callAiRelay(messages, maxTokens, temperature) {
-  const resp = await fetch('/ai/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
-    body: JSON.stringify({ messages, max_tokens: maxTokens, temperature }),
-  });
-  if (!resp.ok) {
-    const data = await resp.json().catch(() => null);
-    throw new Error((data && data.error) || ('AI relay HTTP ' + resp.status));
-  }
-  const data = await resp.json();
-  return data.content;
-}
-
-async function aiChat(config, messages, maxTokens, temperature) {
-  const direct = () => (config.provider_type === 'claude'
-    ? callClaudeChat(config, messages, maxTokens, temperature)
-    : callOpenAiChat(config, messages, maxTokens, temperature));
-
-  // OpenCode Go requires a stable x-opencode-session header and an identifying
-  // User-Agent. Browsers cannot set User-Agent, so always use the server relay.
-  if (isOpenCodeGoEndpoint(config.endpoint)) return callAiRelay(messages, maxTokens, temperature);
-
-  // Known CORS-blocked endpoint — don't waste a doomed direct attempt.
-  if (aiRelayNeeded(config.endpoint)) return callAiRelay(messages, maxTokens, temperature);
-
-  try {
-    const out = await direct();
-    aiOriginAdd('aiDirectOkOrigins', config.endpoint);  // proven CORS-friendly
-    return out;
-  } catch (e) {
-    if (!isCorsOrNetworkError(e)) throw e;  // real API error → propagate untouched
-    // A TypeError is ambiguous: a CORS preflight block (fails *before* the POST is sent,
-    // so nothing was generated or billed) vs. a network drop *after* the request reached
-    // the provider (which may already have generated and billed). If this origin has
-    // succeeded directly before, CORS is supported, so this is the latter — rerouting
-    // would risk a second, duplicate charge. Propagate instead of relaying.
-    if (aiDirectOk(config.endpoint)) throw e;
-    // Never succeeded directly → almost certainly a CORS preflight block. Relay, and only
-    // persist the "needs relay" verdict once the relay actually succeeds, so a one-off
-    // network blip doesn't permanently pin a CORS-friendly endpoint to the server path.
-    const out = await callAiRelay(messages, maxTokens, temperature);
-    aiOriginAdd('aiRelayOrigins', config.endpoint);
-    return out;
-  }
-}
-
-function publishSharedAIResult(articleId, payload) {
-  if (!userAutoSettings?.share_active) return Promise.resolve(false);
-  return fetch('/ai/result/' + articleId, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
-    body: JSON.stringify(payload),
-  }).then(() => true).catch(e => {
-    console.warn('failed to share AI result:', e);
-    return false;
-  });
-}
+// Article controls read existing server results; they never generate content.
 
 async function aiSummarize(articleId) {
-  if (isRestrictedUser()) { showToast('🔒 预览账号待管理员审核，暂不可用此功能'); return; }
-  const context = sharedArticleContext(articleId);
-  const btn = document.querySelector('.ai-summarize-btn');
-  if (btn) btn.disabled = true;
-
-  const articleWrap = document.getElementById('articleWrap');
-  let existingSummary = document.getElementById('aiSummaryTop');
-  const setSummaryHtml = (innerHtml) => {
-    if (!sharedContextCurrent(context)) return;
-    if (!existingSummary) {
-      existingSummary = document.createElement('div');
-      existingSummary.id = 'aiSummaryTop';
-      existingSummary.style.cssText = 'background:rgba(110,142,251,0.08);border:1px solid var(--accent);border-radius:var(--radius);padding:14px 16px;margin-bottom:16px;font-size:13px;line-height:1.7;color:var(--text)';
-      const h1 = articleWrap.querySelector('h1');
-      const meta = articleWrap.querySelector('.article-meta');
-      if (meta && meta.nextSibling) articleWrap.insertBefore(existingSummary, meta.nextSibling);
-      else if (h1 && h1.nextSibling) articleWrap.insertBefore(existingSummary, h1.nextSibling);
-      else articleWrap.prepend(existingSummary);
-    }
-    existingSummary.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:11px;font-weight:700;color:var(--accent)">📝 AI 摘要</div>' + innerHtml;
-  };
-  setSummaryHtml('<span style="color:var(--text-3)">⏳ 生成中...</span>');
-
-  try {
-    // 1) Server already has a shared result — just show it, no LLM call.
-    const cached = await readSharedResult(context);
-    if (!sharedContextCurrent(context)) return;
-    if (cached && cached.summary) {
-      setSummaryHtml(esc(cached.summary));
-      if (btn) btn.disabled = false;
-      return;
-    }
-
-    // 2) Nothing shared yet — generate locally in the browser with the user's own API.
-    const config = await fetchMyAiConfig();
-    if (!config || !config.enabled || !config.api_key) {
-      setSummaryHtml('<span style="color:#ef4444">❌ 请先在用户设置→AI 中配置你的 API</span>');
-      if (btn) btn.disabled = false;
-      return;
-    }
-    const title = articleWrap.querySelector('h1')?.textContent || '';
-    const bodyEl = document.getElementById('articleBody');
-    const text = bodyEl ? (bodyEl.innerText || bodyEl.textContent || '') : '';
-    if (!sharedContextCurrent(context)) return;
-    const summary = (await aiChat(config, buildSummarizeMessages(title, text), 2000, 0.3)).trim();
-    if (!sharedContextCurrent(context)) return;
-    setSummaryHtml(esc(summary));
-
-    // 3) Share the result back to the server for other users to reuse.
-    publishSharedAIResult(articleId, { summary });
-  } catch (e) {
-    setSummaryHtml('<span style="color:#ef4444">❌ ' + esc(e.message || '生成失败，请检查你的 API 配置和网络（自建 endpoint 需支持浏览器跨域）') + '</span>');
-  }
-  if (btn) btn.disabled = false;
+  if (!userAutoSettings?.permissions?.summary) { showToast('无权限，请联系管理员'); return; }
+  if (!userAutoSettings.view_summary) { showToast('请先在 AI 功能中开启文章摘要'); return; }
+  await autoDisplaySummary(articleId);
 }
 
 async function aiTranslate(articleId) {
-  if (isRestrictedUser()) { showToast('🔒 预览账号待管理员审核，暂不可用此功能'); return; }
-  const bodyEl = document.getElementById('articleBody');
-  if (!bodyEl) { showToast('❌ 未找到文章内容'); return; }
-
-  const btn = document.querySelector('.ai-translate-btn');
-  const articleWrap = document.getElementById('articleWrap');
-  const h1 = articleWrap ? articleWrap.querySelector('h1') : null;
-
-  // Toggle mode: if we already have both versions stored locally
-  if (bodyEl.dataset.originalHtml && bodyEl.dataset.translatedHtml) {
-    if (bodyEl.dataset.showingTranslation === 'true') {
-      // Restore original
-      bodyEl.innerHTML = bodyEl.dataset.originalHtml;
-      if (h1 && bodyEl.dataset.originalTitle) h1.textContent = bodyEl.dataset.originalTitle;
-      bodyEl.dataset.showingTranslation = 'false';
-      if (btn) btn.textContent = '翻译';
-    } else {
-      // Show translation
-      bodyEl.innerHTML = bodyEl.dataset.translatedHtml;
-      if (h1 && bodyEl.dataset.translatedTitle) h1.textContent = bodyEl.dataset.translatedTitle;
-      bodyEl.dataset.showingTranslation = 'true';
-      if (btn) btn.textContent = '原文';
-    }
-    return;
-  }
-
-  const context = sharedArticleContext(articleId);
-  // First-time translate
-  if (btn) btn.disabled = true;
-
-  const originalHtml = bodyEl.innerHTML;
-  const originalTitle = h1 ? h1.textContent : '';
-
-  bodyEl.innerHTML = '<p style="color:var(--text-2);text-align:center;padding:40px 0">⏳ 翻译中...</p>';
-
-  const applyTranslation = (translatedHtmlRaw, translatedTitle) => {
-    if (!sharedContextCurrent(context)) return;
-    const translatedHtml = proxyImages(sanitizeTranslatedHtml(translatedHtmlRaw));
-    bodyEl.dataset.originalHtml = originalHtml;
-    bodyEl.dataset.originalTitle = originalTitle;
-    bodyEl.dataset.translatedHtml = translatedHtml;
-    bodyEl.dataset.translatedTitle = translatedTitle || '';
-    bodyEl.dataset.showingTranslation = 'true';
-    bodyEl.innerHTML = translatedHtml;
-    if (h1 && translatedTitle) h1.textContent = translatedTitle;
-    if (btn) { btn.textContent = '原文'; btn.disabled = false; }
-  };
-
-  try {
-    // 1) Server already has a shared result — just show it, no LLM call.
-    const cached = await readSharedResult(context);
-    if (!sharedContextCurrent(context)) return;
-    if (
-      cached
-      && cached.translation
-      && userAutoSettings?.share_active
-      && userAutoSettings?.share_view_translation
-    ) {
-      const t = cached.translation.trim();
-      if (t.startsWith('{')) {
-        let cachedData = null;
-        try { cachedData = JSON.parse(t); } catch (e) { cachedData = null; }
-        if (cachedData && cachedData.html) {
-          const cachedTitle = userAutoSettings?.share_view_title
-            ? (cachedData.title || '')
-            : '';
-          applyTranslation(cachedData.html, cachedTitle);
-          showToast('✅ 翻译完成');
-          if (cachedTitle) syncArticleTitle(articleId, cachedTitle);
-          return;
-        }
-      } else if (t.startsWith('<')) {
-        applyTranslation(t, '');
-        showToast('✅ 翻译完成');
-        return;
-      }
-    }
-
-    // 2) Nothing shared yet — generate locally in the browser with the user's own API.
-    const config = await fetchMyAiConfig();
-    if (!config || !config.enabled || !config.api_key) {
-      showToast('❌ 请先在用户设置→AI 中配置你的 API');
-      bodyEl.innerHTML = originalHtml;
-      if (btn) btn.disabled = false;
-      return;
-    }
-    if (!sharedContextCurrent(context)) return;
-    const raw = await aiChat(config, buildTranslateFullMessages(originalHtml, originalTitle), 8000, 0.3);
-    if (!sharedContextCurrent(context)) return;
-    let translatedTitle = '';
-    let translatedHtml = raw;
-    if (originalTitle) {
-      const lines = raw.split('\n');
-      translatedTitle = normalizeCjkQuotes((lines.shift() || '').trim());
-      translatedHtml = lines.join('\n');
-    }
-    applyTranslation(translatedHtml, translatedTitle);
-    showToast('✅ 翻译完成');
-    syncArticleTitle(articleId, translatedTitle);
-
-    // 3) Share the result back to the server for other users to reuse.
-    publishSharedAIResult(articleId, {
-      translation: JSON.stringify({ title: translatedTitle, html: translatedHtml }),
-    });
-  } catch (e) {
-    if (!sharedContextCurrent(context)) return;
-    bodyEl.innerHTML = originalHtml;
-    showToast('❌ 生成失败: ' + (e.message || '请检查你的 API 配置和网络（自建 endpoint 需支持浏览器跨域）'));
-    if (btn) btn.disabled = false;
-  }
+  if (!userAutoSettings?.permissions?.translation) { showToast('无权限，请联系管理员'); return; }
+  if (!userAutoSettings.view_translation) { showToast('请先在 AI 功能中开启正文翻译'); return; }
+  const body=document.getElementById('articleBody');
+  if (body?.dataset.translatedHtml && body.dataset.showingTranslation === 'true') {
+    body.innerHTML=body.dataset.originalHtml;
+    body.dataset.showingTranslation='false';
+    document.querySelector('.ai-translate-btn').textContent='译文';
+  } else if (body?.dataset.translatedHtml) {
+    body.innerHTML=body.dataset.translatedHtml; body.dataset.showingTranslation='true';
+    document.querySelector('.ai-translate-btn').textContent='原文';
+  } else { await autoDisplaySummary(articleId); }
 }
 
-/**
- * Auto-display cached AI summary when opening an article (no click needed).
- * Called after renderArticleBody completes.
- */
 let aiResultCursor = '';
 let aiResultPoll = null;
 let aiResultPollController = null;
@@ -5102,7 +4504,7 @@ function resetAIResultUpdates() {
   aiResultFailures = 0;
   aiResultNeedsCatchup = true;
   aiResultPending.clear();
-  sharedResultVersions.clear();
+  aiResultVersions.clear();
   releaseAIResultLease();
   translationUpdatePollController?.abort();
   translationUpdatePolling = false;
@@ -5142,19 +4544,22 @@ function refreshCurrentAIResult(id) {
     aiResultPending.add(id);
     return;
   }
-  sharedResultVersions.set(id, (sharedResultVersions.get(id) || 0) + 1);
-  for (const entry of sharedResultReads.values()) if (entry.articleId === id) entry.controller.abort();
+  aiResultVersions.set(id, (aiResultVersions.get(id) || 0) + 1);
+  for (const entry of aiResultReads.values()) if (entry.articleId === id) entry.controller.abort();
   autoDisplaySummary(id);
 }
 
 function applyAIResultPage(data) {
   if (data.reset) {
-    cancelSharedResultReads();
-    clearSharedArticleView();
+    resetAITitleResults();
+    cancelAIResultReads();
+    clearAIArticleView();
     articleBodyCache = {};
     articleBodyCacheRecency = new Map();
   }
   const currentId = Number(document.getElementById('overlay')?.dataset.articleId);
+  for (const item of data.items || []) invalidateAITitleResult(item.id);
+  if ((data.items || []).length || data.reset) loadVisibleAITitles().catch(()=>{});
   const touched = new Set((data.items || []).map(item => Number(item.id)).filter(id => id === currentId));
   if (data.reset || data.baseline) {
     const id = Number(document.getElementById('overlay')?.dataset.articleId);
@@ -5171,7 +4576,7 @@ async function pollAIResultUpdates(force = false) {
   if (!force && Date.now() < aiResultNextPollAt) return;
   const leader = ownsAIResultLease();
   if (!leader && !aiResultNeedsCatchup) return;
-  const session = sharedSessionGeneration;
+  const session = aiSessionGeneration;
   const token = authToken;
   const user = authUser?.id;
   const controller = new AbortController();
@@ -5191,10 +4596,10 @@ async function pollAIResultUpdates(force = false) {
           data = await response.json();
           if (!data || typeof data.cursor !== 'string' || !Array.isArray(data.items)) throw new Error('invalid AI update page');
         } finally { clearTimeout(timer); }
-        if (session !== sharedSessionGeneration || token !== authToken || controller.signal.aborted) return;
-        if (data.access && sharedPermissionKey(data.access) !== sharedPermissionKey()) {
-          await synchronizeShareAccessState({ ...userAutoSettings, ...data.access });
-          if (session !== sharedSessionGeneration || token !== authToken) return;
+        if (session !== aiSessionGeneration || token !== authToken || controller.signal.aborted) return;
+        if (data.access && aiAccessKey(data.access) !== aiAccessKey()) {
+          await synchronizeAIAccessState({ ...userAutoSettings, ...normalizeAIAccess(data.access) });
+          if (session !== aiSessionGeneration || token !== authToken) return;
         }
         data.baseline = baseline;
         applyAIResultPage(data);
@@ -5206,22 +4611,22 @@ async function pollAIResultUpdates(force = false) {
         if (!data.has_more) break;
       }
     } catch (error) {
-      if (session !== sharedSessionGeneration || controller.signal.aborted) {
+      if (session !== aiSessionGeneration || controller.signal.aborted) {
         // A genuine timeout must recover; a lifecycle abort simply pauses.
-        if (session !== sharedSessionGeneration || document.hidden) return;
+        if (session !== aiSessionGeneration || document.hidden) return;
       }
       aiResultFailures++;
       aiResultNeedsCatchup = true;
       aiResultNextPollAt = Date.now() + Math.min(60000, 12000 * 2 ** Math.min(aiResultFailures-1,3));
       if ([401,403].includes(error.status)) {
-        await synchronizeShareAccessState({ ...userAutoSettings, share_active:false });
+        await synchronizeAIAccessState({ ...userAutoSettings, ai_active:false });
       }
     }
   })().finally(() => {
     if (aiResultPoll === promise) {
       aiResultPoll = null;
       aiResultPollController = null;
-      if (leader && session === sharedSessionGeneration && token === authToken && !document.hidden) {
+      if (leader && session === aiSessionGeneration && token === authToken && !document.hidden) {
         clearTimeout(aiResultPollTimer);
         aiResultPollTimer = setTimeout(() => pollAIResultUpdates(), Math.max(1, aiResultNextPollAt-Date.now()));
       }
@@ -5237,8 +4642,8 @@ if (aiResultChannel) aiResultChannel.onmessage = event => {
   // A recovering follower first catches up from its own cursor. Adopting a
   // newer broadcast cursor would skip events from its hidden interval.
   if (aiResultNeedsCatchup) return;
-  if (data.access && sharedPermissionKey(data.access) !== sharedPermissionKey()) {
-    synchronizeShareAccessState({ ...userAutoSettings, ...data.access }).catch(() => {});
+  if (data.access && aiAccessKey(data.access) !== aiAccessKey()) {
+    synchronizeAIAccessState({ ...userAutoSettings, ...normalizeAIAccess(data.access) }).catch(() => {});
   }
   const currentSequence = Number(aiResultCursor.split('|')[1] || 0);
   const incomingSequence = Number(String(data.cursor).split('|')[1] || 0);
@@ -5255,13 +4660,16 @@ document.addEventListener("visibilitychange", () => {
     releaseAIResultLease();
   } else {
     aiResultNeedsCatchup = true;
+    if (authToken) loadUserSettings();
     pollAIResultUpdates(true);
   }
 });
+setInterval(() => { if (authToken && !document.hidden) loadUserSettings(); }, 30000);
+window.addEventListener('focus', () => { if (authToken) loadUserSettings(); });
 window.addEventListener('pagehide', releaseAIResultLease);
 
 function markArticleOpen() {
-  sharedResultVersions.clear();
+  aiResultVersions.clear();
   if (typeof performance === 'undefined') return;
   for (const name of ['raynews-article-open', 'raynews-body-visible', 'raynews-shared-visible']) {
     performance.clearMarks(name);
@@ -5276,57 +4684,58 @@ function markArticleVisible(kind) {
   if (!performance.getEntriesByName(name).length) performance.measure(name, 'raynews-article-open');
 }
 
-function sharedPermissionKey(settings = userAutoSettings) {
-  return ['share_active', 'share_view_title', 'share_view_translation', 'share_view_summary']
+function aiAccessKey(settings = userAutoSettings) {
+  settings = normalizeAIAccess(settings || {});
+  return ['ai_active', 'view_title_translation', 'view_translation', 'view_summary', 'view_title_shortening', 'view_daily_digest']
     .map(key => !!settings?.[key]).join(':');
 }
 
-function sharedArticleContext(articleId) {
-  return { id: Number(articleId), open: activeArticleRequestId, session: sharedSessionGeneration,
-    token: authToken, revision: sharedResultVersions.get(Number(articleId)) || 0, access: sharedAccessGeneration, permissions: sharedPermissionKey() };
+function aiArticleContext(articleId) {
+  return { id: Number(articleId), open: activeArticleRequestId, session: aiSessionGeneration,
+    token: authToken, revision: aiResultVersions.get(Number(articleId)) || 0, access: aiAccessGeneration, permissions: aiAccessKey() };
 }
 
-function sharedContextCurrent(context) {
+function aiContextCurrent(context) {
   const overlay = document.getElementById('overlay');
-  return !!context.token && context.session === sharedSessionGeneration && context.token === authToken
-    && context.revision === (sharedResultVersions.get(context.id) || 0) && context.access === sharedAccessGeneration && context.permissions === sharedPermissionKey() && context.open === activeArticleRequestId
+  return !!context.token && context.session === aiSessionGeneration && context.token === authToken
+    && context.revision === (aiResultVersions.get(context.id) || 0) && context.access === aiAccessGeneration && context.permissions === aiAccessKey() && context.open === activeArticleRequestId
     && overlay?.classList.contains('open') && Number(overlay.dataset.articleId) === context.id;
 }
 
-function cancelSharedResultReads() {
-  for (const item of sharedResultReads.values()) item.controller.abort();
-  sharedResultReads.clear();
+function cancelAIResultReads() {
+  for (const item of aiResultReads.values()) item.controller.abort();
+  aiResultReads.clear();
 }
 
-function clearAccountShareViews() {
-  clearSharedArticleView();
+function clearAccountAIViews() {
+  clearAIArticleView();
   const favorites = document.getElementById('favBody');
   if (favorites) favorites.textContent = '';
   if (document.getElementById('searchOverlay')?.classList.contains('open')) renderSearchResults();
   if (document.getElementById('sourceArticlesOverlay')?.classList.contains('open')) renderSourceArticles(sourceArticlesState.items || []);
 }
 
-function clearSharedArticleView() {
+function clearAIArticleView() {
   document.getElementById('aiSummaryTop')?.remove();
-  document.getElementById('sharedResultStatus')?.remove();
+  document.getElementById('serverResultStatus')?.remove();
   const body = document.getElementById('articleBody');
   if (!body) return;
   const title = document.getElementById('articleWrap')?.querySelector('h1');
   if (body.dataset.originalHtml) body.innerHTML = body.dataset.originalHtml;
   const id = Number(document.getElementById('overlay')?.dataset.articleId);
-  const original = findOpenArticleShareData(id)?.original_title || body.dataset.originalTitle;
+  const original = findOpenArticleData(id)?.title || body.dataset.originalTitle;
   if (title && original) title.textContent = original;
-  for (const key of ['translatedHtml', 'translatedTitle', 'showingTranslation', 'sharedTranslation']) delete body.dataset[key];
+  for (const key of ['translatedHtml', 'translatedTitle', 'showingTranslation', 'serverTranslation']) delete body.dataset[key];
   const button = document.querySelector('.ai-translate-btn');
   if (button) button.textContent = '翻译';
 }
 
-function sharedResultStatus(context, text, retry = false, retryAt = 0) {
-  if (!sharedContextCurrent(context)) return;
-  let el = document.getElementById('sharedResultStatus');
+function serverResultStatus(context, text, retry = false, retryAt = 0) {
+  if (!aiContextCurrent(context)) return;
+  let el = document.getElementById('serverResultStatus');
   if (!el) {
     el = document.createElement('div');
-    el.id = 'sharedResultStatus';
+    el.id = 'serverResultStatus';
     el.setAttribute('role', 'status');
     document.getElementById('articleWrap').appendChild(el);
   }
@@ -5335,9 +4744,9 @@ function sharedResultStatus(context, text, retry = false, retryAt = 0) {
     const button = document.createElement('button');
     button.textContent = '重试读取';
     button.onclick = () => {
-      if (!sharedContextCurrent(context)) return;
+      if (!aiContextCurrent(context)) return;
       if (retryAt > Date.now()) {
-        sharedResultStatus(context, '请在 ' + new Date(retryAt).toLocaleTimeString() + ' 后重试', true, retryAt);
+        serverResultStatus(context, '请在 ' + new Date(retryAt).toLocaleTimeString() + ' 后重试', true, retryAt);
         return;
       }
       autoDisplaySummary(context.id);
@@ -5346,14 +4755,14 @@ function sharedResultStatus(context, text, retry = false, retryAt = 0) {
   }
 }
 
-function readSharedResult(context) {
+function readServerAIResult(context) {
   const key = [context.id, context.open, context.session, context.access, context.revision, context.permissions].join('|');
-  if (sharedResultReads.has(key)) return sharedResultReads.get(key).promise;
+  if (aiResultReads.has(key)) return aiResultReads.get(key).promise;
   const controller = new AbortController();
   const promise = (async () => {
     const deadline = Date.now() + 30000;
     for (let attempt = 0; ; attempt++) {
-      if (controller.signal.aborted || !sharedContextCurrent(context)) throw new DOMException('cancelled', 'AbortError');
+      if (controller.signal.aborted || !aiContextCurrent(context)) throw new DOMException('cancelled', 'AbortError');
       const requestController = new AbortController();
       const cancel = () => requestController.abort();
       controller.signal.addEventListener('abort', cancel, { once: true });
@@ -5372,14 +4781,14 @@ function readSharedResult(context) {
           throw failure;
         }
         const data = await response.json();
-        if (!data || typeof data !== 'object' || Array.isArray(data)) throw new SyntaxError('共享结果格式错误');
+        if (!data || typeof data !== 'object' || Array.isArray(data)) throw new SyntaxError('服务端结果格式错误');
         return data;
       } catch (error) {
         failure = error;
-        if (controller.signal.aborted || !sharedContextCurrent(context)) throw new DOMException('cancelled', 'AbortError');
+        if (controller.signal.aborted || !aiContextCurrent(context)) throw new DOMException('cancelled', 'AbortError');
         if ([401,403].includes(error.status)) {
-          synchronizeShareAccessState({ ...userAutoSettings, share_active:false }).catch(() => {});
-          sharedResultStatus(sharedArticleContext(context.id), '共享结果访问不可用，请检查登录和共享权限');
+          synchronizeAIAccessState({ ...userAutoSettings, ai_active:false }).catch(() => {});
+          serverResultStatus(aiArticleContext(context.id), '服务端结果访问不可用，请检查登录和服务查看权限');
           throw error;
         }
         const retryable = timedOut || error instanceof TypeError || [429, 500, 502, 503, 504].includes(error.status);
@@ -5392,31 +4801,36 @@ function readSharedResult(context) {
       }
     }
   })().finally(() => {
-    if (sharedResultReads.get(key)?.promise === promise) sharedResultReads.delete(key);
+    if (aiResultReads.get(key)?.promise === promise) aiResultReads.delete(key);
   });
-  promise.sharedContext = context;
-  sharedResultReads.set(key, { controller, promise, articleId: context.id });
+  promise.aiContext = context;
+  aiResultReads.set(key, { controller, promise, articleId: context.id });
   return promise;
 }
 
 async function autoDisplaySummary(articleId, prefetched = null) {
   if (isRestrictedUser() || !authToken) return;
-  const context = sharedArticleContext(articleId);
-  if (!sharedContextCurrent(context)) return;
-  sharedResultStatus(context, '正在读取共享结果…');
+  const context = aiArticleContext(articleId);
+  if (!aiContextCurrent(context)) return;
+  serverResultStatus(context, '正在读取服务端结果…');
   try {
-    if (prefetched?.sharedContext && !sharedContextCurrent(prefetched.sharedContext)) prefetched = null;
+    if (prefetched?.aiContext && !aiContextCurrent(prefetched.aiContext)) prefetched = null;
     const data = prefetched && typeof prefetched.then !== 'function'
-      ? prefetched : await (prefetched || readSharedResult(context));
-    if (!sharedContextCurrent(context)) return;
-    if (data.access && sharedPermissionKey(data.access) !== sharedPermissionKey()) {
-      await synchronizeShareAccessState({ ...userAutoSettings, ...data.access });
+      ? prefetched : await (prefetched || readServerAIResult(context));
+    if (!aiContextCurrent(context)) return;
+    if (data.access && aiAccessKey(data.access) !== aiAccessKey()) {
+      await synchronizeAIAccessState({ ...userAutoSettings, ...normalizeAIAccess(data.access) });
       return;
     }
     const states = Object.values(data.states || {});
-    sharedResultStatus(context, data.summary || data.translation ? '' : states.includes('generating') ? '共享结果生成中…' : states.includes('failed') ? '共享结果生成失败' : '暂无共享结果');
+    serverResultStatus(context, data.summary || data.translation ? '' : states.includes('generating') ? '服务端结果生成中…' : states.includes('failed') ? '服务端结果生成失败' : '暂无服务端结果');
     if (data.summary || data.translation) markArticleVisible('shared');
-    const shareActive = !!userAutoSettings?.share_active;
+    const shareActive = !!userAutoSettings?.ai_active;
+    storeAITitleResult(articleId,data);
+    const titleEl=document.getElementById('articleWrap')?.querySelector('h1');
+    const item=findOpenArticleData(articleId);
+    if (titleEl && item) titleEl.textContent=displayTitle(item);
+    if (data.title_translation || data.title_summary || data.translated_title_summary) renderList();
     const articleWrap = document.getElementById('articleWrap');
     if (!articleWrap) return;
     
@@ -5425,7 +4839,7 @@ async function autoDisplaySummary(articleId, prefetched = null) {
     const readingBody = document.getElementById('articleBody');
     const readingTop = readingBody?.getBoundingClientRect?.().top;
     // Auto-display cached summary
-    if (data.summary && shareActive && userAutoSettings?.share_view_summary) {
+    if (data.summary && shareActive && userAutoSettings?.view_summary) {
       const existingSummary = document.getElementById('aiSummaryTop');
       if (existingSummary) existingSummary.remove();
       const summaryDiv = document.createElement('div');
@@ -5447,7 +4861,7 @@ async function autoDisplaySummary(articleId, prefetched = null) {
       readingOverlay.scrollTop += readingBody.getBoundingClientRect().top - readingTop;
     }
     // Auto-display cached translations
-    if (data.translation && shareActive && userAutoSettings?.share_view_translation) {
+    if (data.translation && shareActive && userAutoSettings?.view_translation) {
       const bodyEl = document.getElementById('articleBody');
       if (!bodyEl) return;
       const t = data.translation.trim();
@@ -5461,13 +4875,13 @@ async function autoDisplaySummary(articleId, prefetched = null) {
         const h1El = articleWrap ? articleWrap.querySelector('h1') : null;
         // Save original before replacing for toggle support
         if (!bodyEl.dataset.originalHtml) bodyEl.dataset.originalHtml = bodyEl.innerHTML;
-        if (!bodyEl.dataset.originalTitle) bodyEl.dataset.originalTitle = h1El ? h1El.textContent : '';
+        if (!bodyEl.dataset.originalTitle) bodyEl.dataset.originalTitle = item?.title || '';
         bodyEl.dataset.translatedHtml = proxyImages(sanitizeTranslatedHtml(cachedData.html));
-        const cachedTitle = userAutoSettings?.share_view_title
+        const cachedTitle = userAutoSettings?.view_title_translation
           ? (cachedData.title || '')
           : '';
         bodyEl.dataset.translatedTitle = cachedTitle;
-        bodyEl.dataset.sharedTranslation = 'true';
+        bodyEl.dataset.serverTranslation = 'true';
         if (keepOriginal) {
           const btn = document.querySelector('.ai-translate-btn');
           if (btn) btn.textContent = '译文';
@@ -5476,7 +4890,7 @@ async function autoDisplaySummary(articleId, prefetched = null) {
         bodyEl.dataset.showingTranslation = 'true';
         bodyEl.innerHTML = bodyEl.dataset.translatedHtml;
         if (h1El && cachedTitle) h1El.textContent = cachedTitle;
-        if (cachedTitle) syncArticleTitle(articleId, cachedTitle);
+
         const btn = document.querySelector('.ai-translate-btn');
         if (btn) btn.textContent = '原文';
         return;
@@ -5502,9 +4916,9 @@ async function autoDisplaySummary(articleId, prefetched = null) {
       // anything else rather than innerHTML-rendering unrecognized content.
     }
   } catch (e) {
-    if (e.name === 'AbortError' || !sharedContextCurrent(context)) return;
-    if ([401, 403].includes(e.status)) clearSharedArticleView();
-    sharedResultStatus(context, e.retryAt ? '请在 ' + new Date(e.retryAt).toLocaleTimeString() + ' 后重试' : [401, 403].includes(e.status) ? '共享结果访问不可用，请检查登录和共享权限' : '共享结果读取失败', ![401, 403, 404].includes(e.status), e.retryAt || 0);
+    if (e.name === 'AbortError' || !aiContextCurrent(context)) return;
+    if ([401, 403].includes(e.status)) clearAIArticleView();
+    serverResultStatus(context, e.retryAt ? '请在 ' + new Date(e.retryAt).toLocaleTimeString() + ' 后重试' : [401, 403].includes(e.status) ? '服务端结果访问不可用，请检查登录和服务查看权限' : '服务端结果读取失败', ![401, 403, 404].includes(e.status), e.retryAt || 0);
   }
 }
 
@@ -5531,7 +4945,7 @@ function closeFavorites() {
 }
 
 async function loadFavorites() {
-  const session = sharedSessionGeneration;
+  const session = aiSessionGeneration;
   const token = authToken;
   if (!token) {
     document.getElementById('favBody').textContent = '请先登录查看收藏';
@@ -5539,16 +4953,18 @@ async function loadFavorites() {
   }
   try {
     const data = await apiFetch('/favorites');
-    if (!data || session !== sharedSessionGeneration || token !== authToken) return;
+    if (!data || session !== aiSessionGeneration || token !== authToken) return;
     if (data.error) { document.getElementById('favBody').innerHTML = '<div class="fav-empty">❌ ' + esc(data.error) + '</div>'; return; }
     renderFavorites(data);
   } catch (e) {
-    if (session === sharedSessionGeneration && token === authToken) document.getElementById('favBody').innerHTML = '<div class="fav-empty">❌ 加载失败</div>';
+    if (session === aiSessionGeneration && token === authToken) document.getElementById('favBody').innerHTML = '<div class="fav-empty">❌ 加载失败</div>';
   }
 }
 
 function renderFavorites(data) {
   const items = data.items || [];
+  favoriteAIItems=items;
+  if (authToken && (userAutoSettings?.view_title_translation || userAutoSettings?.view_title_shortening)) queueMicrotask(()=>loadVisibleAITitles().catch(()=>{}));
   if (items.length === 0) {
     document.getElementById('favBody').innerHTML = '<div class="fav-empty">还没有收藏的文章</div>';
     return;
@@ -5639,14 +5055,12 @@ async function checkFavoriteStatus(articleId) {
 }
 
 // ═══ In-App Notifications ═══════════════════════════
-// Timely per-user notices (share revalidation failures now, release notes
-// later). A notification counts as read ONLY when the user clicks a 已读
+// Per-user notifications and daily summaries. A notification counts as read ONLY when the user clicks a 已读
 // button (list row or detail footer) — merely viewing the detail does not.
 let notifItems = [];
 let notifUnread = 0;
 let notifDetailId = null;
 let notifRequestSeq = 0;
-let lastShareTransitionNotificationId = 0;
 let notifPendingReads = new Map();
 let notifPendingDeletes = new Map();
 let notifReadAllPending = false;
@@ -5668,7 +5082,6 @@ function resetNotifState() {
   notifUnread = 0;
   notifDetailId = null;
   notifLoadState = 'idle';
-  lastShareTransitionNotificationId = 0;
   notifPendingReads.clear();
   notifPendingDeletes.clear();
   notifReadAllPending = false;
@@ -5744,17 +5157,6 @@ async function refreshNotifStatus() {
     notifUnread = reconciled.unread;
     notifLoadState = 'ready';
     updateNotifDot();
-    const newestShareTransitionId = notifItems.reduce((latest, item) => {
-      if (!item || !['share_suspended', 'share_restored'].includes(item.type)) {
-        return latest;
-      }
-      const id = Number(item.id) || 0;
-      return Math.max(latest, id);
-    }, 0);
-    if (newestShareTransitionId > lastShareTransitionNotificationId) {
-      lastShareTransitionNotificationId = newestShareTransitionId;
-      await loadUserSettings();
-    }
     return true;
   } catch (e) {
     if (authToken === requestToken && seq === notifRequestSeq) notifLoadState = 'error';
@@ -6126,7 +5528,7 @@ function renderAdminUsers(data, invitationData) {
       : `<span class="admin-role-badge ${roleClass}">${u.role}</span>`;
     return `<tr>
       <td><strong>${esc(u.nickname || u.email.split('@')[0])}</strong><br><span style="font-size:11px;color:var(--text-3)">${esc(u.email)}</span></td>
-      <td>${roleCell}</td>
+      <td>${roleCell}</td><td><div style="display:flex;gap:8px;flex-wrap:wrap;min-width:220px">${Object.entries({summary:'摘要',title_shortening:'标题简写',translation:'翻译',daily_digest:'每日总结',tts:'TTS'}).map(([key,label])=>`<label style="display:flex;gap:4px;align-items:center;white-space:nowrap"><input type="checkbox" ${u.ai_permissions?.[key] ? 'checked':''} ${u.role==='admin' ? 'disabled':''} onchange="saveUserAIPermission(${u.id},'${key}',this)">${label}</label>`).join('')}</div></td>
       <td style="font-size:11px;color:var(--text-3)">注册 ${formatBeijingDateTime(u.created_at, false)}<br>${u.last_seen_at ? '最近 ' + formatBeijingDateTime(u.last_seen_at) : '从未访问'}</td>
       <td style="font-size:11px;color:var(--text-3);text-align:center">${u.visit_count || 0}</td>
       <td>${canModify ? `<button class="admin-del-btn" onclick="deleteUser(${u.id}, '${esc(u.email)}')">删除</button>` : '-'}</td>
@@ -6148,7 +5550,7 @@ function renderAdminUsers(data, invitationData) {
       <div class="admin-stat-box"><div class="admin-stat-num">${invitations.length}</div><div class="admin-stat-label">待审核</div></div>
     </div>
     <div class="admin-table-wrap"><table class="admin-table">
-      <thead><tr><th>用户</th><th>角色</th><th>时间</th><th>访问</th><th></th></tr></thead>
+      <thead><tr><th>用户</th><th>角色</th><th>服务访问权限</th><th>时间</th><th>访问</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
     <div style="margin-top:20px;font-size:13px;font-weight:700;color:var(--text-2)">🕓 待审核邀请申请（已申请邀请码但尚未完成注册）</div>
@@ -6158,6 +5560,17 @@ function renderAdminUsers(data, invitationData) {
       <tbody>${invitationRows || '<tr><td colspan="4" style="text-align:center;color:var(--text-3);padding:16px">暂无待审核申请</td></tr>'}</tbody>
     </table></div>
   `;
+}
+
+async function saveUserAIPermission(id,key,input) {
+  input.disabled=true;
+  try {
+    const response=await fetch('/auth/users/'+id+'/ai-permissions',{method:'PUT',headers:{'Content-Type':'application/json',Authorization:'Bearer '+authToken},body:JSON.stringify({[key]:input.checked})});
+    const data=await response.json();
+    if (!response.ok) throw new Error(data.error || '授权失败');
+    showSettingsStatus('权限已保存','ok');
+  } catch (error) { input.checked=!input.checked; showSettingsStatus(error.message,'err'); }
+  finally { input.disabled=false; }
 }
 
 async function revokePendingInvitation(id, email) {
@@ -6250,7 +5663,7 @@ function createArticleElement(item) {
 function updateArticleElement(node, item) {
   const title = node.querySelector('.item-title');
   // Use displayTitle() (not the raw item.title) so the incremental-update path
-  // honors the viewer's "查看服务端共享的标题翻译" (share_view_title) toggle,
+  // honors the viewer's "显示标题翻译" (view_title_translation) toggle,
   // exactly like the initial render in articleItemHtml(). Otherwise this path
   // would show the translated title regardless of the toggle, disagreeing with
   // the article detail <h1> which always goes through displayTitle().
@@ -7181,6 +6594,7 @@ function hasBlockingOverlayOpen() {
     'sourceArticlesOverlay',
     'authModal',
     'lb',
+    'ttsOverlay',
   ].some(id => {
     const element = document.getElementById(id);
     return element && (element.classList.contains('open') || element.classList.contains('show'));
@@ -8072,7 +7486,7 @@ function syncArticleTitle(articleId, translatedTitle) {
 
 // Server-wide title (article.title/original_title), as opposed to the
 // per-article manual content-translation title handled by syncArticleTitle
-// above — this one must respect the viewer's share_view_title setting.
+// above — this one must respect the viewer's view_title_translation setting.
 function applyServerTitleUpdate(item) {
   const newsItem = news.find(n => n.id === item.id);
   if (newsItem) { newsItem.title = item.title; newsItem.original_title = item.original_title; }
@@ -8116,10 +7530,10 @@ function applyTranslationUpdate(item) {
 
   const overlay = document.getElementById('overlay');
   if (!overlay || !overlay.classList.contains('open') || overlay.dataset.articleId !== String(id)) return;
-  const context = sharedArticleContext(id);
+  const context = aiArticleContext(id);
   fetchArticleDetail(id)
     .then(data => {
-      if (!sharedContextCurrent(context)) return;
+      if (!aiContextCurrent(context)) return;
       const currentOverlay = document.getElementById('overlay');
       if (!currentOverlay || !currentOverlay.classList.contains('open') || currentOverlay.dataset.articleId !== String(id)) return;
       renderArticleBody(document.getElementById('articleWrap'), data, id);
@@ -8141,7 +7555,7 @@ async function pollTranslationUpdates() {
   if (!authToken) return;
   if (translationUpdatePolling) return translationUpdatePollPromise;
   translationUpdatePolling = true;
-  const pollSession = sharedSessionGeneration;
+  const pollSession = aiSessionGeneration;
   const pollToken = authToken;
   const pollPromise = (async () => {
     const establishingBaseline = !translationUpdateCursor;
@@ -8161,7 +7575,7 @@ async function pollTranslationUpdates() {
         return;
       }
       const data = await resp.json();
-      if (pollSession !== sharedSessionGeneration || pollToken !== authToken) return;
+      if (pollSession !== aiSessionGeneration || pollToken !== authToken) return;
       const nextCursor = data && typeof data.cursor === 'string' ? data.cursor : '';
       if (!data || data.error || (establishingBaseline && !nextCursor)) {
         if (establishingBaseline) translationUpdateBaselineUncertain = true;
@@ -8279,6 +7693,7 @@ function scheduleSearchRender() {
 }
 
 function renderSearchResults() {
+  if (authToken && (userAutoSettings?.view_title_translation || userAutoSettings?.view_title_shortening)) queueMicrotask(()=>loadVisibleAITitles().catch(()=>{}));
   const input = document.getElementById('articleSearchInput');
   const status = document.getElementById('searchStatus');
   const resultsEl = document.getElementById('searchResults');
@@ -8443,6 +7858,7 @@ function toggleSidebar() {
 }
 
 function renderList() {
+  if (authToken && (userAutoSettings?.view_title_translation || userAutoSettings?.view_title_shortening)) queueMicrotask(()=>loadVisibleAITitles().catch(()=>{}));
   const items = filteredNews();
   if (!authToken) currentPage = 1;
   const el = document.getElementById('list');
@@ -8875,8 +8291,8 @@ function restoreArticleReturnState(onComplete) {
 }
 
 async function waitForInitialSharedTranslation(prefetched) {
-  if (!prefetched || !authToken || !userAutoSettings?.share_active
-      || !userAutoSettings?.share_view_translation) return null;
+  if (!prefetched || !authToken || !userAutoSettings?.ai_active
+      || !userAutoSettings?.view_translation) return null;
   let timer;
   try {
     return await Promise.race([
@@ -8928,7 +8344,7 @@ function openArticle(id) {
     wrap.innerHTML = '<p style="color:var(--text-2);text-align:center;padding:60px 0">加载中...</p>';
     const requestId = ++activeArticleRequestId;
     markArticleOpen();
-    const sharedPrefetch = authToken ? readSharedResult(sharedArticleContext(id)) : null;
+    const sharedPrefetch = authToken ? readServerAIResult(aiArticleContext(id)) : null;
     if (sharedPrefetch) sharedPrefetch.catch(() => {});
     // Try cache first
     const renderFull = (data, initialShared) => {
@@ -8942,7 +8358,7 @@ function openArticle(id) {
           <span class="badge" style="${badgeStyle(displaySourceForArticle(feedSourceOf(data)))}" title="${esc(sourceBadgeTitle(feedSourceOf(data)))}">${esc(sourceLabel(displaySourceForArticle(feedSourceOf(data))))}</span>
           <span>${formatTime(data.date || '', data.time || '')}</span>
           <span style="margin-left:auto;display:flex;gap:8px;align-items:center" id="aiActions" data-article-id="${id}">
-            ${isRestrictedUser() ? '' : `<button class="article-ai-btn ai-summarize-btn" onclick="aiSummarize(${id})">摘要</button><button class="article-ai-btn ai-translate-btn" onclick="aiTranslate(${id})">翻译</button>`}
+            ${isRestrictedUser() ? '' : `${window.ttsButtonHtml ? ttsButtonHtml(id) : ''}<button class="article-ai-btn ai-summarize-btn" onclick="aiSummarize(${id})">摘要</button><button class="article-ai-btn ai-translate-btn" onclick="aiTranslate(${id})">翻译</button>`}
           </span>
         </div>
         ${coverImg}
@@ -8978,12 +8394,12 @@ function openArticle(id) {
     ? `<div style="margin-bottom:20px"><img src="${coverSrc}" alt="" decoding="async" style="max-width:100%;border-radius:var(--radius);background:var(--bg-surface)"></div>`
     : '';
   wrap.innerHTML = `
-    <h1>${userAutoSettings?.share_active && userAutoSettings?.share_view_translation ? '加载中...' : esc(displayTitle(n))}</h1>
+    <h1>${userAutoSettings?.ai_active && userAutoSettings?.view_translation ? '加载中...' : esc(displayTitle(n))}</h1>
     <div class="article-meta" style="position:relative">
       <span class="badge" style="${badgeStyle(displaySourceForArticle(feedSourceOf(n)))}" title="${esc(sourceBadgeTitle(feedSourceOf(n)))}">${esc(sourceLabel(displaySourceForArticle(feedSourceOf(n))))}</span>
       <span>${formatTime(n.date, n.time)}</span>
       <span style="margin-left:auto;display:flex;gap:8px;align-items:center" id="aiActions" data-article-id="${id}">
-        ${isRestrictedUser() ? '' : `<button class="article-ai-btn ai-summarize-btn" onclick="aiSummarize(${id})">摘要</button><button class="article-ai-btn ai-translate-btn" onclick="aiTranslate(${id})">翻译</button>`}
+        ${isRestrictedUser() ? '' : `${window.ttsButtonHtml ? ttsButtonHtml(id) : ''}<button class="article-ai-btn ai-summarize-btn" onclick="aiSummarize(${id})">摘要</button><button class="article-ai-btn ai-translate-btn" onclick="aiTranslate(${id})">翻译</button>`}
       </span>
     </div>
     ${coverImg}
@@ -9005,7 +8421,7 @@ function openArticle(id) {
   // Fetch full article body from API
   const requestId = ++activeArticleRequestId;
   markArticleOpen();
-  const sharedPrefetch = authToken ? readSharedResult(sharedArticleContext(id)) : null;
+  const sharedPrefetch = authToken ? readServerAIResult(aiArticleContext(id)) : null;
   if (sharedPrefetch) sharedPrefetch.catch(() => {});
   fetchArticleDetail(id)
     .then(async data => {
@@ -9085,6 +8501,7 @@ async function waitForTranslationBaseline() {
 function renderArticleBody(wrap, data, id) {
   const bodyEl = document.getElementById('articleBody');
   if (!bodyEl) return;
+  bodyEl.dataset.originalTitle = data.title || '';
   if (data.body_html) {
     let html = proxyImages(data.body_html);
     bodyEl.innerHTML = html;
@@ -9521,7 +8938,7 @@ function finishArticleClose() {
   _closingOverlay = true;
   articleReturnInProgress = true;
   activeArticleRequestId++;
-  cancelSharedResultReads();
+  cancelAIResultReads();
   const overlay = document.getElementById('overlay');
   overlay.classList.remove('open');
   overlay.classList.remove('from-source-history');
@@ -9650,15 +9067,102 @@ function esc(str) {
   return _escDiv.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-// The server always stores both the original and (if admin-translated) the
-// translated title on the article — which one to render is a per-viewer
-// choice gated by the "查看服务端共享的标题翻译" setting, so it's decided
-// here on the client rather than by the (unauthenticated) news API.
+// Public metadata contains original titles. Protected variants are fetched
+// separately and selected according to effective permissions and preferences.
+const serverTitleResults = new Map();
+const titleResultRevisions = new Map();
+const pendingTitleReads = new Set();
+let favoriteAIItems=[];
+let titleReadSequence=0;
+let titleBatchInFlight=false;
+let titleBatchRerunRequested=false;
+
+function resetAITitleResults() {
+  serverTitleResults.clear();
+  titleResultRevisions.clear();
+  pendingTitleReads.clear();
+  titleReadSequence++;
+  if (titleBatchInFlight) titleBatchRerunRequested=true;
+}
+
+function invalidateAITitleResult(id) {
+  id=Number(id);
+  titleResultRevisions.set(id,(titleResultRevisions.get(id) || 0)+1);
+  serverTitleResults.delete(id);
+  pendingTitleReads.add(id);
+}
+
+function storeAITitleResult(id, result) {
+  id=Number(id);
+  // A current article read is newer than any batch already in flight.
+  titleResultRevisions.set(id,(titleResultRevisions.get(id) || 0)+1);
+  serverTitleResults.set(id,result);
+  pendingTitleReads.delete(id);
+}
+
+async function loadVisibleAITitles() {
+  if (titleBatchInFlight) {
+    titleBatchRerunRequested=true;
+    return;
+  }
+  const sequence=++titleReadSequence, session=aiSessionGeneration, token=authToken, accessKey=aiAccessKey();
+  if (!token || (!userAutoSettings?.view_title_translation && !userAutoSettings?.view_title_shortening)) {
+    serverTitleResults.clear();
+    pendingTitleReads.clear();
+    return;
+  }
+  const ids=[...new Set([...news,...searchItems,...favoriteAIItems,...(sourceArticlesState.items || [])]
+    .map(item=>Number(item.id || item.article_id))
+    .filter(id=>id && (!serverTitleResults.has(id) || pendingTitleReads.has(id))))];
+  if (!ids.length) return;
+  titleBatchInFlight=true;
+  try {
+    for (let start=0;start<ids.length;start+=200) {
+      const batch=ids.slice(start,start+200);
+      const revisions=new Map(batch.map(id=>[id,titleResultRevisions.get(id) || 0]));
+      const controller=new AbortController();
+      const timer=setTimeout(()=>controller.abort(),8000);
+      let data;
+      try {
+        const response=await fetch('/ai/results?ids='+batch.join(','), {
+          headers:{Authorization:'Bearer '+token},cache:'no-store',signal:controller.signal,
+        });
+        if (!response.ok) return;
+        data=await response.json();
+      } finally { clearTimeout(timer); }
+      if (sequence!==titleReadSequence || session!==aiSessionGeneration || token!==authToken || accessKey!==aiAccessKey()) return;
+      for (const id of batch) {
+        if (revisions.get(id)!==(titleResultRevisions.get(id) || 0)) {
+          titleBatchRerunRequested=true;
+          continue;
+        }
+        serverTitleResults.set(id,data.items?.[id] || {});
+        pendingTitleReads.delete(id);
+      }
+    }
+    renderList();
+    if (document.getElementById('searchOverlay')?.classList.contains('open')) renderSearchResults();
+    if (document.getElementById('sourceArticlesOverlay')?.classList.contains('open')) renderSourceArticles(sourceArticlesState.items || []);
+    if (document.getElementById('favOverlay')?.classList.contains('open')) renderFavorites({items:favoriteAIItems});
+  } finally {
+    titleBatchInFlight=false;
+    if (titleBatchRerunRequested) {
+      titleBatchRerunRequested=false;
+      if (authToken && !document.hidden) queueMicrotask(()=>loadVisibleAITitles().catch(()=>{}));
+    }
+  }
+}
+
 function displayTitle(item) {
   if (!item) return '';
-  if (userAutoSettings?.share_active && userAutoSettings?.share_view_title) return item.title || item.original_title || '';
-  return item.original_title || item.title || '';
+  const result=serverTitleResults.get(Number(item.id || item.article_id)) || {};
+  if (userAutoSettings?.view_title_translation && userAutoSettings?.view_title_shortening && result.translated_title_summary) return result.translated_title_summary;
+  if (userAutoSettings?.view_title_translation && result.title_translation) return result.title_translation;
+  if (userAutoSettings?.view_title_shortening && result.title_summary) return result.title_summary;
+  return item.title || '';
 }
+
+
 
 // Convert contiguous list lines before the generic line-break pass. Once a
 // list item has become <li>, a later regex cannot infer whether it started as
@@ -9786,7 +9290,7 @@ function proxyImages(html) {
 // whose source text carries a prompt-injection payload could trick the LLM
 // into echoing back a <script>/onerror payload that would otherwise execute
 // in the reading user's own authenticated session. Sanitize client-side too,
-// not just at the point it enters the shared cache.
+// before assigning server-produced content to the article view.
 const SANITIZE_ALLOWED_TAGS = new Set([
   'p', 'br', 'b', 'strong', 'i', 'em', 'u', 's', 'a', 'ul', 'ol', 'li',
   'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'dd', 'dt', 'dl',
@@ -10041,6 +9545,406 @@ if (window.matchMedia) {
     if ((localStorage.getItem('raynews_theme') || 'system') === 'system') applyThemePreference('system');
   });
 }
+// ═══ TTS: global audio session and administrator configuration ═══
+/* One global player survives article navigation. Provider credentials stay on the server. */
+(() => {
+  'use strict';
+  // Lucide icon paths, matching the reader's existing outlined SVG controls.
+  const paths = {
+    speaker:'<path d="m11 5-6 4H2v6h3l6 4V5Z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.08M19.07 4.93a10 10 0 0 1 0 14.14"/>',
+    play:'<polygon points="6 3 20 12 6 21 6 3"/>',
+    pause:'<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>',
+    previous:'<polygon points="19 20 9 12 19 4 19 20"/><path d="M5 19V5"/>',
+    next:'<polygon points="5 4 15 12 5 20 5 4"/><path d="M19 5v14"/>',
+    down:'<path d="m6 9 6 6 6-6"/>', close:'<path d="m18 6-12 12M6 6l12 12"/>',
+    article:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h6"/>',
+  };
+  const icon = name => `<svg class="tts-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.play}</svg>`;
+  const audio = new Audio();
+  audio.preload = 'metadata';
+  const state = {article:null, queue:[], status:'idle', error:'', job:null, hasSummary:false,
+    url:null, sequence:0, controller:null, open:false, speed:1, partial:false, focus:null, validated:0};
+  const $ = id => document.getElementById(id);
+  const busy = () => ['waiting','queued','generating','loading'].includes(state.status);
+  const fallback = '/android-chrome-512x512.png';
+
+  const host = document.createElement('div');
+  host.id = 'ttsRoot';
+  host.innerHTML = `
+    <button id="ttsDisc" class="tts-disc" type="button" aria-label="打开语音播放器" aria-controls="ttsOverlay" aria-expanded="false" hidden>
+      <span class="tts-record"><img id="ttsDiscCover" src="${fallback}" alt=""></span><span class="tts-disc-badge" id="ttsDiscBadge"></span>
+    </button>
+    <div id="ttsOverlay" class="tts-overlay" hidden>
+      <section class="tts-panel" role="dialog" aria-modal="true" aria-labelledby="ttsTitle" tabindex="-1">
+        <div class="tts-handle" aria-hidden="true"></div>
+        <div class="tts-panel-top"><span id="ttsHeading">正在播放</span><button class="tts-plain" id="ttsCollapse" type="button" aria-label="收起播放器">${icon('down')}</button></div>
+        <img id="ttsCover" class="tts-cover" src="${fallback}" alt="新闻封面">
+        <h2 id="ttsTitle" class="tts-title"></h2><div id="ttsSource" class="tts-source"></div>
+        <p id="ttsStatus" class="tts-status" role="status" aria-live="polite"></p>
+        <button id="ttsRetry" class="tts-retry" type="button" hidden>重试</button>
+        <div class="tts-seek-wrap"><input id="ttsSeek" class="tts-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="播放进度" disabled>
+          <div class="tts-times"><span id="ttsCurrent">00:00</span><span id="ttsDuration">--:--</span></div></div>
+        <div class="tts-controls"><button id="ttsPrevious" class="tts-plain" type="button" aria-label="上一篇">${icon('previous')}</button>
+          <button id="ttsPlay" class="tts-play" type="button" aria-label="播放" disabled>${icon('play')}</button>
+          <button id="ttsNext" class="tts-plain" type="button" aria-label="下一篇">${icon('next')}</button></div>
+        <div class="tts-secondary"><select id="ttsSpeed" class="tts-speed" aria-label="播放速度"><option value="0.8">0.8×</option><option value="1" selected>1.0×</option><option value="1.2">1.2×</option><option value="1.5">1.5×</option></select>
+          <button id="ttsOriginal" class="tts-plain" type="button">${icon('article')}<span>查看原文</span></button>
+          <button id="ttsStop" class="tts-plain" type="button">结束播放</button></div>
+      </section>
+    </div>`;
+  document.body.appendChild(host);
+  audio.id='ttsAudio';
+  audio.hidden=true;
+  host.appendChild(audio);
+  for (const id of ['ttsDiscCover','ttsCover']) $(id).addEventListener('error', event => {
+    if (!event.target.src.endsWith(fallback)) event.target.src = fallback;
+  });
+
+  function formatTime(seconds) {
+    if (!Number.isFinite(seconds)) return '--:--';
+    return `${Math.floor(seconds / 60).toString().padStart(2,'0')}:${Math.floor(seconds % 60).toString().padStart(2,'0')}`;
+  }
+
+  function progress() {
+    const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+    const percentage = duration ? audio.currentTime / duration : 0;
+    $('ttsCurrent').textContent = formatTime(audio.currentTime || 0);
+    $('ttsDuration').textContent = formatTime(duration || NaN);
+    if (document.activeElement !== $('ttsSeek')) $('ttsSeek').value = Math.round(percentage * 1000);
+    $('ttsSeek').disabled = !duration;
+    $('ttsSeek').style.setProperty('--tts-seek-progress',`${percentage * 100}%`);
+    $('ttsSeek').setAttribute('aria-valuetext', `${formatTime(audio.currentTime || 0)} / ${formatTime(duration || NaN)}`);
+    $('ttsDisc').style.setProperty('--tts-progress', Math.min(100, percentage * 100));
+    if ('mediaSession' in navigator && duration) {
+      try { navigator.mediaSession.setPositionState({duration, playbackRate:audio.playbackRate, position:Math.min(duration,audio.currentTime)}); } catch (_) {}
+    }
+  }
+
+  function render() {
+    const active = !!state.article;
+    const playing = active && !audio.paused && state.status === 'ready';
+    $('ttsDisc').hidden = !active || state.open;
+    $('ttsDisc').classList.toggle('playing', playing);
+    $('ttsDisc').classList.toggle('busy', busy());
+    $('ttsDisc').setAttribute('aria-busy', String(busy()));
+    $('ttsDisc').setAttribute('aria-expanded', String(state.open));
+    $('ttsDiscBadge').innerHTML = busy() ? '<span class="tts-spinner"></span>' : icon(playing ? 'pause' : 'play');
+    document.body.classList.toggle('tts-active', active);
+    if (active) {
+      const src = state.article.thumb ? proxyImgSrc(state.article.thumb) : fallback;
+      for (const id of ['ttsDiscCover','ttsCover']) {
+        if ($(id).dataset.cover !== src) { $(id).dataset.cover=src; $(id).src=src; }
+      }
+      $('ttsTitle').textContent = state.article.title || '新闻语音';
+      $('ttsSource').textContent = [state.article.source, state.hasSummary ? '含 AI 摘要' : '', state.partial ? '已获取的正文' : ''].filter(Boolean).join(' · ');
+      $('ttsDisc').title = `${busy() ? '正在生成语音' : playing ? '正在播放' : '语音播放器'}：${state.article.title || ''}`;
+    }
+    $('ttsHeading').textContent = state.status === 'waiting' ? '等待生成名额' : busy() ? '正在生成语音' : state.error ? '生成失败' : playing ? '正在播放' : state.status === 'ended' ? '播放结束' : '语音阅读';
+    $('ttsStatus').textContent = state.error || (state.status === 'waiting' ? '语音生成名额暂时占用，空出后会自动开始当前文章。' : busy() ? '正在整理文章并生成语音，请稍候…' : state.partial ? '当前语音仅包含已获取的文章内容。' : '');
+    $('ttsStatus').classList.toggle('error', !!state.error);
+    $('ttsRetry').hidden = !state.error;
+    $('ttsPlay').disabled = !state.url || busy() || !!state.error;
+    $('ttsPlay').setAttribute('aria-label', playing ? '暂停' : state.status === 'ended' ? '重播' : '播放');
+    $('ttsPlay').innerHTML = icon(playing ? 'pause' : 'play');
+    const index = state.queue.indexOf(Number(state.article?.id));
+    $('ttsPrevious').disabled = index <= 0;
+    $('ttsNext').disabled = index < 0 || index >= state.queue.length - 1;
+    document.querySelectorAll('.tts-speaker').forEach(button => {
+      const current = Number(button.dataset.articleId) === Number(state.article?.id);
+      button.classList.toggle('active', current);
+      button.setAttribute('aria-busy', String(current && busy()));
+    });
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : state.url ? 'paused' : 'none';
+    progress();
+  }
+
+  function open() {
+    if (!state.article || state.open) return;
+    state.focus = document.activeElement;
+    state.open = true;
+    $('ttsOverlay').hidden = false;
+    $('ttsOverlay').classList.add('open');
+    lockBodyScroll();
+    render();
+    $('ttsCollapse').focus({preventScroll:true});
+  }
+
+  function collapse() {
+    if (!state.open) return;
+    state.open = false;
+    $('ttsOverlay').hidden = true;
+    $('ttsOverlay').classList.remove('open');
+    unlockBodyScroll();
+    render();
+    const focus = state.focus?.isConnected && !state.focus.hidden ? state.focus : $('ttsDisc');
+    if (!focus.hidden) focus.focus({preventScroll:true});
+  }
+
+  function clearAudio() {
+    audio.pause();
+    audio.removeAttribute('src');
+    audio.load();
+    if (state.url) URL.revokeObjectURL(state.url);
+    state.url = null;
+  }
+
+  function stop() {
+    adminSequence++;
+    state.sequence++;
+    state.controller?.abort();
+    clearAudio();
+    collapse();
+    Object.assign(state, {article:null,queue:[],status:'idle',error:'',job:null,controller:null,hasSummary:false});
+    if ('mediaSession' in navigator) navigator.mediaSession.metadata = null;
+    render();
+    clearTestAudio();
+  }
+
+  function allowed() {
+    if (!authToken) { showToast('请先登录后使用语音阅读'); return false; }
+    if (!userAutoSettings?.permissions?.tts) { showToast('暂无语音阅读权限，请联系管理员'); return false; }
+    if (!userAutoSettings?.services?.tts) { showToast('语音服务暂未开放'); return false; }
+    if (!userAutoSettings.view_tts) { showToast('请先在 AI 功能中开启语音阅读'); return false; }
+    return true;
+  }
+
+  async function requestData(url, options={}, signal=null, asAudio=false) {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (signal?.aborted) controller.abort();
+    signal?.addEventListener('abort',abort,{once:true});
+    const timer = setTimeout(abort, asAudio ? 90000 : 20000);
+    try {
+      const response = await fetch(url, {...options,cache:'no-store',signal:controller.signal,
+        headers:{Authorization:'Bearer '+authToken,...options.headers}});
+      if (!response.ok) {
+        const data = await response.json().catch(()=>({}));
+        const error = new Error((data.error || '语音服务暂时不可用，请稍后重试') + (authUser?.role === 'admin' && data.detail ? '（'+data.detail+'）' : ''));
+        error.code=data.code; error.status=response.status; throw error;
+      }
+      return asAudio ? await response.blob() : await response.json();
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (error.name === 'AbortError') throw new Error('语音请求超时，请重试');
+      if (error instanceof TypeError) throw new Error('网络连接失败，请检查网络后重试');
+      throw error;
+    } finally { clearTimeout(timer); signal?.removeEventListener('abort',abort); }
+  }
+
+  function delay(ms, signal) {
+    return new Promise((resolve,reject) => {
+      const abort=()=>{clearTimeout(timer);reject(new DOMException('Aborted','AbortError'));};
+      const timer=setTimeout(()=>{signal.removeEventListener('abort',abort);resolve();},ms);
+      if (signal.aborted) abort(); else signal.addEventListener('abort',abort,{once:true});
+    });
+  }
+
+  function queueFor(id) {
+    let items = news;
+    if ($('searchOverlay')?.classList.contains('open')) items=searchItems;
+    else if ($('sourceArticlesOverlay')?.classList.contains('open')) items=sourceArticlesState.items;
+    else if ($('favOverlay')?.classList.contains('open')) items=favoriteAIItems;
+    const ids=[...new Set((items || []).map(item=>Number(item.article_id || item.id)).filter(Boolean))];
+    if (!ids.includes(id)) ids.push(id);
+    return ids;
+  }
+
+  async function start(id, queue=null) {
+    id=Number(id);
+    if (!allowed()) return;
+    if (Number(state.article?.id) === id && (busy() || state.url) && !state.error && !queue) {
+      open(); if (state.url && audio.paused) await play(); return;
+    }
+    const sequence=++state.sequence, token=authToken;
+    state.controller?.abort();
+    clearAudio(); clearTestAudio(); adminSequence++;
+    state.controller=new AbortController();
+    const signal=state.controller.signal;
+    const known=findOpenArticleData(id) || favoriteAIItems.find(item=>Number(item.id)===id);
+    Object.assign(state,{article:{id,title:known?.title || '正在加载新闻…',source:known?.source || '',thumb:known?.thumb || ''},
+      queue:queue || queueFor(id),status:'queued',error:'',job:null,hasSummary:false,partial:false});
+    render();
+    try {
+      const waitDeadline=Date.now()+12*60*1000;
+      let result;
+      while (true) {
+        try { result=await requestData('/ai/tts/'+id,{method:'POST'},signal); break; }
+        catch (error) {
+          if (sequence!==state.sequence || token!==authToken || signal.aborted) return;
+          if (error.code!=='TTS_BUSY') throw error;
+          if (Date.now()>waitDeadline) throw new Error('等待语音生成名额超时，请重试');
+          state.status='waiting'; render();
+          await delay(3000,signal);
+          if (sequence!==state.sequence || token!==authToken) return;
+        }
+      }
+      if (sequence!==state.sequence || token!==authToken) return;
+      if (result.article) state.article=result.article;
+      state.job=result.id; state.hasSummary=!!result.has_summary; state.partial=!!result.partial_content;
+      const deadline=Date.now()+12*60*1000;
+      while (result.status !== 'ready') {
+        if (result.status === 'failed') throw new Error((result.error || '语音生成失败，请重试') + (authUser?.role === 'admin' && result.detail ? '（'+result.detail+'）' : ''));
+        if (Date.now()>deadline) throw new Error('语音生成超时，请重试');
+        state.status=result.status || 'generating'; render();
+        await delay(1000,signal);
+        result=await requestData('/ai/tts/jobs/'+state.job,{},signal);
+        if (sequence!==state.sequence || token!==authToken) return;
+      }
+      state.status='loading'; render();
+      // Accept only our own authenticated audio route, never a provider URL.
+      const audioPath='/ai/tts/audio/'+state.job;
+      const blob=await requestData(audioPath,{},signal,true);
+      if (sequence!==state.sequence || token!==authToken) return;
+      if (!blob.size || !blob.type.startsWith('audio/')) throw new Error('音频加载失败，请重试');
+      state.url=URL.createObjectURL(blob);
+      state.status='ready'; state.validated=Date.now();
+      audio.src=state.url; audio.playbackRate=state.speed;
+      if ('mediaSession' in navigator && 'MediaMetadata' in window) {
+        const cover=state.article.thumb ? new URL(proxyImgSrc(state.article.thumb),location.href).href : new URL(fallback,location.href).href;
+        navigator.mediaSession.metadata=new MediaMetadata({title:state.article.title,artist:state.article.source || 'RayNews',album:'RayNews',artwork:[{src:cover}]});
+      }
+      render(); await play();
+    } catch (error) {
+      if (sequence!==state.sequence || token!==authToken || signal.aborted) return;
+      if (error.status===401) { stop(); showToast('登录已过期，请重新登录'); return; }
+      state.status='failed'; state.error=error.message || '语音生成失败，请重试';
+      render(); showToast(state.error);
+    }
+  }
+
+  async function play() {
+    if (!state.url || busy()) return;
+    const sequence=state.sequence;
+    if (Date.now()-state.validated>30000 && state.job) {
+      try { await requestData('/ai/tts/jobs/'+state.job,{},state.controller?.signal); state.validated=Date.now(); }
+      catch (error) { if (sequence===state.sequence) { stop(); showToast(error.message); } return; }
+    }
+    if (sequence!==state.sequence) return;
+    try { state.status='ready'; await audio.play(); }
+    catch (error) {
+      if (sequence!==state.sequence || error.name==='AbortError') return;
+      if (error.name==='NotAllowedError') { showToast('语音已就绪，点击播放按钮开始收听'); open(); }
+      else { state.error='音频播放失败，请重试'; state.status='failed'; showToast(state.error); }
+      render();
+    }
+  }
+
+  function toggle() { if (audio.paused) play(); else audio.pause(); }
+  function move(delta) {
+    const index=state.queue.indexOf(Number(state.article?.id));
+    const next=state.queue[index+delta];
+    if (next) start(next,state.queue.slice());
+  }
+
+  function accessChanged() {
+    if (state.article && (!userAutoSettings?.view_tts || (state.hasSummary && !userAutoSettings?.view_summary))) {
+      stop(); showToast('语音访问权限或设置已变更，播放已停止');
+    }
+  }
+
+  $('ttsDisc').addEventListener('click',open);
+  $('ttsCollapse').addEventListener('click',collapse);
+  $('ttsOverlay').addEventListener('click',event=>{if(event.target===$('ttsOverlay')) collapse();});
+  $('ttsPlay').addEventListener('click',toggle);
+  $('ttsPrevious').addEventListener('click',()=>move(-1));
+  $('ttsNext').addEventListener('click',()=>move(1));
+  $('ttsStop').addEventListener('click',stop);
+  $('ttsRetry').addEventListener('click',()=>start(state.article.id,state.queue.slice()));
+  $('ttsOriginal').addEventListener('click',()=>{const id=state.article?.id;collapse();if(id)openArticle(id);});
+  $('ttsSeek').addEventListener('input',event=>{
+    if(Number.isFinite(audio.duration)) audio.currentTime=audio.duration*Number(event.target.value)/1000;
+    progress();
+  });
+  $('ttsSpeed').addEventListener('change',event=>{state.speed=Number(event.target.value);audio.playbackRate=state.speed;progress();});
+  for (const event of ['play','pause','loadedmetadata','durationchange','ratechange']) audio.addEventListener(event,render);
+  audio.addEventListener('timeupdate',progress);
+  audio.addEventListener('ended',()=>{state.status='ended';render();});
+  audio.addEventListener('error',()=>{if(state.url){state.error='音频播放失败，请重试';state.status='failed';render();}});
+  document.addEventListener('keydown',event=>{
+    if(!state.open)return;
+    if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();collapse();}
+    if(event.key==='Tab'){
+      const focusables=Array.from($('ttsOverlay').querySelectorAll('button:not([disabled]):not([hidden]),input:not([disabled]),select'));
+      const first=focusables[0],last=focusables[focusables.length-1];
+      if(event.shiftKey && document.activeElement===first){event.preventDefault();last.focus();}
+      else if(!event.shiftKey && document.activeElement===last){event.preventDefault();first.focus();}
+    }
+  },true);
+  if ('mediaSession' in navigator) {
+    for (const [name,handler] of Object.entries({play,pause:()=>audio.pause(),previoustrack:()=>move(-1),nexttrack:()=>move(1),stop,seekto:event=>{if(Number.isFinite(audio.duration))audio.currentTime=Math.min(audio.duration,event.seekTime);}})) {
+      try { navigator.mediaSession.setActionHandler(name,handler); } catch (_) {}
+    }
+  }
+  setInterval(async()=>{
+    if (!state.job || audio.paused || state.status!=='ready') return;
+    const sequence=state.sequence;
+    try { await requestData('/ai/tts/jobs/'+state.job,{},state.controller?.signal); if(sequence===state.sequence)state.validated=Date.now(); }
+    catch(error){if(sequence===state.sequence && [401,403,404,409,410].includes(error.status)){stop();showToast(error.message);}}
+  },30000);
+
+  // Admin configuration stays in the existing AI settings tab.
+  let testAudio=null,testUrl=null,adminSequence=0;
+  function clearTestAudio(){if(testAudio){testAudio.pause();testAudio.removeAttribute('src');testAudio.load();testAudio=null;}if(testUrl){URL.revokeObjectURL(testUrl);testUrl=null;}}
+  $('adminTabTts').innerHTML=`
+    <label class="ai-toggle" style="margin-top:12px"><input id="ttsEnabled" type="checkbox"><span>启用语音阅读服务</span></label>
+    <p class="ai-hint">由服务器调用 Kokoro，凭据不会发送给普通用户。修改后请先保存，再测试语音。</p>
+    <div class="tts-config-grid">
+      <div class="tts-config-wide"><label for="ttsEndpoint">Base URL</label><input class="ai-input" id="ttsEndpoint" type="url" placeholder="https://tts.rayyu.me/v1"></div>
+      <div><label for="ttsModel">模型</label><input class="ai-input" id="ttsModel" value="kokoro"></div>
+      <div><label for="ttsVoice">音色</label><input class="ai-input" id="ttsVoice" value="zf_094"></div>
+      <div><label for="ttsLang">语言代码</label><input class="ai-input" id="ttsLang" value="z"></div>
+      <div><label for="ttsSynthesisSpeed">合成语速</label><input class="ai-input" id="ttsSynthesisSpeed" type="number" min="0.5" max="2" step="0.1" value="1.3"></div>
+      <div class="tts-config-wide"><label for="ttsAuthType">鉴权方式</label><select class="ai-input" id="ttsAuthType"><option value="basic">Basic Auth</option><option value="authorization">自定义 Authorization</option></select></div>
+      <div class="tts-basic"><label for="ttsUsername">用户名</label><input class="ai-input" id="ttsUsername" value="rayyu" autocomplete="off"></div>
+      <div class="tts-basic"><label for="ttsPassword">密码</label><input class="ai-input" id="ttsPassword" type="password" autocomplete="new-password"><label class="tts-secret-clear"><input type="checkbox" id="ttsClearPassword">清除已保存密码</label></div>
+      <div id="ttsCustomAuth" class="tts-config-wide" hidden><label for="ttsAuthorization">Authorization 请求头完整值</label><input class="ai-input" id="ttsAuthorization" type="password" autocomplete="new-password"><label class="tts-secret-clear"><input type="checkbox" id="ttsClearAuthorization">清除已保存请求头</label></div>
+    </div><div class="tts-config-actions"><button class="ai-save-btn" id="ttsSaveConfig" type="button">保存语音配置</button><button class="ai-save-btn" id="ttsTestConfig" type="button">测试语音</button></div>
+    <p id="ttsConfigStatus" class="tts-config-status" role="status" aria-live="polite"></p>
+    <p class="ai-hint" style="margin-top:12px">音频仅临时保留 1 小时，容量上限 256 MB，每 10 分钟自动清理，不写入持久化数据目录。用户需获得 TTS 权限，并在 AI 功能中开启语音阅读。</p>`;
+  function authFields(){const basic=$('ttsAuthType').value==='basic';document.querySelectorAll('.tts-basic').forEach(el=>el.hidden=!basic);$('ttsCustomAuth').hidden=basic;}
+  $('ttsAuthType').addEventListener('change',authFields);
+  async function loadConfig() {
+    const sequence=++adminSequence, token=authToken;
+    try {
+      const data=await requestData('/admin/tts-config');
+      if(sequence!==adminSequence || token!==authToken)return;
+      const fields={ttsEndpoint:'endpoint',ttsModel:'model',ttsVoice:'voice',ttsLang:'lang_code',ttsSynthesisSpeed:'speed',ttsAuthType:'auth_type',ttsUsername:'username'};
+      for(const [id,key] of Object.entries(fields))$(id).value=data[key] ?? '';
+      $('ttsEnabled').checked=!!data.enabled;
+      for(const [id,key] of [['ttsPassword','has_password'],['ttsAuthorization','has_authorization']]){$(id).value='';$(id).placeholder=data[key]?'已配置，留空保持不变':'尚未配置';}
+      $('ttsClearPassword').checked=false;$('ttsClearAuthorization').checked=false;
+      $('ttsConfigStatus').textContent=data.available?'语音服务已启用。':'服务尚未启用或鉴权信息未填写完整。';
+      authFields();
+    }catch(error){if(sequence===adminSequence)$('ttsConfigStatus').textContent=error.message;}
+  }
+  $('ttsSaveConfig').addEventListener('click',async()=>{
+    const button=$('ttsSaveConfig');button.disabled=true;
+    const token=authToken;
+    $('ttsConfigStatus').textContent='正在保存…';
+    const data={enabled:$('ttsEnabled').checked,endpoint:$('ttsEndpoint').value,model:$('ttsModel').value,voice:$('ttsVoice').value,
+      lang_code:$('ttsLang').value,speed:Number($('ttsSynthesisSpeed').value),auth_type:$('ttsAuthType').value,username:$('ttsUsername').value,
+      password:$('ttsPassword').value,authorization:$('ttsAuthorization').value,clear_password:$('ttsClearPassword').checked,clear_authorization:$('ttsClearAuthorization').checked};
+    try{await requestData('/admin/tts-config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+      if(token!==authToken)return;await loadConfig();await loadUserSettings();$('ttsConfigStatus').textContent='语音配置已保存。';
+    }catch(error){if(token===authToken)$('ttsConfigStatus').textContent=error.message;}finally{button.disabled=false;}
+  });
+  $('ttsTestConfig').addEventListener('click',async()=>{
+    const button=$('ttsTestConfig'),token=authToken,sequence=++adminSequence;button.disabled=true;
+    clearTestAudio();audio.pause();$('ttsConfigStatus').textContent='正在测试已保存的语音配置…';
+    try{
+      const blob=await requestData('/admin/tts-test',{method:'POST'},null,true);
+      if(token!==authToken || sequence!==adminSequence)return;
+      testUrl=URL.createObjectURL(blob);testAudio=new Audio(testUrl);
+      testAudio.addEventListener('ended',clearTestAudio,{once:true});testAudio.addEventListener('error',clearTestAudio,{once:true});
+      await testAudio.play();$('ttsConfigStatus').textContent='测试成功，正在播放测试语音。';
+    }catch(error){if(token===authToken)$('ttsConfigStatus').textContent=error.message;}finally{button.disabled=false;}
+  });
+
+  window.ttsButtonHtml=id=>`<button type="button" class="article-ai-btn tts-speaker${Number(state.article?.id)===Number(id)?' active':''}" data-article-id="${Number(id)}" onclick="RayNewsTTS.start(${Number(id)})" aria-label="语音阅读" title="语音阅读">${icon('speaker')}</button>`;
+  window.RayNewsTTS={start,stop,open,collapse,loadConfig,accessChanged};
+})();
+
+
 loadAuth();
 resetMobileColdStartScroll();
 bootstrapNews();

@@ -27,6 +27,7 @@ from bs4 import BeautifulSoup
 
 from network_safety import safe_get
 from news_schema import enable_wal_mode, ensure_article_schema
+from server_ai_store import ensure_title_result_invalidation
 from source_categories import (
     ensure_article_sources, init_source_categories,
     ensure_article_source_columns,
@@ -135,6 +136,7 @@ def init_db() -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON articles(timestamp DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_source ON articles(source)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_title_updated_at ON articles(title_updated_at, id) WHERE title_updated_at IS NOT NULL")
     init_source_categories(conn)
     conn.commit()
     return conn
@@ -153,6 +155,18 @@ def upsert_articles(
     — pass sync_sources=False there and let the caller run it once after the whole
     cycle finishes, instead of repeating a full-table pass per batch.
     """
+    # A title edit and its derived-cache invalidation share the upsert transaction.
+    # Install here too: the fetcher may start before the web schema initializer.
+    # Read the schema under the same write lock so a concurrent migration cannot
+    # be overwritten by a trigger built from an older, partial column snapshot.
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    ensure_title_result_invalidation(conn)
+    # A feed update replaces the canonical title. Refresh its snapshot and clear
+    # legacy AI metadata together; preserving those fields would resurrect an old
+    # title in readers/migrations. Keep a monotonic event time for changed source
+    # titles so a poll cannot miss two updates within the same millisecond.
+    # Inserts retain metadata for JSON bootstrap.
     sql = """INSERT INTO articles
         (id, title, source, feed_source, origin_source, group_source, publisher_domain,
          source_detection_version, ingested_at, time, date, timestamp, thumb,
@@ -197,12 +211,18 @@ def upsert_articles(
                 THEN excluded.original_body_html ELSE articles.original_body_html END,
             summary = CASE WHEN excluded.summary != ''
                 THEN excluded.summary ELSE articles.summary END,
-            original_title = CASE WHEN excluded.original_title IS NOT NULL
-                THEN excluded.original_title ELSE articles.original_title END,
-            title_updated_at = CASE WHEN excluded.title_updated_at IS NOT NULL
-                THEN excluded.title_updated_at ELSE articles.title_updated_at END,
-            title_source = CASE WHEN excluded.title_source IS NOT NULL
-                THEN excluded.title_source ELSE articles.title_source END"""
+            original_title = excluded.title,
+            title_updated_at = CASE WHEN
+                (CASE WHEN COALESCE(articles.title_source, '') IN ('translation', 'title_summary', 'ai')
+                    THEN COALESCE(NULLIF(articles.original_title, ''), '无标题文章')
+                    ELSE articles.title END) IS NOT excluded.title
+                THEN (SELECT CASE
+                    WHEN MAX(title_updated_at) >= strftime('%Y-%m-%d %H:%M:%f', 'now')
+                    THEN strftime('%Y-%m-%d %H:%M:%f', MAX(title_updated_at), '+0.001 seconds')
+                    ELSE strftime('%Y-%m-%d %H:%M:%f', 'now', '+0.001 seconds') END
+                    FROM articles WHERE title_updated_at IS NOT NULL)
+                ELSE articles.title_updated_at END,
+            title_source = NULL"""
     rows = []
     deleted_ids = {
         int(row[0])

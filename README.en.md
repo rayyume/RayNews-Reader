@@ -43,22 +43,21 @@ The responsive PWA supports system, light, and dark themes.
 
 ### AI
 
-RayNews has two independent AI paths: **user AI** and **server AI**. They use different API keys, execution locations, and billing owners.
+RayNews v6 generates all AI content on the server using administrator-managed credentials under **Admin settings → AI services → Connection settings**. Personal API configuration, browser-direct requests, personal relays, result sharing/uploads, and personal connectivity checks have been removed. OpenAI-compatible and Claude/Anthropic protocols remain supported on the server.
 
-| Aspect | User AI | Server AI |
-|--------|---------|-----------|
-| Configuration | **Settings → AI** | **Admin Settings → Server API** |
-| Who can configure it | User or Admin | Admin only |
-| Supported protocols | OpenAI-compatible and Claude/Anthropic | OpenAI-compatible and Claude/Anthropic |
-| API key and billing | The current user's own key; manual summary/translation calls the provider directly from the browser | The admin-managed system key; calls run in server background jobs |
-| Main uses | Manual summary, manual translation, on-demand daily digest | Automatic summaries, title/body translation, title shortening, global daily digest, and AI source classification |
-| Result scope | The user can opt in to sharing summary, translation, and title results after a connectivity check | Results are stored in the shared cache for every user to reuse |
+Administrators grant each user access to **article summaries, shortened titles, translation (headlines and bodies), daily digests, and TTS** independently. Administrators always have all grants. Users then choose their own display preferences under **Account | Notifications | Theme | AI features**. Grants do not enable display automatically. Unauthorized enable attempts are rejected by both the UI and server.
 
-**User AI:** Configure and enable your own endpoint, model, protocol, and key under **Settings → AI**. You can manually summarize or translate an article and request an on-demand daily digest. The browser uses the key to call your selected provider directly, so configure it only on trusted devices. Generated results are saved in RayNews; enabling **Share AI results** requires a live connectivity check and is revalidated hourly by default (`AI_SHARE_REVALIDATION_INTERVAL_HOURS`, fractions allowed, floored at 5 minutes). One scheduled revalidation failure is tolerated; two consecutive scheduled failures suspend sharing and notify that user in-app and by email. A user-initiated validation failure suspends sharing immediately. A later successful validation clears the failure streak, restores a suspended share, and sends the recovery notification.
+The administrator menu is **Users | AI services | Sources | Publish notifications | System maintenance**. Original-language short titles, full translated titles, and translated short titles are separate results. Public article APIs expose original content only; viewing cached AI content never initiates a provider call.
 
-**Server AI:** An administrator configures the system endpoint, model, protocol, and key under **Admin Settings → Server API**, then enables the needed background jobs under the summary and translation settings. The server processes new articles in small batches for automatic summaries, English title/body translation, and long-title shortening. The same system AI generates the global daily digest once before it is emailed to subscribed users. The server AI key is never sent to regular-user browsers.
+Daily-digest access and both delivery channels require the grant and the user's digest master switch. Disabling it pauses viewing and delivery while preserving channel preferences. Re-enabling does not backfill missed deliveries.
 
-AI results are stored in the database to avoid duplicate calls. Administrators should evaluate their selected provider's privacy policy, quota, and billing before enabling automatic jobs.
+**TTS audio:** Configure the independent service under **Admin settings → AI services → Audio reading**. Defaults are `https://tts.rayyu.me/v1`, model `kokoro`, voice `zf_094`, `lang_code: z`, and synthesis speed `1.3`. Use Basic Auth (default username `rayyu`) or a complete custom Authorization header, save and test the credentials, then enable the service. Secrets remain server-side and are never returned by configuration reads.
+
+Authorized users enable TTS in AI features and click the speaker before the summary button. Audio contains the original title, an existing summary only when the viewer has summary access enabled, and the original body. Images, raw URLs, navigation text and formatting noise are removed without rewriting facts. No extra summary or translation calls are made. The cover disc opens a player with seeking, pause, playback speed and previous/next articles from the initially loaded list. Playback continues while browsing; the next article is generated only on explicit selection. Missing covers fall back to the site image; generation failures offer a retry.
+
+The server generates a complete MP3 with `stream:false`, using at most two workers and one concurrent job per user. Audio is disposable: files live under container `/tmp/raynews-tts-<uid>/`, outside `/app/data`, for up to one hour, with a 256 MB total limit and a 64 MB per-file limit. Cleanup runs every ten minutes and on requests; restart removes orphaned files. Identical content/settings reuse audio, while changed content/configuration generates a new version. Every audio request checks current grants/preferences. Browser audio stays in memory and is released on logout or ending playback. `TTS_REQUEST_TIMEOUT_SECONDS` sets the synthesis timeout (default 300 seconds).
+
+**Upgrading from v5:** Back up the complete `/app/data` directory. Existing accounts receive all five grants once; future ordinary accounts start without grants and with AI preferences off. Existing summary/translation display preferences and delivery preferences migrate; daily digests start enabled for existing accounts, while shortened titles and TTS start disabled. Revocation disables the corresponding preferences; regranting requires the user to enable them again. Personal credentials and sharing health state are removed. Article AI results with unverifiable provenance are quarantined in `ai_results_legacy_v5`, not served or automatically regenerated in bulk. Server-generated global digests are preserved. The internal `news.json` mirror is no longer publicly served. Failed migrations prevent background-job startup and can be retried. Rollback requires restoring both the database backup and the matching old application.
 
 ### Image cache
 
@@ -223,7 +222,7 @@ volumes:
 
 ### AI and background jobs
 
-AI endpoints, keys, models, and providers are configured per user under **Settings → AI**. They are not shared through Docker Compose.
+AI endpoints, keys, models, and providers are configured only by administrators under **AI services → Connection settings**.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -283,8 +282,9 @@ The current project has only two signed-in roles: **User** and **Admin**. The re
 | Browse and read articles | First 3 home-page articles only; remaining content is locked | ✓ | ✓ |
 | Search and pagination | — | ✓ | ✓ |
 | Manual refresh | — | ✓ | ✓ |
-| Favorites, personal AI configuration, and AI actions | — | ✓ | ✓ |
-| Profile, notification, and sharing settings | — | ✓ | ✓ |
+| Favorites | — | ✓ | ✓ |
+| View server AI results | — | Requires a grant and enabled preference | ✓ |
+| Profile, notifications, theme, and AI display preferences | — | ✓ | ✓ |
 | Source management, global AI settings, and resource usage | — | — | ✓ |
 | Delete sources and historical articles | — | — | ✓ |
 | Manage users, roles, invitation codes, and invitation review | — | — | ✓ |

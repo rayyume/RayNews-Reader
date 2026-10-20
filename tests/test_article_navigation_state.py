@@ -16,7 +16,7 @@ ARTICLE_HISTORY = source_between(
     "function usesMobileArticleNavigation()",
     "function rememberArticleReturnState(id)",
 )
-ARTICLE_CLOSE = "function cancelSharedResultReads() {}\n" + source_between(
+ARTICLE_CLOSE = "function cancelAIResultReads() {}\n" + source_between(
     "let _closingOverlay = false;",
     "let articleBackTouchStart = null;",
 )

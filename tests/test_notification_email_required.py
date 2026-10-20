@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import models
+import ai_access
 import web_server
 
 
@@ -40,6 +41,8 @@ class EmailPushRequiresAnAddressTests(unittest.TestCase):
         models.DB_FILE = self.db_path
         models.get_db()
         self.user_id = models.create_user("u@example.com", "pw", "U")["id"]
+        ai_access.set_permissions(self.user_id, {"daily_digest":True})
+        models.set_user_settings(self.user_id, view_daily_digest=1)
 
     def tearDown(self):
         models.close_db()
@@ -153,6 +156,8 @@ class EmailPushRequiresAnAddressTests(unittest.TestCase):
 
     def test_daily_delivery_skips_legacy_invalid_recipients_but_sends_valid_ones(self):
         other_user = models.create_user("other@example.com", "pw", "Other")["id"]
+        ai_access.set_permissions(other_user, {"daily_digest":True})
+        models.set_user_settings(other_user, view_daily_digest=1)
         models.set_user_settings(
             self.user_id,
             daily_summary_enabled=1,

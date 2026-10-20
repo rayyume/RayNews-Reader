@@ -25,6 +25,7 @@ def client(monkeypatch, tmp_path):
     }
     monkeypatch.setattr(models, "get_user", lambda user_id: users.get(user_id))
     monkeypatch.setattr(models, "record_access", lambda user_id: None)
+    monkeypatch.setattr(web_server, "ai_access", lambda uid:{"view_translation":True})
     return web_server.app.test_client()
 
 
@@ -50,39 +51,6 @@ def _insert_article(article_id=42):
     conn.close()
 
 
-def test_manual_translation_save_does_not_publish_translation_update(client, monkeypatch):
-    _insert_article()
-    monkeypatch.setattr(
-        web_server,
-        "get_user_settings",
-        lambda user_id: {
-            "share_ai_results": 1,
-            "share_suspended": 0,
-            "share_last_check_ok": 1,
-            "share_last_check_revision": 2,
-            "share_current_config_revision": 2,
-        },
-    )
-    monkeypatch.setattr(
-        web_server,
-        "get_ai_config",
-        lambda user_id: {"provider": "openai", "model": "model"},
-    )
-
-    response = client.post(
-        "/ai/result/42",
-        headers=_auth_headers(),
-        json={"translation": json.dumps({"title": "中文", "html": "<p>译文</p>"})},
-    )
-
-    assert response.status_code == 200
-    conn = sqlite3.connect(web_server.NEWS_DB)
-    translation, translation_updated_at = conn.execute(
-        "SELECT translation, translation_updated_at FROM ai_results WHERE article_id = 42"
-    ).fetchone()
-    conn.close()
-    assert translation
-    assert translation_updated_at is None
 
 
 def test_automatic_full_body_translation_keeps_canonical_body_and_publishes_cache_update(

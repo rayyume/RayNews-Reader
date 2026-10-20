@@ -17,6 +17,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import models
+import ai_access
+import pytest
 import web_server
 
 
@@ -33,6 +35,9 @@ class DailySummaryInAppDeliveryTests(unittest.TestCase):
         models.get_db()
         self.user_a = models.create_user("a@example.com", "pw", "A")["id"]
         self.user_b = models.create_user("b@example.com", "pw", "B")["id"]
+        for uid in (self.user_a, self.user_b):
+            ai_access.set_permissions(uid, {"daily_digest": True})
+            models.set_user_settings(uid, view_daily_digest=1)
         self.result = {"summary": "## 今日要闻\n- 一条", "article_count": 7, "stats": {}}
 
     def tearDown(self):
@@ -56,7 +61,7 @@ class DailySummaryInAppDeliveryTests(unittest.TestCase):
             items = models.list_notifications(user_id)
             self.assertEqual(len(items), 1)
             self.assertEqual(items[0]["type"], "daily_summary")
-            self.assertEqual(items[0]["title"], "RayNews每日摘要")
+            self.assertEqual(items[0]["title"], "RayNews每日总结")
             self.assertEqual(items[0]["format"], "markdown")
             self.assertEqual(items[0]["body"], self.result["summary"])
             self.assertEqual(models.count_unread_notifications(user_id), 1)
@@ -234,15 +239,15 @@ class DailySummaryFrontendContractTests(unittest.TestCase):
 
     def test_no_manual_generation_controls_remain(self):
         self.assertNotIn("generateDailySummary", self.html)
-        self.assertNotIn("生成每日摘要", self.html)
+        self.assertNotIn("生成每日总结", self.html)
         self.assertNotIn("重新生成", self.html)
         # No client-side POST to the retired generation route.
         self.assertNotIn("'/ai/daily-summary'", self.html)
 
     def test_scheduled_state_explains_the_time_and_links_to_push_settings(self):
-        self.assertIn("每日摘要将在北京时间每天晚 9 点（", self.html)
+        self.assertIn("每日总结将在北京时间每天晚 9 点（", self.html)
         self.assertIn("function openDailySummaryPushSettings()", self.html)
-        self.assertIn("每日摘要推送设置", self.html)
+        self.assertIn("每日总结推送设置", self.html)
         # The jump target has to exist for scrollIntoView to land anywhere.
         self.assertIn('id="dailySummaryPushSection"', self.html)
         self.assertIn("switchSettingsTab('notify')", self.html)
@@ -256,3 +261,9 @@ class DailySummaryFrontendContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+@pytest.fixture(autouse=True)
+def authorized_daily_route(monkeypatch, request):
+    if request.node.cls and request.node.cls.__name__ == 'DailySummaryRouteTests':
+        monkeypatch.setattr(web_server, 'ai_permissions', lambda uid:{'daily_digest':True})
+        monkeypatch.setattr(web_server, 'daily_enabled', lambda uid:True)

@@ -191,10 +191,12 @@ class TitleProcessingTests(unittest.TestCase):
                 "SELECT title, original_title, title_updated_at, title_source FROM articles WHERE id = 1"
             ).fetchone()
             conn.close()
-            self.assertEqual(row[0], "Shorter Title")
-            self.assertEqual(row[1], "Original Long Title")
-            self.assertIsNotNone(row[2])
-            self.assertEqual(row[3], "title_summary")
+            self.assertEqual(row[0], "Original Long Title")
+            self.assertIsNone(row[1])
+            self.assertIsNone(row[2])
+            self.assertIsNone(row[3])
+            with sqlite3.connect(db_path) as results:
+                self.assertEqual(results.execute("SELECT title_summary FROM ai_results WHERE article_id=1").fetchone()[0], "Shorter Title")
         finally:
             for suffix in ("", "-wal", "-shm"):
                 try:
@@ -304,20 +306,13 @@ class TitleProcessingTests(unittest.TestCase):
             conn.close()
 
             web_server.NEWS_DB = str(db_path)
-            changed = web_server._process_article_title(
-                {"id": 1, "title": original, "title_summary_needed": True},
-                {"auto_title_summary_enabled": 1, "provider_type": "openai", "model": "fake"},
-            )
-
+            self.assertTrue(web_server._init_ai_results_table())
             conn = sqlite3.connect(db_path)
-            title, error = conn.execute(
-                "SELECT a.title, r.title_summary_error "
-                "FROM articles a LEFT JOIN ai_results r ON r.article_id = a.id WHERE a.id = 1"
-            ).fetchone()
+            self.assertEqual(conn.execute("SELECT title_summary FROM ai_results_legacy_v5 WHERE article_id=1").fetchone()[0], "3998")
+            self.assertEqual(conn.execute("SELECT title FROM articles WHERE id=1").fetchone()[0], original)
+            self.assertIsNone(web_server._get_ai_result(1))
             conn.close()
-            self.assertFalse(changed)
-            self.assertNotEqual(title, "3998")
-            self.assertIn("invalid cached title summary", error)
+
         finally:
             web_server.NEWS_DB = old_news_db
             for suffix in ("", "-wal", "-shm"):

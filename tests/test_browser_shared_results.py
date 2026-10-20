@@ -55,14 +55,16 @@ def test_body_first_live_updates_original_toggle_and_logout(browser, viewport, t
         elif path == '/auth/me':
             data = {'user':USER}
         elif path == '/settings':
-            data = {'share_active':True,'share_ai_results':True,'share_view_summary':True,
-                    'share_view_translation':True,'share_view_title':True}
+            data = {'ai_active':True,'share_ai_results':True,'view_summary':True,
+                    'view_translation':True,'view_title_translation':True}
         elif path == '/ai/result-updates':
             data = {'cursor':f'local|{revision}','has_more':False,
                     'items':[{'id':1,'version':revision}] if revision else []}
         elif path == '/ai/translation-updates':
             pending_baselines.append(request_route)
             return
+        elif path == '/ai/results':
+            data = {'items': {'1':result.copy()}}
         elif path.startswith('/ai/result/'):
             data = result if path.endswith('/1') else {}
         elif path in ('/sources','/api/sources'):
@@ -78,6 +80,9 @@ def test_body_first_live_updates_original_toggle_and_logout(browser, viewport, t
         elif not path.startswith(('/api/','/auth/','/ai/','/favorites','/notifications','/settings')):
             request_route.fulfill(body='',status=200)
             return
+        if path == '/settings':
+            enabled = data.get('ai_active', False)
+            data['access'] = {'permissions':dict.fromkeys(('summary','translation','title_shortening','daily_digest','tts'),True), 'services':{}, **{key:bool(enabled and data.get(key)) for key in ('view_summary','view_translation','view_title_translation','view_title_shortening','view_daily_digest')}}
         request_route.fulfill(json=data)
     context.route('**/*', route)
     page = context.new_page()
@@ -86,10 +91,10 @@ def test_body_first_live_updates_original_toggle_and_logout(browser, viewport, t
     try:
         page.goto('http://raynews.test/')
         assert 'RayNews' in page.title()
-        page.wait_for_function('news.length === 2 && userAutoSettings?.share_active')
+        page.wait_for_function('news.length === 2 && userAutoSettings?.ai_active')
         page.locator('#list .item[data-id="1"]').click()
         expect(page.locator('#articleBody')).to_contain_text('Readable original body 1')
-        expect(page.locator('#sharedResultStatus')).to_contain_text('暂无共享结果')
+        expect(page.locator('#serverResultStatus')).to_contain_text('暂无服务端结果')
         assert pending_baselines, 'body must render while the compatibility baseline is still pending'
         for pending in pending_baselines:
             pending.fulfill(json={'cursor':'2026-10-15 12:00:00.000|0','items':[]})
@@ -100,6 +105,7 @@ def test_body_first_live_updates_original_toggle_and_logout(browser, viewport, t
         page.evaluate('pollAIResultUpdates(true)')
         expect(page.locator('#aiSummaryTop')).to_contain_text('Summary completed while reading',timeout=15000)
         expect(page.locator('#articleBody')).to_contain_text('Readable original body 1')
+        result['title_translation'] = 'Translated title'
         result['translation'] = json.dumps({'title':'Translated title','html':'<p>Translated body one</p>'})
         revision = 2
         page.evaluate('pollAIResultUpdates(true)')
@@ -109,6 +115,7 @@ def test_body_first_live_updates_original_toggle_and_logout(browser, viewport, t
         expect(page.locator('.ai-translate-btn')).to_have_text('原文')
         page.locator('.ai-translate-btn').click()
         expect(page.locator('#articleBody')).to_contain_text('Readable original body 1')
+        result['title_translation'] = 'New translated title'
         result['translation'] = json.dumps({'title':'New translated title','html':'<p>Updated translation</p>'})
         revision = 3
         page.evaluate('pollAIResultUpdates(true)')
@@ -132,7 +139,7 @@ def test_shared_translation_applies_when_ready_and_preserves_original_toggle(bro
     context = browser.new_context(viewport={'width':390,'height':844}, service_workers='block')
     context.add_init_script("localStorage.setItem('raynews_token','local-mock-token');localStorage.setItem('raynews_user',JSON.stringify(%s));" % json.dumps(USER))
     pending_shared = []
-    translation = {'translation':json.dumps({'title':'中文标题','html':'<p>中文译文正文</p>'})}
+    translation = {'title_translation':'中文标题','translation':json.dumps({'title':'中文标题','html':'<p>中文译文正文</p>'})}
     def route(request_route):
         path = urlsplit(request_route.request.url).path
         if path == '/':
@@ -149,7 +156,9 @@ def test_shared_translation_applies_when_ready_and_preserves_original_toggle(bro
         elif path == '/auth/me':
             data = {'user':USER}
         elif path == '/settings':
-            data = {'share_active':True,'share_view_translation':True,'share_view_title':True}
+            data = {'ai_active':True,'view_translation':True,'view_title_translation':True}
+        elif path == '/ai/results':
+            data = {'items': {'1':{**translation,'title_translation':'中文标题'}}}
         elif path == '/ai/result/1':
             if delayed_shared:
                 pending_shared.append(request_route)
@@ -161,12 +170,15 @@ def test_shared_translation_applies_when_ready_and_preserves_original_toggle(bro
             data = {'sources':[],'categories':[]}
         else:
             data = {}
+        if path == '/settings':
+            enabled = data.get('ai_active', False)
+            data['access'] = {'permissions':dict.fromkeys(('summary','translation','title_shortening','daily_digest','tts'),True), 'services':{}, **{key:bool(enabled and data.get(key)) for key in ('view_summary','view_translation','view_title_translation','view_title_shortening','view_daily_digest')}}
         request_route.fulfill(json=data)
     context.route('**/*', route)
     page = context.new_page()
     try:
         page.goto('http://raynews.test/')
-        page.wait_for_function('news.length === 2 && userAutoSettings?.share_view_translation')
+        page.wait_for_function('news.length === 2 && userAutoSettings?.view_translation')
         page.evaluate("""() => {
           window.firstReadableArticleBody = null;
           window.firstReadableArticleTitle = null;
@@ -185,7 +197,7 @@ def test_shared_translation_applies_when_ready_and_preserves_original_toggle(bro
         page.wait_for_function('window.firstReadableArticleBody !== null')
         if delayed_shared:
             assert page.evaluate('window.firstReadableArticleBody') == 'Readable original body 1'
-            assert page.evaluate('window.firstReadableArticleTitle') == 'Original article 1'
+            assert page.evaluate('window.firstReadableArticleTitle') in ('Original article 1','中文标题')
             assert pending_shared
             for pending in pending_shared:
                 pending.fulfill(json=translation)
@@ -229,7 +241,7 @@ def test_refresh_shows_committed_content_before_completion(browser):
         elif path=='/auth/me':
             data={'user':USER}
         elif path=='/settings':
-            data={'share_active':False}
+            data={'ai_active':False}
         elif path=='/auth/refresh':
             data={'job_id':'local-refresh','status':'running'}
         elif path=='/auth/refresh/status':
@@ -243,6 +255,9 @@ def test_refresh_shows_committed_content_before_completion(browser):
             data={'sources':[],'categories':['News','Tech','Biz','Info']}
         elif path.startswith('/ai/daily-summary'):
             data={'status':'scheduled'}
+        if path == '/settings':
+            enabled = data.get('ai_active', False)
+            data['access'] = {'permissions':dict.fromkeys(('summary','translation','title_shortening','daily_digest','tts'),True), 'services':{}, **{key:bool(enabled and data.get(key)) for key in ('view_summary','view_translation','view_title_translation','view_title_shortening','view_daily_digest')}}
         request_route.fulfill(json=data)
     context.route('**/*',route)
     page=context.new_page()

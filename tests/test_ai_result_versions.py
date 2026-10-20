@@ -7,7 +7,7 @@ from ai_result_updates import ensure_result_versions, read_updates, result_state
 def store(tmp_path):
     conn = sqlite3.connect(tmp_path / 'results.db')
     conn.execute('CREATE TABLE ai_results(article_id INTEGER PRIMARY KEY, summary TEXT, translation TEXT, '
-                 'summary_error TEXT, summary_error_at TEXT, title_summary TEXT, title_summary_error TEXT, translation_updated_at TEXT)')
+                 'summary_error TEXT, summary_error_at TEXT, title_summary TEXT, title_summary_error TEXT, translation_updated_at TEXT, title_translation TEXT, translated_title_summary TEXT)')
     ensure_result_versions(conn)
     conn.commit()
     yield conn
@@ -111,7 +111,7 @@ def test_real_api_keeps_authentication_and_permission_gate(tmp_path,monkeypatch)
     monkeypatch.setattr(models,'record_access',lambda user_id:None)
     settings={'share_ai_results':1,'share_last_check_ok':1,'share_last_check_revision':2,
               'share_current_config_revision':2,'share_view_summary':1,'share_view_translation':0,'share_view_title':0}
-    monkeypatch.setattr(web_server,'get_user_settings',lambda user_id:settings)
+    monkeypatch.setattr(web_server,'ai_access',lambda user_id: {'permissions':{'summary':True,'translation':False,'title_shortening':False},'view_summary':not settings.get('share_suspended'),'view_translation':False,'view_title_translation':False,'view_title_shortening':False})
     client=web_server.app.test_client()
     headers={'Authorization':'Bearer '+web_server.create_token(7,'user')}
     assert client.get('/ai/result-updates').status_code == 401
@@ -129,7 +129,7 @@ def test_real_api_keeps_authentication_and_permission_gate(tmp_path,monkeypatch)
     assert 'title_summary_by_user_id' not in result.get_json()
     settings['share_suspended']=1
     result=client.get('/ai/result/1',headers=headers).get_json()
-    assert 'summary' not in result and result['access']['share_active'] is False
+    assert 'summary' not in result and result['access']['view_summary'] is False
     assert client.get('/ai/result/999',headers=headers).status_code == 404
     replacement=tmp_path/'replacement.db'
     sqlite3.connect(replacement).close()
@@ -146,8 +146,27 @@ def test_strict_read_failure_is_an_http_error(tmp_path,monkeypatch):
     monkeypatch.setattr(web_server,'NEWS_DB',str(path))
     monkeypatch.setattr(models,'get_user',lambda user_id:{'id':user_id,'role':'user'})
     monkeypatch.setattr(models,'record_access',lambda user_id:None)
+    monkeypatch.setattr(web_server,'ai_access',lambda uid:{'permissions':{'summary':True,'translation':False,'title_shortening':False}})
     assert web_server._init_ai_results_table()
     with sqlite3.connect(path) as conn:
         conn.execute('DROP TABLE ai_results')
     headers={'Authorization':'Bearer '+web_server.create_token(7,'user')}
     assert web_server.app.test_client().get('/ai/result/1',headers=headers).status_code == 500
+
+
+def test_existing_update_trigger_upgrades_without_resetting_cursor(store):
+    store.execute("INSERT INTO ai_results(article_id,summary) VALUES(1,'preserved')")
+    store.commit()
+    cursor = updates(store)['cursor']
+    store.execute('ALTER TABLE ai_results ADD COLUMN translated_title_summary_error TEXT')
+    store.execute('ALTER TABLE ai_results ADD COLUMN translated_title_summary_error_at TEXT')
+    ensure_result_versions(store)
+    store.commit()
+    assert updates(store)['cursor'] == cursor
+    store.execute("UPDATE ai_results SET translated_title_summary_error='failed', translated_title_summary_error_at='2000-01-01 00:00:00' WHERE article_id=1")
+    store.commit()
+    failure = updates(store,cursor)
+    assert failure['items'] == [{'id':1,'version':2}]
+    store.execute("UPDATE ai_results SET translated_title_summary_error_at='2000-01-02 00:00:00' WHERE article_id=1")
+    store.commit()
+    assert updates(store,failure['cursor'])['items'] == [{'id':1,'version':3}]

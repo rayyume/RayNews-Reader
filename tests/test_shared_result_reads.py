@@ -2,25 +2,29 @@
 import pytest
 from test_frontend_refresh_behavior import run_node, source_between
 
-HELPERS = source_between('function sharedPermissionKey(', 'function showAIActions(')
+HELPERS = source_between('function aiAccessKey(', 'function showAIActions(')
 SETUP = r'''
-context.sharedSessionGeneration = 1;
-context.sharedAccessGeneration = 0;
-context.sharedResultReads = new Map();
-context.sharedResultVersions = new Map();
+context.normalizeAIAccess = s => s;
+context.serverTitleResults = new Map();
+context.storeAITitleResult=(id,result)=>context.serverTitleResults.set(id,result);
+context.displayTitle = item => item.title;
+context.aiSessionGeneration = 1;
+context.aiAccessGeneration = 0;
+context.aiResultReads = new Map();
+context.aiResultVersions = new Map();
 context.authToken = 'account-a';
 context.activeArticleRequestId = 1;
-context.userAutoSettings = {share_active:true,share_view_summary:true,share_view_translation:true,share_view_title:true};
+context.userAutoSettings = {ai_active:true,view_summary:true,view_translation:true,view_title_translation:true};
 context.DOMException = DOMException;
 context.setTimeout = setTimeout;
 context.clearTimeout = clearTimeout;
 context.abortableDelay = async () => {};
 context.isRestrictedUser = () => false;
 context.markArticleVisible = () => {};
-context.synchronizeShareAccessState = async next => { context.userAutoSettings=next; context.sharedAccessGeneration++; };
+context.synchronizeAIAccessState = async next => { context.userAutoSettings=next; context.aiAccessGeneration++; };
 context.esc = text => text;
 context.syncArticleTitle = () => {};
-context.findOpenArticleShareData = () => null;
+context.findOpenArticleData = () => null;
 context.proxyImages = text => text;
 context.sanitizeTranslatedHtml = text => text;
 context.elements = {};
@@ -45,11 +49,11 @@ context.ok = data => ({ok:true,json:async()=>data,headers:{get:()=>null}});
     "context.activeArticleRequestId++; context.elements.overlay.dataset.articleId='2';",
     "context.activeArticleRequestId+=2;",  # A -> B -> A
     "context.open=false;",
-    "context.sharedSessionGeneration++; context.authToken=null;",
-    "context.sharedSessionGeneration++; context.authToken='account-b';",
-    "context.userAutoSettings.share_active=false;",
-    "context.userAutoSettings.share_view_summary=false;",
-    "context.sharedAccessGeneration+=2;",
+    "context.aiSessionGeneration++; context.authToken=null;",
+    "context.aiSessionGeneration++; context.authToken='account-b';",
+    "context.userAutoSettings.ai_active=false;",
+    "context.userAutoSettings.view_summary=false;",
+    "context.aiAccessGeneration+=2;",
 ])
 def test_late_response_cannot_update_new_context(transition):
     run_node(HELPERS, f'''
@@ -67,15 +71,15 @@ def test_inflight_dedup_and_empty_response_can_be_retried():
     run_node(HELPERS, r'''
 let complete; let requests = 0;
 context.fetch = () => {requests++; return new Promise(resolve => complete=resolve);};
-const ctx = context.sharedArticleContext(1);
-const first = context.readSharedResult(ctx);
-const second = context.readSharedResult(ctx);
+const ctx = context.aiArticleContext(1);
+const first = context.readServerAIResult(ctx);
+const second = context.readServerAIResult(ctx);
 assert.strictEqual(first,second);
 complete(context.ok({})); await first;
 context.fetch = async () => {requests++; return context.ok({summary:'new'});};
-assert.equal((await context.readSharedResult(ctx)).summary,'new');
+assert.equal((await context.readServerAIResult(ctx)).summary,'new');
 assert.equal(requests,2);
-assert.equal(context.sharedResultReads.size,0);
+assert.equal(context.aiResultReads.size,0);
 ''', SETUP)
 
 
@@ -84,7 +88,7 @@ def test_nonretryable_http_failure_is_not_empty(status):
     run_node(HELPERS, f'''
 let requests=0;
 context.fetch=async()=>{{requests++;return {{ok:false,status:{status},headers:{{get:()=>null}}}};}};
-await assert.rejects(context.readSharedResult(context.sharedArticleContext(1)), e=>e.status==={status});
+await assert.rejects(context.readServerAIResult(context.aiArticleContext(1)), e=>e.status==={status});
 assert.equal(requests,1);
 ''', SETUP)
 
@@ -103,13 +107,13 @@ def test_exhausted_failure_is_recoverable_and_retry_after_is_respected():
     run_node(HELPERS, r'''
 let requests=0;
 context.fetch=async()=>{requests++;return {ok:false,status:503,headers:{get:()=>null}};};
-await assert.rejects(context.readSharedResult(context.sharedArticleContext(1)));
+await assert.rejects(context.readServerAIResult(context.aiArticleContext(1)));
 assert.equal(requests,3);
 context.fetch=async()=>{requests++;return {ok:false,status:429,headers:{get:()=> '3600'}};};
-await assert.rejects(context.readSharedResult(context.sharedArticleContext(1)));
+await assert.rejects(context.readServerAIResult(context.aiArticleContext(1)));
 assert.equal(requests,4);
 context.fetch=async()=>context.ok({summary:'next attempt'});
-assert.equal((await context.readSharedResult(context.sharedArticleContext(1))).summary,'next attempt');
+assert.equal((await context.readServerAIResult(context.aiArticleContext(1))).summary,'next attempt');
 ''', SETUP)
 
 
@@ -117,8 +121,8 @@ def test_real_cancellation_does_not_retry():
     run_node(HELPERS, r'''
 let requests=0;
 context.fetch=(_url,{signal})=>{requests++;return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(new DOMException('cancel','AbortError'))));};
-const pending=context.readSharedResult(context.sharedArticleContext(1));
-context.cancelSharedResultReads();
+const pending=context.readServerAIResult(context.aiArticleContext(1));
+context.cancelAIResultReads();
 await assert.rejects(pending,e=>e.name==='AbortError');
 assert.equal(requests,1);
 ''', SETUP)
@@ -131,6 +135,6 @@ context.setTimeout=(callback,ms)=>setTimeout(callback,ms===8000?1:ms);
 context.fetch=(_url,{signal})=>++requests===1
  ? new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(new DOMException('timeout','AbortError'))))
  : Promise.resolve(context.ok({summary:'after timeout'}));
-assert.equal((await context.readSharedResult(context.sharedArticleContext(1))).summary,'after timeout');
+assert.equal((await context.readServerAIResult(context.aiArticleContext(1))).summary,'after timeout');
 assert.equal(requests,2);
 ''', SETUP)

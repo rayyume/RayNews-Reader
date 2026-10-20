@@ -197,8 +197,12 @@ def test_unauthenticated_news_detail_never_serves_shared_translated_body(
     )
     conn.execute(
         "INSERT INTO articles (id, title, source, body_html, original_body_html) "
-        "VALUES (1, 'Title', 'Feed', '<p>共享译文</p>', '<p>Original body</p>')"
+        "VALUES (1, 'Title', 'Feed', '<p>Latest source body</p>', '<p>Old source excerpt</p>')"
     )
+    # Shared translations belong to the authenticated result store. The first
+    # source snapshot is not a reliable proxy for the current source body.
+    conn.execute('CREATE TABLE ai_results(article_id INTEGER PRIMARY KEY,translation TEXT)')
+    conn.execute("INSERT INTO ai_results VALUES(1,'<p>共享译文</p>')")
     conn.commit()
     conn.close()
     monkeypatch.setattr(refresh_server, "DB_FILE", db_path)
@@ -208,7 +212,8 @@ def test_unauthenticated_news_detail_never_serves_shared_translated_body(
 
     item = json.loads(refresh_server.api_news_detail(1).decode("utf-8"))
 
-    assert item["body_html"] == "<p>Original body</p>"
+    assert item["body_html"] == "<p>Latest source body</p>"
+    assert "共享译文" not in json.dumps(item,ensure_ascii=False)
     assert "original_body_html" not in item
 
 

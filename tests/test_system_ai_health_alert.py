@@ -942,7 +942,7 @@ def test_undelivered_system_ai_alert_is_retried(isolated_app_state_db, alerts, m
 
 
 def test_the_alert_names_every_affected_job(alerts):
-    jobs = ("自动翻译", "标题精简", "每日摘要")
+    jobs = ("自动翻译", "标题精简", "每日总结")
     for job in jobs:                       # one failure each…
         _fail(1, job=job)
     _fail(max(web_server.SYSTEM_AI_FAILURE_ALERT_THRESHOLD - len(jobs), 0), job=jobs[-1])
@@ -1192,9 +1192,9 @@ def test_generation_failure_feeds_the_streak(news_db_free, monkeypatch, alerts):
             raise RuntimeError("502 upstream")
 
     monkeypatch.setattr(web_server, "get_system_ai_config",
-                        lambda: {"enabled": True, "api_key": "k", "endpoint": "e", "model": "m"})
+                        lambda: {"enabled": True, "api_key": "k", "endpoint": "e", "model": "m"}, raising=False)
     monkeypatch.setattr(web_server, "_fetch_articles_by_date",
-                        lambda date_str, include_shared_summary=False: [{"id": 1, "title": "t"}])
+                        lambda date_str, include_ai_summary=False: [{"id": 1, "title": "t"}])
     monkeypatch.setattr(web_server, "_dedup_articles", lambda articles: articles)
     monkeypatch.setattr(web_server, "AIService", BoomService)
 
@@ -1271,7 +1271,7 @@ def test_the_evening_retry_chain_alone_reaches_the_threshold(news_db_free, monke
     monkeypatch.setattr(web_server, "get_system_ai_config",
                         lambda: {"enabled": True, "api_key": "k", "endpoint": "e", "model": "m"})
     monkeypatch.setattr(web_server, "_fetch_articles_by_date",
-                        lambda date_str, include_shared_summary=False: [{"id": 1, "title": "t"}])
+                        lambda date_str, include_ai_summary=False: [{"id": 1, "title": "t"}])
     monkeypatch.setattr(web_server, "_dedup_articles", lambda articles: articles)
     monkeypatch.setattr(web_server, "AIService", BoomService)
 
@@ -1280,7 +1280,7 @@ def test_the_evening_retry_chain_alone_reaches_the_threshold(news_db_free, monke
         web_server._generate_daily_summary_global("2026-07-10")
 
     assert [a["type"] for a in alerts] == ["system_ai_failed"] * 2
-    assert "每日摘要" in alerts[0]["body"]
+    assert "每日总结" in alerts[0]["body"]
 
 
 # ─── A cleared/disabled config, without probing anything ───────────────
@@ -1300,7 +1300,7 @@ def admin_with_auto_jobs(tmp_path, monkeypatch):
     try:
         models.get_db()
         admin = models.create_user("admin@example.com", "pw", "A", role="admin")["id"]
-        models.set_user_settings(admin, auto_summary_enabled=1)
+        models.set_app_state("ai_generation", '{"auto_summary_enabled":true}')
         monkeypatch.setattr(web_server, "get_db", models.get_db)
         yield admin
     finally:
@@ -1552,7 +1552,7 @@ def test_admin_triggered_classification_also_uses_the_server_api(monkeypatch):
     monkeypatch.setattr(web_server, "_get_news_db", lambda: object())
     monkeypatch.setattr(web_server, "get_ai_config",
                         lambda user_id: {"api_key": "personal", "enabled": 1, "endpoint": "e",
-                                         "model": "m"})
+                                         "model": "m"}, raising=False)
     monkeypatch.setattr(web_server, "_classify_source_batch",
                         lambda config, limit=50, force=False: (
                             used.append(config["api_key"]),

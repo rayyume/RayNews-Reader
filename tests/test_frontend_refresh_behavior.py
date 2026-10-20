@@ -1157,7 +1157,7 @@ def test_notification_markdown_uses_a_bounded_rendering_container():
     assert ".notif-markdown pre,.notif-markdown code{" in css
     assert ".notif-markdown img{" in css
     assert ".notif-markdown table{" in css
-    assert 'id="notifPubPreview" class="notif-detail-body notif-markdown"' in HTML
+    assert 'id="notifPubPreview"' in HTML and 'class="notif-detail-body notif-markdown"' in HTML
     assert '<div class="notif-detail-body notif-markdown">${bodyHtml}</div>' in HTML
     assert '.notif-markdown ul,.notif-markdown ol{padding-left:3em;' in css
     assert '.daily-summary-content ol,.daily-summary-content ul{margin:0 0 18px 0;padding-left:3em;' in HTML

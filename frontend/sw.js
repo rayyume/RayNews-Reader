@@ -122,11 +122,7 @@ self.addEventListener('activate', event => {
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
 
-  // ── Cross-origin (e.g. the user's own external AI endpoint): never intercept ──
-  // Wrapping these in respondWith() turns a plain CORS/network failure into a noisy
-  // "FetchEvent.respondWith received an error" and serves no cache purpose. Let them
-  // go straight to the network so callers (aiChat) see the real TypeError and can fall
-  // back to the same-origin /ai/chat relay.
+  // External assets use the browser network path directly.
   if (url.origin !== self.location.origin) {
     return;
   }

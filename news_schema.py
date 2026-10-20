@@ -18,6 +18,20 @@ _TITLE_COLUMNS = {
     "title_source": "TEXT",
 }
 
+# A snapshot is only meaningful while the current title is marked as AI-derived.
+# Feed reingestion can replace title while older databases retain the snapshot.
+SOURCE_TITLE_SQL = (
+    "CASE WHEN COALESCE(title_source,'') IN ('translation','title_summary','ai') "
+    "THEN COALESCE(NULLIF(original_title,''),'无标题文章') ELSE title END"
+)
+
+
+def source_article_title(article: dict) -> str:
+    if article.get("title_source") in {"translation", "title_summary", "ai"}:
+        return article.get("original_title") or "无标题文章"
+    return article.get("title", "")
+
+
 _SOURCE_COLUMNS = {
     "group_source": "TEXT NOT NULL DEFAULT ''",
     "publisher_domain": "TEXT NOT NULL DEFAULT ''",

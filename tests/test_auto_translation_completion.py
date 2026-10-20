@@ -339,7 +339,7 @@ def test_auto_translation_publishes_marker_after_cache_without_body_writeback(mo
     monkeypatch.setattr(
         web_server,
         "_save_article_translation",
-        lambda article_id, title=None, body_html=None: calls.append(
+        lambda article_id, title=None, body_html=None, **kwargs: calls.append(
             ("article", article_id, title, body_html)
         ) or True,
     )
@@ -488,7 +488,7 @@ def test_content_only_historical_repair_does_not_translate_or_save_title(
     monkeypatch.setattr(
         web_server,
         "_save_article_translation",
-        lambda article_id, title=None, body_html=None: saved_titles.append(title) or False,
+        lambda article_id, title=None, body_html=None, **kwargs: saved_titles.append(title) or False,
     )
     monkeypatch.setattr(
         web_server,
