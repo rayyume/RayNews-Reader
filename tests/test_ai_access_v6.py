@@ -1,4 +1,4 @@
-"""The server-only AI contract, including upgrade and revocation boundaries."""
+"""The server AI contract, including trusted history and revocation boundaries."""
 import json
 import sqlite3
 import subprocess
@@ -137,6 +137,27 @@ def test_field_level_access_and_private_result_headers(app):
         assert db.execute('SELECT title FROM articles WHERE id=1').fetchone()[0] == 'Original headline'
 
 
+def test_trusted_legacy_result_respects_current_grants_and_sanitizes_html(app):
+    client, _, headers, user, _ = app
+    with web_server._news_db_conn() as db:
+        db.execute(
+            "INSERT INTO ai_results(article_id,summary,summary_source,translation,translation_source) "
+            "VALUES(1,'Legacy summary','legacy',?,'legacy')",
+            (json.dumps({'html': '<p>Old translation</p><img src="x" onerror="alert(1)"><script>alert(2)</script>'}),),
+        )
+        db.commit()
+    assert client.get('/ai/result/1', headers=headers).status_code == 403
+    authorize(user, summary=True, translation=True)
+    models.set_user_settings(user, view_summary=1, view_translation=1)
+    data = client.get('/ai/result/1', headers=headers).get_json()
+    assert data['summary'] == 'Legacy summary'
+    translated = json.loads(data['translation'])['html']
+    assert '<p>Old translation</p>' in translated
+    assert '<script' not in translated and 'onerror' not in translated
+    authorize(user, summary=False, translation=False)
+    assert client.get('/ai/result/1', headers=headers).status_code == 403
+
+
 def test_daily_master_filters_old_notifications_and_recipients(app, monkeypatch):
     client, _, headers, user, _ = app
     authorize(user, daily_digest=True)
@@ -165,7 +186,8 @@ def test_account_upgrade_backfills_once_including_no_settings(tmp_path):
     ai_access.migrate_accounts(db, models.SCHEMA_SQL)
     assert db.execute('SELECT COUNT(*) FROM ai_permissions WHERE summary=1 AND tts=1').fetchone()[0] == 3
     assert db.execute('SELECT view_summary,view_title_translation,view_daily_digest FROM user_settings WHERE user_id=1').fetchone()[:] == (1,1,1)
-    assert db.execute('SELECT view_title_shortening FROM user_settings WHERE user_id=1').fetchone()[0] == 0
+    assert db.execute('SELECT view_title_shortening FROM user_settings WHERE user_id=1').fetchone()[0] == 1
+    assert db.execute('SELECT view_title_shortening FROM user_settings WHERE user_id=3').fetchone()[0] == 0
     assert db.execute('SELECT view_daily_digest FROM user_settings WHERE user_id=3').fetchone()[0] == 1
     assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='ai_configs'").fetchone()
     assert not any(row[1].startswith('share_') for row in db.execute('PRAGMA table_info(user_settings)'))
@@ -177,17 +199,18 @@ def test_account_upgrade_backfills_once_including_no_settings(tmp_path):
     db.close()
 
 
-def test_result_upgrade_quarantines_unknown_sources_and_restores_original_title(tmp_path):
+def test_result_upgrade_preserves_legacy_content_and_restores_public_original_title(tmp_path):
     from server_ai_store import migrate_results
     db=sqlite3.connect(tmp_path/'legacy-news.db')
     db.executescript("CREATE TABLE ai_results(article_id INTEGER PRIMARY KEY,summary TEXT,translation TEXT); INSERT INTO ai_results VALUES(1,'browser content','legacy translation'); CREATE TABLE articles(id INTEGER PRIMARY KEY,title TEXT,original_title TEXT,title_source TEXT,title_updated_at TEXT,body_html TEXT,original_body_html TEXT); INSERT INTO articles VALUES(1,'AI title','Original','translation',NULL,'Current body','Earlier body');")
-    db.execute('BEGIN IMMEDIATE');migrate_results(db, accept_legacy_loss=True);db.commit()
-    assert db.execute('SELECT COUNT(*) FROM ai_results').fetchone()[0] == 0
+    db.execute('BEGIN IMMEDIATE');migrate_results(db);db.commit()
+    assert db.execute('SELECT summary,translation,title_translation FROM ai_results').fetchone() == ('browser content','legacy translation','AI title')
     assert db.execute('SELECT summary FROM ai_results_legacy_v5').fetchone()[0] == 'browser content'
     assert db.execute('SELECT title,body_html FROM articles').fetchone() == ('Original','Current body')
-    db.execute("INSERT INTO ai_results(article_id,summary,summary_source) VALUES(1,'New server summary','server')");db.commit()
+    db.execute("UPDATE ai_results SET summary='New server summary',summary_source='server' WHERE article_id=1");db.commit()
     db.execute('BEGIN IMMEDIATE');migrate_results(db);db.commit()
     assert db.execute('SELECT summary FROM ai_results').fetchone()[0] == 'New server summary'
+    assert db.execute('SELECT summary FROM ai_results_legacy_v5').fetchone()[0] == 'browser content'
     db.close()
 
 

@@ -174,18 +174,14 @@ def _add_column_if_missing(
 
 def _initialize_db(db: sqlite3.Connection) -> None:
     """Create and migrate the model database on a newly opened connection."""
-    # The account migration removes personal AI credentials. Check the other
-    # database before touching this one so a refused news migration cannot
-    # leave accounts upgraded while v5 article results remain in place.
+    # Check for an interrupted news migration before removing v5 account data.
     news_path = DB_FILE.with_name("news.db")
     if news_path.is_file():
         from urllib.parse import quote
-        from server_ai_store import require_migration_acceptance
+        from server_ai_store import validate_migration_state
         uri = "file:" + quote(str(news_path.resolve())) + "?mode=ro"
         with sqlite3.connect(uri, uri=True) as news:
-            require_migration_acceptance(
-                news, accept_legacy_loss=os.environ.get("AI_V6_ACCEPT_LEGACY_LOSS") == "1"
-            )
+            validate_migration_state(news)
     db.executescript(SCHEMA_SQL)
     for table, column, definition in (
         (

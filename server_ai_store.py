@@ -1,4 +1,4 @@
-"""Atomic migration of mixed legacy results into a server-only result store."""
+"""Atomic migration of v5 shared AI results into the v6 permission model."""
 import time
 
 TITLE_FIELDS = ("title_translation", "translated_title_summary")
@@ -60,7 +60,7 @@ def migration_preview(conn, *, include_archived=True):
         "historical_translation_rows": 0,
         "ai_derived_titles": 0,
         "unrecoverable_titles": 0,
-        "archive_present": bool({"ai_results_legacy_v5", "ai_titles_missing_source_v5"} & tables),
+        "archive_present": bool({"ai_results_legacy_v5", "ai_titles_legacy_v5", "ai_titles_missing_source_v5"} & tables),
     }
     if migrated and not include_archived:
         return result
@@ -86,12 +86,23 @@ def migration_preview(conn, *, include_archived=True):
             else:
                 result[f"historical_{field}_rows"] = result[f"legacy_{field}_rows"]
     if migrated:
-        # The migration resets title_source, so the original total cannot be
-        # reconstructed from the live articles after the migration.
-        result["ai_derived_titles"] = None
+        if "ai_titles_legacy_v5" in tables:
+            result["ai_derived_titles"] = conn.execute(
+                "SELECT COUNT(*) FROM ai_titles_legacy_v5"
+            ).fetchone()[0]
+        else:
+            # The v6.0.0 migration did not archive every visible AI title.
+            result["ai_derived_titles"] = None
         if "ai_titles_missing_source_v5" in tables:
             result["unrecoverable_titles"] = conn.execute(
                 "SELECT COUNT(*) FROM ai_titles_missing_source_v5"
+            ).fetchone()[0]
+        elif "ai_titles_legacy_v5" in tables and "original_title" in {
+            row[1] for row in conn.execute("PRAGMA table_info(ai_titles_legacy_v5)")
+        }:
+            result["unrecoverable_titles"] = conn.execute(
+                "SELECT COUNT(*) FROM ai_titles_legacy_v5 "
+                "WHERE original_title IS NULL OR original_title=''"
             ).fetchone()[0]
         else:
             result["unrecoverable_titles"] = None
@@ -109,28 +120,21 @@ def migration_preview(conn, *, include_archived=True):
     return result
 
 
-def require_migration_acceptance(conn, *, accept_legacy_loss=False):
+def validate_migration_state(conn):
     preview = migration_preview(conn, include_archived=False)
     if preview["migration_pending"] and preview["archive_present"]:
         raise RuntimeError("Legacy AI archive exists without a completed migration; inspect the database before retrying")
-    if preview["migration_pending"] and (preview["legacy_result_rows"] or preview["ai_derived_titles"]) and not accept_legacy_loss:
-        raise RuntimeError(
-            "AI v6 migration needs explicit acceptance: "
-            f"{preview['legacy_result_rows']} legacy AI rows will stop displaying "
-            f"and {preview['ai_derived_titles']} AI-derived titles will be reset "
-            f"({preview['unrecoverable_titles']} lack an original snapshot). "
-            "Run the read-only migration preview, then set AI_V6_ACCEPT_LEGACY_LOSS=1 to proceed."
-        )
     return preview
 
 
-def migrate_results(conn, *, accept_legacy_loss=False):
-    preview = require_migration_acceptance(conn, accept_legacy_loss=accept_legacy_loss)
+def migrate_results(conn):
+    preview = validate_migration_state(conn)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(ai_results)")}
     needs_retry_reset = "translated_title_summary_error" not in columns
-    for field in (*TITLE_FIELDS, *TITLE_ERROR_FIELDS, *SOURCE_FIELDS):
+    for field in ("title_summary", *TITLE_FIELDS, *TITLE_ERROR_FIELDS, *SOURCE_FIELDS):
         if field not in columns:
             conn.execute("ALTER TABLE ai_results ADD COLUMN " + field + " TEXT")
+            columns.add(field)
     conn.execute("CREATE TABLE IF NOT EXISTS ai_schema_migrations(name TEXT PRIMARY KEY)")
     ensure_title_result_invalidation(conn)
     if conn.execute("SELECT 1 FROM ai_schema_migrations WHERE name='server_only_v6'").fetchone():
@@ -144,15 +148,43 @@ def migrate_results(conn, *, accept_legacy_loss=False):
             ).rowcount
             return {"reset_ambiguous_title_errors": count}
         return
-    # Legacy provenance cannot distinguish browser writes from background calls
-    # performed under an administrator ID. Keep an inspectable offline archive.
-    quarantined = preview["legacy_result_rows"]
+    # v5 shared results are trusted historical content. Keep a frozen copy for
+    # audit/rollback, while retaining the live rows for v6 permissioned reads.
+    preserved = preview["legacy_result_rows"]
     missing_titles = preview["unrecoverable_titles"]
     conn.execute("CREATE TABLE IF NOT EXISTS ai_results_legacy_v5 AS SELECT * FROM ai_results")
-    conn.execute("DELETE FROM ai_results")
+    # v5 version triggers would otherwise record each of the bulk migration
+    # updates, only for that temporary history to be discarded below.
+    for event in ("INSERT", "UPDATE", "DELETE"):
+        conn.execute("DROP TRIGGER IF EXISTS ai_result_version_" + event)
+    # Personal translations may have a title in their JSON payload even when
+    # the public article title was never rewritten. Preserve that title under
+    # the v6 title permission before the response strips it from body JSON.
+    if "translation" in columns:
+        conn.execute(
+            "UPDATE ai_results SET title_translation=json_extract(translation,'$.title') "
+            "WHERE NULLIF(TRIM(title_translation),'') IS NULL "
+            "AND CASE WHEN json_valid(translation) THEN "
+            "json_type(translation,'$.title')='text' "
+            "AND NULLIF(TRIM(json_extract(translation,'$.title')),'') IS NOT NULL "
+            "ELSE 0 END"
+        )
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    has_legacy_titles = False
     if "articles" in tables:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(articles)")}
+        title_filter = "COALESCE(title_source,'') IN ('translation','title_summary','ai')"
+        if preview["ai_derived_titles"] and {"id", "title", "title_source"} <= cols:
+            has_legacy_titles = True
+            conn.execute(
+                "CREATE TABLE ai_titles_legacy_v5 (article_id INTEGER PRIMARY KEY, "
+                "legacy_title TEXT, title_source TEXT, original_title TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO ai_titles_legacy_v5(article_id,legacy_title,title_source,original_title) "
+                "SELECT id,title,title_source," + ("original_title" if "original_title" in cols else "NULL")
+                + " FROM articles WHERE " + title_filter
+            )
         if missing_titles and {"id", "title", "title_source"} <= cols:
             missing = "(original_title IS NULL OR original_title='') AND " if "original_title" in cols else ""
             conn.execute("CREATE TABLE ai_titles_missing_source_v5 (article_id INTEGER PRIMARY KEY, legacy_title TEXT, title_source TEXT)")
@@ -172,15 +204,34 @@ def migrate_results(conn, *, accept_legacy_loss=False):
         # justify restoring this snapshot (nor does length establish freshness).
         if "title_source" in cols:
             conn.execute("UPDATE articles SET title_source=NULL" + (", title_updated_at=NULL" if "title_updated_at" in cols else ""))
+    if has_legacy_titles:
+        # Restore the authorized title cache after public article updates, so
+        # title-invalidation triggers cannot erase legacy titles during migration.
+        conn.execute(
+            "INSERT OR IGNORE INTO ai_results(article_id) "
+            "SELECT article_id FROM ai_titles_legacy_v5"
+        )
+        for source, field in (("translation", "title_translation"),
+                              ("title_summary", "title_summary"), ("ai", "title_summary")):
+            conn.execute(
+                f"UPDATE ai_results SET {field}=(SELECT legacy_title FROM ai_titles_legacy_v5 "
+                f"WHERE article_id=ai_results.article_id) WHERE article_id IN "
+                f"(SELECT article_id FROM ai_titles_legacy_v5 WHERE title_source=?)",
+                (source,),
+            )
+    for field in ("summary", "translation", "title_summary", "title_translation", "translated_title_summary"):
+        if field in columns:
+            conn.execute(
+                f"UPDATE ai_results SET {field}_source='legacy' "
+                f"WHERE NULLIF(TRIM({field}),'') IS NOT NULL AND {field}_source IS NULL"
+            )
     conn.execute("INSERT INTO ai_schema_migrations(name) VALUES('server_only_v6')")
     if "ai_result_versions" in tables:
         conn.execute("DELETE FROM ai_result_versions")
     if "ai_result_version_state" in tables:
         conn.execute("UPDATE ai_result_version_state SET epoch=lower(hex(randomblob(16))),sequence=0")
-    for event in ("INSERT", "UPDATE", "DELETE"):
-        conn.execute("DROP TRIGGER IF EXISTS ai_result_version_" + event)
-
-    return {"quarantined_article_results": quarantined, "unrecoverable_titles": missing_titles,
+    return {"preserved_legacy_results": preserved, "preserved_ai_titles": preview["ai_derived_titles"],
+            "missing_original_titles": missing_titles,
             "historical_summary_rows": preview["historical_summary_rows"],
             "historical_translation_rows": preview["historical_translation_rows"]}
 

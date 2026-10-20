@@ -4416,9 +4416,7 @@ def _init_ai_results_table() -> bool:
                     conn.execute("ALTER TABLE ai_results ADD COLUMN updated_at TEXT")
                     conn.execute("UPDATE ai_results SET updated_at = datetime('now') WHERE updated_at IS NULL")
                 from server_ai_store import migrate_results
-                migration_report = migrate_results(
-                    conn, accept_legacy_loss=os.environ.get("AI_V6_ACCEPT_LEGACY_LOSS") == "1"
-                )
+                migration_report = migrate_results(conn)
                 ensure_result_versions(conn)
                 conn.commit()
             if migration_report is not None:
@@ -4865,7 +4863,7 @@ def ai_get_result(article_id):
 
 def _public_ai_result(article_id, access):
     cached = dict(_get_ai_result(article_id, strict=True) or {})
-    result = {"version": cached.get("version", 0), "access": access, "states": {}}
+    result = {"version": cached.get("version") or 0, "access": access, "states": {}}
     for preference, fields, kind in (
         ("view_summary", ("summary", "summary_error", "summary_error_at"), "summary"),
         ("view_translation", ("translation",), "translation"),
@@ -4881,7 +4879,7 @@ def _public_ai_result(article_id, access):
             result["translated_title_summary"] = cached["translated_title_summary"]
     if result.get("translation"):
         title, html = _cached_full_translation(result["translation"])
-        result["translation"] = json.dumps({"html": html}, ensure_ascii=False)
+        result["translation"] = json.dumps({"html": _sanitize_translated_html(html)}, ensure_ascii=False)
     return result
 
 

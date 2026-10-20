@@ -31,7 +31,10 @@ def migrate_accounts(db, schema):
             for key in PREFERENCES:
                 if key not in columns:
                     db.execute("ALTER TABLE user_settings ADD COLUMN " + key + " INTEGER NOT NULL DEFAULT 0")
-            for target, old in (("view_summary", "share_view_summary"), ("view_title_translation", "share_view_title"), ("view_translation", "share_view_translation")):
+            for target, old in (("view_summary", "share_view_summary"),
+                                ("view_title_translation", "share_view_title"),
+                                ("view_title_shortening", "share_view_title"),
+                                ("view_translation", "share_view_translation")):
                 if old in columns:
                     db.execute("UPDATE user_settings SET " + target + "=CASE WHEN " + old + "=1 THEN 1 ELSE 0 END")
             db.execute("UPDATE user_settings SET view_daily_digest=1")
