@@ -435,6 +435,13 @@ context.cancelNetworkRecoveryRetry = () => {{}};
 context.scheduleNetworkRecoveryRetry = () => {{}};
 context.listLoadDegraded = false;
 context.activeRefreshDiscoverySink = null;
+// Title fetching is covered by rendered pagination tests; these extracted
+// request/cache tests do not load the account title-cache implementation.
+context.prepareAITitlesForPage = async () => {{}};
+context.loadAITitles = async () => {{}};
+context.loadVisibleAITitles = async () => {{}};
+context.refreshAITitleViews = () => {{}};
+context.queueMicrotask = queueMicrotask;
 vm.createContext(context);
 {setup}
 vm.runInContext({json.dumps(source)}, context);

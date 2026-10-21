@@ -628,6 +628,8 @@ global.displaySourceForArticle = value => value;
 global.badgeStyle = () => '';
 global.sourceBadgeTitle = value => value;
 global.sourceLabel = value => value;
+global.articleSourceLabel = item => item.display_source || item.source || '';
+global.synchronizeArticleSourceLabels = item => item;
 global.formatTime = () => '';
 global.esc = value => String(value);
 global.syncArticleHistory = () => {};

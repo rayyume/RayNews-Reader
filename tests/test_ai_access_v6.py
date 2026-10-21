@@ -137,6 +137,28 @@ def test_field_level_access_and_private_result_headers(app):
         assert db.execute('SELECT title FROM articles WHERE id=1').fetchone()[0] == 'Original headline'
 
 
+def test_title_batch_omits_bodies_and_respects_title_permissions(app, monkeypatch):
+    client, _, headers, user, _ = app
+    web_server._save_ai_result(1, summary='Summary', translation=json.dumps({'html': '<p>Body</p>'}), title_summary='Short')
+    web_server._save_article_title_update(1, 'Translated headline', 'translation')
+    authorize(user, summary=True, translation=True, title_shortening=True)
+    models.set_user_settings(user, view_summary=1, view_translation=1, view_title_shortening=1)
+    monkeypatch.setattr(web_server, '_sanitize_translated_html', lambda _: pytest.fail('title prefetch must not sanitize article bodies'))
+    response = client.get('/ai/results?fields=titles&ids=1', headers=headers)
+    assert response.status_code == 200
+    assert response.headers['Cache-Control'] == 'private, no-store'
+    data = response.get_json()['items']['1']
+    assert data['title_summary'] == 'Short'
+    assert not {'summary', 'translation', 'title_translation'} & data.keys()
+    models.set_user_settings(user, view_title_translation=1)
+    data = client.get('/ai/results?fields=titles&ids=1', headers=headers).get_json()['items']['1']
+    assert data['title_translation'] == 'Translated headline'
+    authorize(user, translation=False, title_shortening=False)
+    data = client.get('/ai/results?fields=titles&ids=1', headers=headers).get_json()['items']['1']
+    assert not {'summary', 'translation', 'title_translation', 'title_summary'} & data.keys()
+    assert client.get('/ai/results?fields=titles&ids=1').status_code == 401
+
+
 def test_trusted_legacy_result_respects_current_grants_and_sanitizes_html(app):
     client, _, headers, user, _ = app
     with web_server._news_db_conn() as db:

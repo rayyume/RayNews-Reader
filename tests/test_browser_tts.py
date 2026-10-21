@@ -32,10 +32,12 @@ def browser():
         browser.close()
 
 
-def setup_page(browser,viewport,theme='dark',role='user',failure=False,articles=None,ai_result=None,preferences=None):
+def setup_page(browser,viewport,theme='dark',role='user',failure=False,articles=None,ai_result=None,preferences=None,
+               guest=False,sources=None,sources_available=True,aliases=None):
     context=browser.new_context(viewport=viewport,service_workers='block',color_scheme=theme)
     user={'id':7,'role':role,'nickname':'Reader','email':'reader@example.test'}
-    context.add_init_script("localStorage.setItem('raynews_token','mock');localStorage.setItem('raynews_user',JSON.stringify(%s));localStorage.setItem('raynews_theme','%s');"%(json.dumps(user),theme))
+    if not guest:
+        context.add_init_script("localStorage.setItem('raynews_token','mock');localStorage.setItem('raynews_user',JSON.stringify(%s));localStorage.setItem('raynews_theme','%s');"%(json.dumps(user),theme))
     article_items=articles or ARTICLES
     enabled={'tts':True,'summary':True,**(preferences or {})};calls=[];control={'ready':True,'busy_for_2':False}
     control['ai_result']=ai_result or {'summary':'无人驾驶从试点逐渐走向日常应用。'}
@@ -61,7 +63,8 @@ def setup_page(browser,viewport,theme='dark',role='user',failure=False,articles=
         if path=='/auth/me':data={'user':user}
         elif path=='/settings':data={'access':access(),'theme_preference':theme,'notification_config':{}}
         elif path=='/api/news':data={'items':article_items,'total':2,'page':1,'size':30,'total_pages':1}
-        elif path.startswith('/api/news/') and path.rsplit('/',1)[-1].isdigit():data=article_items[int(path.rsplit('/',1)[-1])-1]
+        elif path.startswith('/api/news/') and path.rsplit('/',1)[-1].isdigit():
+            data={**article_items[int(path.rsplit('/',1)[-1])-1],**control.get('article_detail_override',{})}
         elif path.startswith('/ai/tts/audio/'):
             assert r.request.headers.get('authorization')=='Bearer mock'
             r.fulfill(body=sample_audio(),content_type='audio/wav');return
@@ -85,7 +88,10 @@ def setup_page(browser,viewport,theme='dark',role='user',failure=False,articles=
             data={**control['ai_result'],'access':access()}
         elif path=='/ai/results':data={'items':{str(item['id']):control['ai_result'] for item in article_items},'access':access()}
         elif path=='/ai/result-updates':data={'items':[],'cursor':'test|0','has_more':False,'access':access()}
-        elif path in ('/sources','/api/sources'):data={'sources':[],'categories':[]}
+        elif path in ('/sources','/sources/public','/api/sources'):
+            if not sources_available:
+                r.fulfill(status=503,json={'error':'source metadata unavailable'});return
+            data={'sources':sources or [],'aliases':aliases or {},'categories':['Tech'],'category_names':{'Tech':'科技动态'}}
         elif path=='/notifications':data={'items':[],'unread':0}
         elif path=='/admin/tts-config':
             if r.request.method=='PUT':
@@ -101,7 +107,7 @@ def setup_page(browser,viewport,theme='dark',role='user',failure=False,articles=
     control['console_logs']=[]
     page.on('console',lambda message:control['console_logs'].append(message.text) if message.type in {'error','warning'} else None)
     page.goto('http://raynews.test/')
-    page.wait_for_function('news.length===2 && userAutoSettings?.view_tts')
+    page.wait_for_function('news.length===2' if guest else 'news.length===2 && userAutoSettings?.view_tts')
     return context,page,enabled,calls,errors,control
 
 
@@ -593,5 +599,168 @@ def test_translation_refresh_preserves_pause_with_streaming_audio(browser,paused
         expect(page.locator('#ttsSeek')).to_be_enabled()
         expect(page.locator('#ttsPlay')).to_have_attribute('aria-label','播放' if paused else '暂停')
         assert sum(method=='POST' and path=='/ai/tts/1' for method,path in calls)==2
+        assert errors==[]
+    finally:context.close()
+
+
+@pytest.mark.parametrize('width,ordinary_mse', [(390,False),(1024,True)])
+def test_managed_media_source_streams_with_remote_playback_disabled(browser,width,ordinary_mse):
+    """Model WebKit's MMS-only iPhone and MMS+MSE iPad API surfaces."""
+    context,page,_,calls,errors,control=setup_page(browser,{'width':width,'height':900})
+    try:
+        enable_stream(page,control)
+        page.evaluate("""ordinary => {
+          const Native=window.MediaSource;
+          window.managedProbe={instances:0};
+          window.ManagedMediaSource=class extends Native {
+            constructor(){super();managedProbe.instances++;}
+            addSourceBuffer(type){
+              if(!document.getElementById('ttsAudio').disableRemotePlayback)
+                throw new Error('ManagedMediaSource requires remote playback disabled');
+              return super.addSourceBuffer(type);
+            }
+          };
+          if(!ordinary)window.MediaSource=undefined;
+        }""",ordinary_mse)
+        page.locator('#list .item[data-id="1"]').click()
+        page.locator('.tts-speaker').click()
+        page.locator('#ttsDisc').click()
+        page.wait_for_function('streamProbe.requests===1')
+        assert page.evaluate('managedProbe.instances')==1
+        assert page.evaluate('document.getElementById("ttsAudio").disableRemotePlayback')
+        page.evaluate('streamProbe.push(6)')
+        expect(page.locator('#ttsPlay')).to_have_attribute('aria-label','暂停')
+        expect(page.locator('#ttsSeek')).to_be_disabled()
+        assert not control['ready']
+        control['ready']=True
+        page.evaluate('streamProbe.close()')
+        expect(page.locator('#ttsSeek')).to_be_enabled()
+        assert not any('/ai/tts/audio/' in path for _,path in calls)
+        assert errors==[]
+    finally:context.close()
+
+
+@pytest.mark.parametrize('guest,metadata',[(True,False),(True,True),(False,False),(False,True)])
+def test_curated_source_is_the_only_article_and_player_label(browser,guest,metadata,tmp_path):
+    articles=[{**item,'source':'旧AI来源','group_source':'旧AI来源','feed_source':'旧订阅源',
+               'origin_source':'旧出处','display_source':'管理员确认来源',
+               'display_source_key':'旧AI来源','source_curated':True} for item in ARTICLES]
+    sources=[{'source':'旧AI来源','label':'管理员确认来源','category':'Tech','status':'manual'}] if metadata else []
+    context,page,_,_,errors,_=setup_page(browser,{'width':390,'height':844},
+        articles=articles,guest=guest,sources=sources,sources_available=metadata)
+    try:
+        badge=page.locator('#list .item[data-id="1"] .badge')
+        expect(badge).to_have_text('管理员确认来源')
+        expect(badge).to_have_attribute('title','管理员确认来源')
+        page.locator('#list .item[data-id="1"]').click()
+        expect(page.locator('#articleWrap .article-meta .badge')).to_have_text('管理员确认来源')
+        for old in ('旧AI来源','旧订阅源','旧出处'):
+            expect(page.locator('#articleWrap .article-meta')).not_to_contain_text(old)
+        if not guest:
+            page.locator('.tts-speaker').click()
+            page.wait_for_function('document.getElementById("ttsAudio").src.startsWith("blob:")')
+            page.locator('#ttsDisc').click()
+            expect(page.locator('#ttsSource')).to_contain_text('管理员确认来源')
+            expect(page.locator('#ttsSource')).not_to_contain_text('旧AI来源')
+            assert page.evaluate('navigator.mediaSession.metadata.artist')=='管理员确认来源'
+        screenshot_dir=Path(os.environ.get('RAYNEWS_QA_SCREENSHOT_DIR',str(tmp_path)))
+        screenshot_dir.mkdir(parents=True,exist_ok=True)
+        page.screenshot(path=str(screenshot_dir/f'curated-source-guest-{guest}-metadata-{metadata}.png'),animations='disabled')
+        assert errors==[]
+    finally:context.close()
+
+
+@pytest.mark.parametrize('managed_support',['unsupported','throws'])
+def test_unsupported_managed_source_keeps_working_ordinary_streaming(browser,managed_support):
+    context,page,_,_,errors,control=setup_page(browser,{'width':390,'height':844})
+    try:
+        enable_stream(page,control)
+        page.evaluate("""support=>{
+          window.ManagedMediaSource=class {
+            static isTypeSupported(){if(support==='throws')throw new Error('Unsupported');return false;}
+            constructor(){throw new Error('Unsupported managed source must not be instantiated');}
+          };
+        }""",managed_support)
+        page.locator('#list .item[data-id="1"]').click()
+        page.locator('.tts-speaker').click()
+        page.wait_for_function('streamProbe.requests===1')
+        page.evaluate('streamProbe.push(6)')
+        page.locator('#ttsDisc').click()
+        expect(page.locator('#ttsPlay')).to_have_attribute('aria-label','暂停')
+        assert not page.evaluate('document.getElementById("ttsAudio").disableRemotePlayback')
+        control['ready']=True
+        page.evaluate('streamProbe.close()')
+        expect(page.locator('#ttsSeek')).to_be_enabled()
+        assert errors==[]
+    finally:context.close()
+
+
+@pytest.mark.parametrize('guest',[False,True])
+def test_fresh_detail_replaces_source_names_from_cached_lists(browser,guest):
+    context,page,_,_,errors,control=setup_page(browser,{'width':390,'height':844},guest=guest,sources_available=False)
+    try:
+        control['article_detail_override']={'display_source':'刚刚更新的管理员来源',
+                                          'display_source_key':'curated','source_curated':True}
+        page.locator('#list .item[data-id="1"]').click()
+        expect(page.locator('#articleWrap .article-meta .badge')).to_have_text('刚刚更新的管理员来源')
+        expect(page.locator('#list .item[data-id="1"] .badge')).to_have_text('刚刚更新的管理员来源')
+        assert errors==[]
+    finally:context.close()
+
+
+@pytest.mark.parametrize('guest',[False,True])
+def test_cached_article_source_follows_shared_aliases_without_old_names_in_tooltips(browser,guest):
+    sources=[{'source':'最终来源','label':'管理员合并来源','category':'Tech','status':'manual'}]
+    aliases={'科技观察':'中间来源','中间来源':'最终来源'}
+    context,page,_,_,errors,_=setup_page(browser,{'width':390,'height':844},
+        guest=guest,sources=sources,aliases=aliases)
+    try:
+        badge=page.locator('#list .item[data-id="1"] .badge')
+        expect(badge).to_have_text('管理员合并来源')
+        expect(badge).to_have_attribute('title','管理员合并来源')
+        page.locator('#list .item[data-id="1"]').click()
+        expect(page.locator('#articleWrap .article-meta .badge')).to_have_text('管理员合并来源')
+        if not guest:
+            page.locator('.tts-speaker').click()
+            page.wait_for_function('document.getElementById("ttsAudio").src.startsWith("blob:")')
+            page.locator('#ttsDisc').click()
+            expect(page.locator('#ttsSource')).to_contain_text('管理员合并来源')
+        assert errors==[]
+    finally:context.close()
+
+
+def test_managed_buffer_eviction_restores_complete_seek_history(browser):
+    context,page,_,calls,errors,control=setup_page(browser,{'width':390,'height':844})
+    try:
+        enable_stream(page,control)
+        page.evaluate("""() => {
+          const Native=window.MediaSource;
+          window.ManagedMediaSource=class extends Native {
+            addSourceBuffer(type){window.managedBuffer=super.addSourceBuffer(type);return managedBuffer;}
+          };
+          window.MediaSource=undefined;
+        }""")
+        page.locator('#list .item[data-id="1"]').click()
+        page.locator('.tts-speaker').click()
+        page.locator('#ttsDisc').click()
+        page.wait_for_function('streamProbe.requests===1')
+        page.evaluate('streamProbe.push(8)')
+        expect(page.locator('#ttsPlay')).to_have_attribute('aria-label','暂停')
+        page.locator('#ttsPlay').click()
+        page.evaluate("""async () => {
+          document.getElementById('ttsAudio').currentTime=5;
+          await new Promise(resolve=>{
+            managedBuffer.addEventListener('updateend',resolve,{once:true});
+            managedBuffer.remove(0,4);
+          });
+        }""")
+        control['ready']=True
+        page.evaluate('streamProbe.close()')
+        expect(page.locator('#ttsSeek')).to_be_enabled()
+        expect(page.locator('#ttsDuration')).to_have_text('01:00')
+        expect(page.locator('#ttsPlay')).to_have_attribute('aria-label','播放')
+        page.locator('#ttsSeek').fill('0')
+        assert page.evaluate('document.getElementById("ttsAudio").currentTime')==0
+        assert any('/ai/tts/audio/' in path for _,path in calls)
         assert errors==[]
     finally:context.close()

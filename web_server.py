@@ -81,6 +81,7 @@ from source_categories import (
     delete_source_metadata, init_source_categories,
     find_merge_target, maintain_source_categories, merge_source,
     publisher_source_for_domain,
+    apply_article_source_labels,
     promote_user_source_settings,
     recent_titles_for_source, source_aliases_for_target, source_rows,
     update_source_category, extract_domains_from_html,
@@ -759,7 +760,9 @@ def _get_article_meta(article_id: int) -> dict | None:
                 "FROM articles WHERE id = ?",
                 (article_id,),
             ).fetchone()
-        return _original_article_meta(dict(row)) if row else None
+            if row:
+                return apply_article_source_labels(conn, [_original_article_meta(dict(row))])[0]
+        return None
     except Exception:
         return None
 
@@ -822,7 +825,8 @@ def _get_article_meta_batch(article_ids: list[int]) -> dict[int, dict]:
             f"      date, time, thumb, has_full_content, timestamp FROM articles WHERE id IN ({placeholders})",
             article_ids,
         ).fetchall()
-        return {r["id"]: _original_article_meta(dict(r)) for r in rows}
+        items = apply_article_source_labels(conn, [_original_article_meta(dict(r)) for r in rows])
+        return {item["id"]: item for item in items}
     except Exception:
         return {}
 
@@ -892,6 +896,10 @@ def list_favorites():
                 "title": meta["title"],
                 "original_title": meta.get("original_title", ""),
                 "source": meta["source"],
+                "display_source": meta["display_source"],
+                "display_source_key": meta["display_source_key"],
+                "source_curated": meta["source_curated"],
+                "source_labels_read_at": meta["source_labels_read_at"],
                 "feed_source": meta.get("feed_source", meta["source"]),
                 "origin_source": meta.get("origin_source", ""),
                 "date": meta["date"],
@@ -5009,7 +5017,7 @@ def ai_get_result(article_id):
     return response
 
 
-def _public_ai_result(article_id, access):
+def _public_ai_result(article_id, access, *, titles_only=False):
     cached = dict(_get_ai_result(article_id, strict=True) or {})
     result = {"version": cached.get("version") or 0, "access": access, "states": {}}
     for preference, fields, kind in (
@@ -5018,6 +5026,8 @@ def _public_ai_result(article_id, access):
         ("view_title_translation", ("title_translation",), "title_translation"),
         ("view_title_shortening", ("title_summary",), "title_summary"),
     ):
+        if titles_only and kind in ("summary", "translation"):
+            continue
         if access[preference]:
             result.update({key: cached[key] for key in fields if cached.get(key) is not None})
             result["states"][kind] = result_state(article_id, kind, cached)
@@ -5040,7 +5050,8 @@ def ai_results_batch():
     if not _init_ai_results_table():
         return jsonify({"error": "result store unavailable"}), 503
     access = _viewer_ai_access()
-    response = jsonify({"items": {value: _public_ai_result(int(value), access) for value in dict.fromkeys(raw)}, "access": access})
+    titles_only = request.args.get("fields") == "titles"
+    response = jsonify({"items": {value: _public_ai_result(int(value), access, titles_only=titles_only) for value in dict.fromkeys(raw)}, "access": access})
     response.headers["Cache-Control"] = "private, no-store"
     return response
 
@@ -5083,6 +5094,7 @@ def list_sources():
         response.headers["Cache-Control"] = "no-store"
         return response, 503
     _promote_legacy_admin_source_settings(conn)
+    read_at = time.time_ns() // 1000
     definitions = category_definitions(conn)
     all_definitions = category_definitions(conn, include_disabled=True)
     response = jsonify({
@@ -5090,6 +5102,8 @@ def list_sources():
         "category_names": {row["category"]: row["label"] for row in definitions},
         "category_definitions": all_definitions,
         "sources": source_rows(conn),
+        "aliases": dict(conn.execute("SELECT alias_source,target_source FROM source_aliases")),
+        "source_labels_read_at": read_at,
     })
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -5187,7 +5201,7 @@ def list_source_articles():
     return jsonify({
         "source": base_sources[0],
         "sources": sources,
-        "items": [_original_article_meta(dict(row)) for row in rows],
+        "items": apply_article_source_labels(conn, [_original_article_meta(dict(row)) for row in rows]),
     })
 
 
@@ -6788,9 +6802,10 @@ def _tts_article(article_id):
     with _news_db_conn() as conn:
         _ensure_news_schema(conn)
         row = conn.execute("SELECT * FROM articles WHERE id=?", (article_id,)).fetchone()
+        if row:
+            article = apply_article_source_labels(conn, [dict(row)])[0]
     if not row:
         return None
-    article = dict(row)
     article["title"] = source_article_title(article)
     article["source"] = article.get("group_source") or article.get("source") or ""
     return article

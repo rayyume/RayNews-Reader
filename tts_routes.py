@@ -112,7 +112,9 @@ def register_tts_routes(app, load_article, load_result, namespace):
                             namespace=namespace() + ":" + str(article_id),
                             valid=lambda: load_article(article_id) is not None, selection=selection)
         result = job_response(job)
-        result["article"] = {key: article.get(key, "") for key in ("id", "title", "source", "thumb", "date", "time")}
+        result["article"] = {key: article.get(key, "") for key in (
+            "id", "title", "source", "display_source", "display_source_key", "source_curated", "source_labels_read_at",
+            "thumb", "date", "time")}
         result["partial_content"] = article.get("has_full_content") == 0
         return jsonify(result), 200 if job["status"] == "ready" else 202
 

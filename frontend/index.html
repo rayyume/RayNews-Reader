@@ -1149,6 +1149,8 @@ let CATEGORY_MAP = {};
 let CATEGORY_ORDER = ['News', 'Tech', 'Biz', 'Info', 'Uncategorized'];
 let CATEGORY_NAMES = { News: '政经新闻', Tech: '科技动态', Biz: '商业聚焦', Info: '其他信息', Uncategorized: '待分类' };
 let sourceMeta = {};
+let sourceMetadataReadAt = 0;
+let sourceAliases = {};
 let sourceRows = [];
 let rawSourceRows = [];
 let sourceCategoryDefinitions = [];
@@ -1802,7 +1804,11 @@ function applySourceCategoryDefinitions(data) {
 }
 
 function rebuildCategoryMap(rows, metadata = null) {
+  const readAt = Number(metadata?.source_labels_read_at) || 0;
+  if (readAt < sourceMetadataReadAt) return;
+  sourceMetadataReadAt = readAt;
   if (metadata) applySourceCategoryDefinitions(metadata);
+  sourceAliases = {...(metadata?.aliases || {})};
   const next = Object.fromEntries(CATEGORY_ORDER.map(category => [category, []]));
   sourceMeta = {};
   rawSourceRows = rows || [];
@@ -1838,6 +1844,7 @@ function rebuildCategoryMap(rows, metadata = null) {
     if (!next[cat].includes(source)) next[cat].push(source);
   }
   CATEGORY_MAP = next;
+  refreshArticleSourceViews();
 }
 
 function sourceGroupKey(label) {
@@ -1985,7 +1992,16 @@ async function writeNewsCacheEntry(record) {
     const db = await openNewsCache();
     await new Promise((resolve, reject) => {
       const tx = db.transaction(NEWS_CACHE_STORE, 'readwrite');
-      tx.objectStore(NEWS_CACHE_STORE).put(record);
+      const store = tx.objectStore(NEWS_CACHE_STORE);
+      if (record.key === 'source-metadata') {
+        // Compare and write in one transaction so a slower, older request
+        // cannot replace the snapshot used by the next offline cold start.
+        const current = store.get(record.key);
+        current.onsuccess = () => {
+          if ((Number(record.data?.source_labels_read_at) || 0)
+              >= (Number(current.result?.data?.source_labels_read_at) || 0)) store.put(record);
+        };
+      } else store.put(record);
       tx.oncomplete = resolve;
       tx.onerror = () => reject(tx.error);
       tx.onabort = () => reject(tx.error);
@@ -2262,10 +2278,8 @@ async function scheduleSourceMetadataRetry({
 }
 
 function sourceLabel(source) {
-  const meta = sourceMeta[source];
-  if (meta && meta.label) return meta.label;
   const canonical = canonicalSource(source);
-  const canonicalMeta = canonical !== source ? sourceMeta[canonical] : null;
+  const canonicalMeta = sourceMeta[canonical];
   return (canonicalMeta && canonicalMeta.label) ? canonicalMeta.label : canonical;
 }
 
@@ -2274,6 +2288,7 @@ function feedSourceOf(item) {
 }
 
 function originSourceOf(item) {
+  if (item.source_curated) return '';
   const feed = feedSourceOf(item);
   const origin = (item.origin_source || '').trim();
   return origin && origin !== feed ? origin : '';
@@ -2286,18 +2301,78 @@ function sourceCategory(source) {
 }
 
 function canonicalSource(source) {
-  const meta = sourceMeta[source];
-  return (meta && meta.alias_target) ? meta.alias_target : source;
+  const seen = new Set();
+  while (source && !seen.has(source)) {
+    seen.add(source);
+    const target = Object.hasOwn(sourceAliases, source) ? sourceAliases[source] : sourceMeta[source]?.alias_target;
+    if (typeof target !== 'string' || !target) break;
+    source = target;
+  }
+  return source;
 }
 
 function displaySourceForArticle(source) {
   return canonicalSource(source || '');
 }
 
+function articleSourceLabel(item) {
+  const original = item.display_source_key || feedSourceOf(item);
+  // Both public article and source snapshots carry the server's read time.
+  // A cached manual label must not override a more recent article response.
+  if (item.display_source && sourceMetadataReadAt <= (Number(item.source_labels_read_at) || 0)) return item.display_source;
+  const key = canonicalSource(original);
+  const metadata = sourceMeta[key];
+  if (metadata?.label) return metadata.label;
+  if (key !== original) return sourceLabel(key);
+  return item.display_source || sourceLabel(key);
+}
+
+function refreshArticleSourceViews() {
+  for (const [items, selector] of articleViewGroups()) {
+    for (const item of items) {
+      const id = Number(item.id || item.article_id);
+      const label = articleSourceLabel(item);
+      document.querySelectorAll(`${selector}[data-id="${id}"] .badge`).forEach(badge => {
+        badge.textContent = label;
+        badge.title = label;
+      });
+    }
+  }
+  const id = Number(document.getElementById('overlay')?.dataset.articleId);
+  const article = id && findOpenArticleData(id);
+  const badge = article && document.querySelector('#articleWrap .article-meta .badge');
+  if (badge) { badge.textContent = articleSourceLabel(article); badge.title = badge.textContent; }
+  globalThis.RayNewsTTS?.sourcesChanged?.();
+}
+
+function synchronizeArticleSourceLabels(article) {
+  const id = Number(article.id || article.article_id);
+  const items = [article, ...aiTitleItems(), articleBodyCache[id]]
+    .filter(item => item && Number(item.id || item.article_id) === id);
+  let latest = article;
+  for (const item of items) {
+    if (item.display_source && (!latest.display_source
+        || (Number(item.source_labels_read_at) || 0) > (Number(latest.source_labels_read_at) || 0))) latest = item;
+  }
+  if (!latest.display_source) return article;
+  for (const item of items) {
+    for (const key of ['display_source', 'display_source_key', 'source_curated', 'source_labels_read_at']) item[key] = latest[key];
+  }
+  const label = articleSourceLabel(article);
+  document.querySelectorAll(`.item[data-id="${id}"] [data-role="source"], .fav-item[data-id="${id}"] .badge`).forEach(badge => {
+    badge.textContent = label;
+    badge.title = label;
+  });
+  if (Number(document.getElementById('overlay')?.dataset.articleId) === id) {
+    const badge = document.querySelector('#articleWrap .article-meta .badge');
+    if (badge) { badge.textContent = label; badge.title = label; }
+  }
+  globalThis.RayNewsTTS?.sourcesChanged?.(article);
+  return article;
+}
+
 function sourceBadgeTitle(source) {
-  const raw = source || '';
-  const display = displaySourceForArticle(raw);
-  return raw && raw !== display ? `${raw} → ${display}` : display;
+  return sourceLabel(displaySourceForArticle(source || ''));
 }
 
 function categoryDisplayName(cat) {
@@ -3193,13 +3268,13 @@ function renderSourceArticles(items) {
       </div>
     </div>` : '';
   body.innerHTML = toolbar + items.map(item => `
-    <div class="fav-item" onclick="openSourceHistoryArticle(${item.id})">
+    <div class="fav-item" data-id="${item.id}" onclick="openSourceHistoryArticle(${item.id})">
       ${canDelete ? `<input type="checkbox" class="source-article-check" data-article-id="${item.id}" onclick="event.stopPropagation();updateSourceArticleSelectedCount()">` : ''}
       ${item.thumb ? `<div class="fav-item-thumb"><img src="${proxyImgSrc(item.thumb)}" alt="" loading="lazy" decoding="async"></div>` : ''}
       <div class="fav-item-body">
         <div class="fav-item-title">${esc(displayTitle(item))}</div>
         <div class="fav-item-meta">
-          <span class="badge" style="${badgeStyle(displaySourceForArticle(feedSourceOf(item)))}" title="${esc(sourceBadgeTitle(feedSourceOf(item)))}">${esc(sourceLabel(displaySourceForArticle(feedSourceOf(item))))}</span>
+          <span class="badge" style="${badgeStyle(displaySourceForArticle(feedSourceOf(item)))}" title="${esc(articleSourceLabel(item))}">${esc(articleSourceLabel(item))}</span>
           <span>${formatTime(item.date, item.time)}</span>
         </div>
       </div>
@@ -4040,26 +4115,15 @@ async function synchronizeAIAccessState(nextSettings) {
     if (document.getElementById('notifOverlay')?.classList.contains('open')) showNotifList();
     refreshNotifStatus();
   }
-  renderList();
-
-  const searchOverlay = document.getElementById('searchOverlay');
-  if (searchOverlay && searchOverlay.classList.contains('open')) {
-    renderSearchResults();
-  }
-  const favoriteOverlay = document.getElementById('favOverlay');
-  const favoritesPromise = (
-    favoriteOverlay && favoriteOverlay.classList.contains('open')
-  ) ? loadFavorites() : Promise.resolve();
-  const sourceOverlay = document.getElementById('sourceArticlesOverlay');
-  if (sourceOverlay && sourceOverlay.classList.contains('open')) {
-    renderSourceArticles(sourceArticlesState.items || []);
-  }
+  // Settings are also checked periodically and on focus. Updating access must
+  // remove protected titles immediately without replacing cards or selections.
+  refreshAITitleViews();
+  if (accessChanged) loadVisibleAITitles().catch(() => {});
 
   const recoveredArticleId = synchronizeOpenArticleAIView(
     previousSettings,
     userAutoSettings,
   );
-  await favoritesPromise;
   if (recoveredArticleId) {
     // Fetch again through the authenticated, current settings gate. Never
     // resurrect translated HTML from the pre-revocation dataset/cache.
@@ -4914,10 +4978,7 @@ async function autoDisplaySummary(articleId, prefetched = null) {
     if (data.summary || data.translation) markArticleVisible('shared');
     const shareActive = !!userAutoSettings?.ai_active;
     storeAITitleResult(articleId,data);
-    const titleEl=document.getElementById('articleWrap')?.querySelector('h1');
-    const item=findOpenArticleData(articleId);
-    if (titleEl && item) titleEl.textContent=displayTitle(item);
-    if (data.title_translation || data.title_summary || data.translated_title_summary) renderList();
+    refreshAITitleViews([articleId]);
     void globalThis.RayNewsTTS?.contentChanged?.(articleId);
     const articleWrap = document.getElementById('articleWrap');
     if (!articleWrap) return;
@@ -4963,7 +5024,7 @@ async function autoDisplaySummary(articleId, prefetched = null) {
         const h1El = articleWrap ? articleWrap.querySelector('h1') : null;
         // Save original before replacing for toggle support
         if (!bodyEl.dataset.originalHtml) bodyEl.dataset.originalHtml = bodyEl.innerHTML;
-        if (!bodyEl.dataset.originalTitle) bodyEl.dataset.originalTitle = item?.title || '';
+        if (!bodyEl.dataset.originalTitle) bodyEl.dataset.originalTitle = findOpenArticleData(articleId)?.title || '';
         bodyEl.dataset.translatedHtml = proxyImages(sanitizeTranslatedHtml(cachedData.html));
         const cachedTitle = userAutoSettings?.view_title_translation
           ? (cachedData.title || '')
@@ -5058,12 +5119,12 @@ function renderFavorites(data) {
     return;
   }
   document.getElementById('favBody').innerHTML = items.map(item => `
-    <div class="fav-item" onclick="openFavArticle(${item.article_id})">
+    <div class="fav-item" data-id="${item.article_id}" onclick="openFavArticle(${item.article_id})">
       ${item.thumb ? `<div class="fav-item-thumb"><img src="${proxyImgSrc(item.thumb)}" alt="" loading="lazy" decoding="async"></div>` : ''}
       <div class="fav-item-body">
         <div class="fav-item-title">${esc(displayTitle(item))}</div>
         <div class="fav-item-meta">
-          <span class="badge" style="${badgeStyle(displaySourceForArticle(feedSourceOf(item)))}" title="${esc(sourceBadgeTitle(feedSourceOf(item)))}">${esc(sourceLabel(displaySourceForArticle(feedSourceOf(item))))}</span>
+          <span class="badge" style="${badgeStyle(displaySourceForArticle(feedSourceOf(item)))}" title="${esc(articleSourceLabel(item))}">${esc(articleSourceLabel(item))}</span>
           <span>${formatTime(item.date, item.time)}</span>
         </div>
       </div>
@@ -5760,8 +5821,8 @@ function updateArticleElement(node, item) {
   const badge = node.querySelector('[data-role="source"]');
   if (badge) {
     const displaySource = displaySourceForArticle(feedSourceOf(item));
-    badge.textContent = sourceLabel(displaySource);
-    badge.title = sourceBadgeTitle(feedSourceOf(item));
+    badge.textContent = articleSourceLabel(item);
+    badge.title = articleSourceLabel(item);
     badge.setAttribute('style', badgeStyle(displaySource));
   }
   const time = node.querySelector('[data-role="time"]');
@@ -6479,6 +6540,9 @@ function renderSourceDeepLinkError(message) {
 
 function applyNewsPage(data, page, activeFilter, { animate = false, preserveDom = false } = {}) {
   news = Array.isArray(data.items) ? data.items : [];
+  // Reconciliation can keep all existing cards, so it does not necessarily
+  // call renderList(). Title hydration belongs to the data-application path.
+  queueMicrotask(() => loadVisibleAITitles().catch(() => {}));
   // Establish AI result versions independently of article-body rendering.
   if (news.length) pollAIResultUpdates();
   coldStartInitializationActive = typeof isStartupInitializationResponse === 'function'
@@ -6650,7 +6714,12 @@ async function prefetchNewsPage(page, activeFilter) {
     } catch (e) {
       return null;
     }
-  })();
+  })().then(data => {
+    // Keep protected variants in session memory, separate from public page
+    // snapshots in IndexedDB and the Service Worker cache.
+    if (data) loadAITitles(data.items || []).catch(() => {});
+    return data;
+  });
   pagePrefetchPromises.set(key, task);
   try {
     return await task;
@@ -6884,6 +6953,8 @@ async function loadNewsPageRequest(requestSeq, page = 1, {
   if (useCache) {
     const cached = await withCacheTimeout(readCachedNewsPage(page, activeFilter));
     if (cached && requestSeq === pageRequestSequence) {
+      await prepareAITitlesForPage(cached);
+      if (requestSeq !== pageRequestSequence) return false;
       if (applicationGuard && !applicationGuard()) return false;
       rememberBufferedPage(page, activeFilter, cached);
       applyNewsPage(cached, page, activeFilter, { animate });
@@ -6928,6 +6999,7 @@ async function loadNewsPageRequest(requestSeq, page = 1, {
         if (!startupInitializing) {
           await withCacheTimeout(writeCachedNewsPage(page, activeFilter, data, epochAtStart));
           rememberBufferedPage(page, activeFilter, data, epochAtStart);
+          await prepareAITitlesForPage(data);
         }
         if (requestSeq !== pageRequestSequence) return false;
         if (applicationGuard && !applicationGuard()) return false;
@@ -7016,20 +7088,31 @@ async function loadNewsPageRequest(requestSeq, page = 1, {
 }
 
 function applyPageCalibrationWhenActive(data, page, activeFilter, requestSeq) {
-  const startedAt = performance.now();
-  const check = () => {
-    if (requestSeq !== pageRequestSequence) return;
-    if (currentPage === page && filter === activeFilter) {
-      applyNewsPage(data, page, activeFilter, { preserveDom: true });
-      scheduleAdjacentPagePrefetch(page, activeFilter, Number(data.total || 0));
-      return;
-    }
-    if (performance.now() - startedAt < 2000) requestAnimationFrame(check);
-  };
-  requestAnimationFrame(check);
+  return prepareAITitlesForPage(data).then(() => {
+    const startedAt = performance.now();
+    const check = () => {
+      if (requestSeq !== pageRequestSequence) return;
+      if (currentPage === page && filter === activeFilter) {
+        applyNewsPage(data, page, activeFilter, { preserveDom: true });
+        scheduleAdjacentPagePrefetch(page, activeFilter, Number(data.total || 0));
+        return;
+      }
+      if (performance.now() - startedAt < 2000) requestAnimationFrame(check);
+    };
+    requestAnimationFrame(check);
+  });
 }
 
 async function preparePageNavigation(page, activeFilter) {
+  const pending = prepareNewsPageNavigation(page, activeFilter);
+  const sequence = pageRequestSequence;
+  const data = await pending;
+  if (!data || sequence !== pageRequestSequence) return null;
+  await prepareAITitlesForPage(data);
+  return sequence === pageRequestSequence ? data : null;
+}
+
+async function prepareNewsPageNavigation(page, activeFilter) {
   const requestSeq = ++pageRequestSequence;
   if (pageRequestController) pageRequestController.abort();
   const epochAtStart = contentEpoch;
@@ -7700,7 +7783,7 @@ function articleItemHtml(n) {
       <div class="item-body">
         <div class="item-title">${esc(displayTitle(n))}</div>
         <div class="item-meta">
-          <span class="badge" data-role="source" style="${badgeStyle(displaySourceForArticle(feedSourceOf(n)))}" title="${esc(sourceBadgeTitle(feedSourceOf(n)))}">${esc(sourceLabel(displaySourceForArticle(feedSourceOf(n))))}</span>
+          <span class="badge" data-role="source" style="${badgeStyle(displaySourceForArticle(feedSourceOf(n)))}" title="${esc(articleSourceLabel(n))}">${esc(articleSourceLabel(n))}</span>
           <span data-role="time">${formatTime(n.date, n.time)}</span>
           ${n.has_full_content ? '<span class="full-tag">● 全文</span>' : ''}
         </div>
@@ -7812,6 +7895,7 @@ function renderSearchResults() {
 }
 
 function renderServerSearchItems() {
+  queueMicrotask(() => loadVisibleAITitles().catch(() => {}));
   const status = document.getElementById('searchStatus');
   const resultsEl = document.getElementById('searchResults');
   status.textContent = `已显示 ${searchItems.length} / ${searchTotal} 条与「${searchQuery}」相关的新闻`;
@@ -8443,7 +8527,7 @@ function openArticle(id) {
       wrap.innerHTML = `
         <h1>${esc(displayTitle(data))}</h1>
         <div class="article-meta" style="position:relative">
-          <span class="badge" style="${badgeStyle(displaySourceForArticle(feedSourceOf(data)))}" title="${esc(sourceBadgeTitle(feedSourceOf(data)))}">${esc(sourceLabel(displaySourceForArticle(feedSourceOf(data))))}</span>
+          <span class="badge" style="${badgeStyle(displaySourceForArticle(feedSourceOf(data)))}" title="${esc(articleSourceLabel(data))}">${esc(articleSourceLabel(data))}</span>
           <span>${formatTime(data.date || '', data.time || '')}</span>
           <span style="margin-left:auto;display:flex;gap:8px;align-items:center" id="aiActions" data-article-id="${id}">
             ${isRestrictedUser() ? '' : `${window.ttsButtonHtml ? ttsButtonHtml(id) : ''}<button class="article-ai-btn ai-summarize-btn" onclick="aiSummarize(${id})">摘要</button><button class="article-ai-btn ai-translate-btn" onclick="aiTranslate(${id})">翻译</button>`}
@@ -8484,7 +8568,7 @@ function openArticle(id) {
   wrap.innerHTML = `
     <h1>${userAutoSettings?.ai_active && userAutoSettings?.view_translation ? '加载中...' : esc(displayTitle(n))}</h1>
     <div class="article-meta" style="position:relative">
-      <span class="badge" style="${badgeStyle(displaySourceForArticle(feedSourceOf(n)))}" title="${esc(sourceBadgeTitle(feedSourceOf(n)))}">${esc(sourceLabel(displaySourceForArticle(feedSourceOf(n))))}</span>
+      <span class="badge" style="${badgeStyle(displaySourceForArticle(feedSourceOf(n)))}" title="${esc(articleSourceLabel(n))}">${esc(articleSourceLabel(n))}</span>
       <span>${formatTime(n.date, n.time)}</span>
       <span style="margin-left:auto;display:flex;gap:8px;align-items:center" id="aiActions" data-article-id="${id}">
         ${isRestrictedUser() ? '' : `${window.ttsButtonHtml ? ttsButtonHtml(id) : ''}<button class="article-ai-btn ai-summarize-btn" onclick="aiSummarize(${id})">摘要</button><button class="article-ai-btn ai-translate-btn" onclick="aiTranslate(${id})">翻译</button>`}
@@ -8589,6 +8673,8 @@ async function waitForTranslationBaseline() {
 function renderArticleBody(wrap, data, id) {
   const bodyEl = document.getElementById('articleBody');
   if (!bodyEl) return;
+  // Body caching and source labels have separate lifetimes.
+  synchronizeArticleSourceLabels(data);
   bodyEl.dataset.originalTitle = data.title || '';
   if (data.body_html) {
     let html = proxyImages(data.body_html);
@@ -9160,23 +9246,24 @@ function esc(str) {
 const serverTitleResults = new Map();
 const titleResultRevisions = new Map();
 const pendingTitleReads = new Set();
+const titleReadsInFlight = new Map();
 let favoriteAIItems=[];
 let titleReadSequence=0;
-let titleBatchInFlight=false;
-let titleBatchRerunRequested=false;
 
 function resetAITitleResults() {
   serverTitleResults.clear();
   titleResultRevisions.clear();
   pendingTitleReads.clear();
   titleReadSequence++;
-  if (titleBatchInFlight) titleBatchRerunRequested=true;
+  for (const entry of titleReadsInFlight.values()) entry.controller.abort();
+  titleReadsInFlight.clear();
 }
 
 function invalidateAITitleResult(id) {
   id=Number(id);
   titleResultRevisions.set(id,(titleResultRevisions.get(id) || 0)+1);
-  serverTitleResults.delete(id);
+  // Keep the current title while a newer version is read. Access changes use
+  // resetAITitleResults() and never retain a previously authorized variant.
   pendingTitleReads.add(id);
 }
 
@@ -9188,57 +9275,122 @@ function storeAITitleResult(id, result) {
   pendingTitleReads.delete(id);
 }
 
+function articleViewGroups() {
+  return [
+    [news, '#list .item'], [searchItems, '#searchResults .item'],
+    [favoriteAIItems, '#favBody .fav-item'], [sourceArticlesState.items || [], '#sourceArticlesBody .fav-item'],
+  ];
+}
+
+function aiTitleItems() {
+  return articleViewGroups().flatMap(([items]) => items);
+}
+
+function refreshAITitleViews(ids = null) {
+  const wanted = ids ? new Set(ids.map(Number)) : null;
+  // AI results are shared by ID, but original titles belong to each snapshot.
+  // Updating one surface must not copy an older favorite/history title elsewhere.
+  for (const [items, selector] of articleViewGroups()) {
+    for (const item of items) {
+      const id = Number(item.id || item.article_id);
+      if (wanted && !wanted.has(id)) continue;
+      const text = displayTitle(item);
+      document.querySelectorAll(`${selector}[data-id="${id}"] .item-title, ${selector}[data-id="${id}"] .fav-item-title`).forEach(el => {
+        if (el.textContent !== text) el.textContent = text;
+      });
+    }
+  }
+  const overlay = document.getElementById('overlay');
+  const currentId = Number(overlay?.dataset.articleId);
+  const currentItem = currentId && findOpenArticleData(currentId);
+  if (currentItem && (!wanted || wanted.has(currentId))) {
+    const h1 = document.querySelector('#articleWrap h1');
+    const text = displayTitle(currentItem);
+    if (h1 && h1.textContent !== text) h1.textContent = text;
+  }
+}
+
+async function prepareAITitlesForPage(data) {
+  // Adjacent pages normally already have titles. On a cache miss give this
+  // read a small budget, keeping the old page visible instead of flashing raw
+  // titles. Generation and unavailable services must never hold up navigation.
+  await withPromiseTimeout(loadAITitles(data?.items || []), null, 600);
+}
+
 async function loadVisibleAITitles() {
-  if (titleBatchInFlight) {
-    titleBatchRerunRequested=true;
-    return;
-  }
-  const sequence=++titleReadSequence, session=aiSessionGeneration, token=authToken, accessKey=aiAccessKey();
+  return loadAITitles(aiTitleItems());
+}
+
+async function loadAITitles(items) {
+  const sequence=titleReadSequence, session=aiSessionGeneration, token=authToken, accessKey=aiAccessKey();
   if (!token || (!userAutoSettings?.view_title_translation && !userAutoSettings?.view_title_shortening)) {
-    serverTitleResults.clear();
-    pendingTitleReads.clear();
     return;
   }
-  const ids=[...new Set([...news,...searchItems,...favoriteAIItems,...(sourceArticlesState.items || [])]
+  const ids=[...new Set(items
     .map(item=>Number(item.id || item.article_id))
     .filter(id=>id && (!serverTitleResults.has(id) || pendingTitleReads.has(id))))];
-  if (!ids.length) return;
-  titleBatchInFlight=true;
-  try {
-    for (let start=0;start<ids.length;start+=200) {
-      const batch=ids.slice(start,start+200);
-      const revisions=new Map(batch.map(id=>[id,titleResultRevisions.get(id) || 0]));
-      const controller=new AbortController();
+  const reads = new Set();
+  const missing = [];
+  const followups = new Map();
+  for (const id of ids) {
+    const entry = titleReadsInFlight.get(id);
+    if (entry) {
+      // Coalesce repeated updates to this article into one follow-up read.
+      // Other IDs, including the next page, can still load independently.
+      if (entry.revision === (titleResultRevisions.get(id) || 0)) reads.add(entry.promise);
+      else {
+        if (!followups.has(entry.promise)) followups.set(entry.promise, []);
+        followups.get(entry.promise).push({id});
+      }
+    } else missing.push(id);
+  }
+  for (const [pending, items] of followups) {
+    const reread = () => {
+      if (sequence !== titleReadSequence || session !== aiSessionGeneration || token !== authToken || accessKey !== aiAccessKey()) return;
+      return loadAITitles(items);
+    };
+    // An invalidation still needs its follow-up if the older request times out.
+    reads.add(pending.then(reread, reread));
+  }
+  for (let start=0; start<missing.length; start+=200) {
+    const batch=missing.slice(start,start+200);
+    const revisions=new Map(batch.map(id=>[id,titleResultRevisions.get(id) || 0]));
+    const controller=new AbortController();
+    let promise;
+    promise = (async () => {
       const timer=setTimeout(()=>controller.abort(),8000);
-      let data;
       try {
-        const response=await fetch('/ai/results?ids='+batch.join(','), {
+        const response=await fetch('/ai/results?fields=titles&ids='+batch.join(','), {
           headers:{Authorization:'Bearer '+token},cache:'no-store',signal:controller.signal,
         });
         if (!response.ok) return;
-        data=await response.json();
-      } finally { clearTimeout(timer); }
-      if (sequence!==titleReadSequence || session!==aiSessionGeneration || token!==authToken || accessKey!==aiAccessKey()) return;
-      for (const id of batch) {
-        if (revisions.get(id)!==(titleResultRevisions.get(id) || 0)) {
-          titleBatchRerunRequested=true;
-          continue;
+        const data=await response.json();
+        if (sequence!==titleReadSequence || session!==aiSessionGeneration || token!==authToken || accessKey!==aiAccessKey()) return;
+        if (data.access && aiAccessKey(data.access) !== accessKey) {
+          synchronizeAIAccessState({ ...userAutoSettings, ...normalizeAIAccess(data.access) }).catch(() => {});
+          return;
         }
-        serverTitleResults.set(id,data.items?.[id] || {});
-        pendingTitleReads.delete(id);
+        const updated = [];
+        for (const id of batch) {
+          if (revisions.get(id)!==(titleResultRevisions.get(id) || 0)) continue;
+          serverTitleResults.set(id,data.items?.[id] || {});
+          pendingTitleReads.delete(id);
+          updated.push(id);
+        }
+        refreshAITitleViews(updated);
+      } finally {
+        clearTimeout(timer);
+        for (const id of batch) {
+          if (titleReadsInFlight.get(id)?.promise === promise) titleReadsInFlight.delete(id);
+        }
       }
+    })();
+    for (const id of batch) {
+      titleReadsInFlight.set(id, {promise, controller, revision:revisions.get(id)});
     }
-    renderList();
-    if (document.getElementById('searchOverlay')?.classList.contains('open')) renderSearchResults();
-    if (document.getElementById('sourceArticlesOverlay')?.classList.contains('open')) renderSourceArticles(sourceArticlesState.items || []);
-    if (document.getElementById('favOverlay')?.classList.contains('open')) renderFavorites({items:favoriteAIItems});
-  } finally {
-    titleBatchInFlight=false;
-    if (titleBatchRerunRequested) {
-      titleBatchRerunRequested=false;
-      if (authToken && !document.hidden) queueMicrotask(()=>loadVisibleAITitles().catch(()=>{}));
-    }
+    reads.add(promise);
   }
+  await Promise.all(reads);
 }
 
 function displayTitle(item) {
@@ -9725,7 +9877,7 @@ if (window.matchMedia) {
         if ($(id).dataset.cover !== src) { $(id).dataset.cover=src; $(id).src=src; }
       }
       $('ttsTitle').textContent = state.article.title || '新闻语音';
-      $('ttsSource').textContent = [state.article.source, state.hasTranslation ? '译文朗读' : '', state.hasSummary ? '含 AI 摘要' : '', state.partial ? '已获取的正文' : ''].filter(Boolean).join(' · ');
+      $('ttsSource').textContent = [articleSourceLabel(state.article), state.hasTranslation ? '译文朗读' : '', state.hasSummary ? '含 AI 摘要' : '', state.partial ? '已获取的正文' : ''].filter(Boolean).join(' · ');
       $('ttsDisc').title = `${busy() ? '正在生成语音' : playing ? '正在播放' : '语音播放器'}：${state.article.title || ''}`;
     }
     $('ttsHeading').textContent = state.status === 'waiting' ? '等待生成名额' : busy() ? '正在生成语音' : state.error ? '生成失败' : playing ? '正在播放' : state.status === 'ended' ? '播放结束' : '语音阅读';
@@ -9856,8 +10008,18 @@ if (window.matchMedia) {
     });
   }
 
-  async function loadStream(signal, autoplay=true) {
-    const media=new MediaSource();
+  function streamingMediaSource() {
+    return [window.ManagedMediaSource, window.MediaSource].find(Type => {
+      try { return Type?.isTypeSupported('audio/mpeg'); } catch (_) { return false; }
+    });
+  }
+
+  async function loadStream(signal, autoplay=true, Source=streamingMediaSource()) {
+    let media;
+    try { media=new Source(); } catch (_) { return false; }
+    // WebKit will not open ManagedMediaSource without an AirPlay alternative
+    // or remote playback disabled. Our authenticated fetch has no AirPlay URL.
+    audio.disableRemotePlayback = Source === window.ManagedMediaSource;
     let buffer;
     state.url=URL.createObjectURL(media);
     state.streaming=true; state.status='generating'; render();
@@ -9904,8 +10066,9 @@ if (window.matchMedia) {
           if (job.status==='failed') throw new Error(job.error || '语音生成失败，请重试');
           if (job.status!=='ready' || !buffer.buffered.length) throw new Error('语音传输中断，请重试');
           media.endOfStream();
-          if (trimmed) {
+          if (trimmed || buffer.buffered.start(0)>0) {
             // Restore the complete cached file so seeking and replay retain history.
+            // ManagedMediaSource may also evict old frames without a quota error.
             const blob=await requestData('/ai/tts/audio/'+state.job,{},signal,true);
             const position=audio.currentTime,resume=!audio.paused,old=state.url;
             state.url=URL.createObjectURL(blob);
@@ -9956,7 +10119,9 @@ if (window.matchMedia) {
     state.controller=new AbortController();
     const signal=state.controller.signal;
     const known=findOpenArticleData(id) || favoriteAIItems.find(item=>Number(item.id)===id);
-    Object.assign(state,{article:{id,title:displayTitle(known) || '正在加载新闻…',source:known?.source || '',thumb:known?.thumb || ''},
+    Object.assign(state,{article:{id,title:displayTitle(known) || '正在加载新闻…',source:known?.source || '',
+      display_source:known?.display_source || '',display_source_key:known?.display_source_key || '',
+      source_labels_read_at:known?.source_labels_read_at || 0,thumb:known?.thumb || ''},
       queue:queue || queueFor(id),status:'queued',error:'',job:null,hasSummary:false,hasTranslation:false,requiredPreferences:[],partial:false});
     render();
     try {
@@ -9974,15 +10139,16 @@ if (window.matchMedia) {
         }
       }
       if (sequence!==state.sequence || token!==authToken) return;
-      if (result.article) state.article=result.article;
+      if (result.article) state.article=synchronizeArticleSourceLabels(result.article);
       state.job=result.id; state.hasSummary=!!result.has_summary; state.partial=!!result.partial_content;
       state.hasTranslation=!!result.has_translation;state.requiredPreferences=result.required_preferences || [];
       if ('mediaSession' in navigator && 'MediaMetadata' in window) {
         const cover=state.article.thumb ? new URL(proxyImgSrc(state.article.thumb),location.href).href : new URL(fallback,location.href).href;
-        navigator.mediaSession.metadata=new MediaMetadata({title:state.article.title,artist:state.article.source || 'RayNews',album:'RayNews',artwork:[{src:cover}]});
+        navigator.mediaSession.metadata=new MediaMetadata({title:state.article.title,artist:articleSourceLabel(state.article) || 'RayNews',album:'RayNews',artwork:[{src:cover}]});
       }
-      if (result.status!=='ready' && result.stream_url && window.MediaSource?.isTypeSupported('audio/mpeg')) {
-        if (await loadStream(signal,autoplay)) return;
+      const Source=streamingMediaSource();
+      if (result.status!=='ready' && result.stream_url && Source) {
+        if (await loadStream(signal,autoplay,Source)) return;
       }
       const deadline=Date.now()+12*60*1000;
       while (result.status !== 'ready') {
@@ -10209,7 +10375,14 @@ if (window.matchMedia) {
   });
 
   window.ttsButtonHtml=id=>`<button type="button" class="article-ai-btn tts-speaker${Number(state.article?.id)===Number(id)?' active':''}" data-article-id="${Number(id)}" onclick="RayNewsTTS.start(${Number(id)})" aria-label="语音阅读" title="语音阅读">${icon('speaker')}</button>`;
-  window.RayNewsTTS={start,stop,open,collapse,loadConfig,accessChanged,contentChanged};
+  window.RayNewsTTS={start,stop,open,collapse,loadConfig,accessChanged,contentChanged,sourcesChanged:article=>{
+    if (article && Number(article.id || article.article_id) === Number(state.article?.id)
+        && (!state.article.display_source || (Number(article.source_labels_read_at) || 0) >= (Number(state.article.source_labels_read_at) || 0))) {
+      for (const key of ['display_source', 'display_source_key', 'source_curated', 'source_labels_read_at']) state.article[key] = article[key];
+    }
+    render();
+    if (state.article && navigator.mediaSession?.metadata) navigator.mediaSession.metadata.artist=articleSourceLabel(state.article);
+  }};
 })();
 
 

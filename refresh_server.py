@@ -42,6 +42,7 @@ from source_categories import (
     CATEGORY_NAMES, CATEGORY_ORDER, ensure_article_source_columns,
     maintain_source_categories, source_rows, category_definitions, valid_category,
     UNCATEGORIZED,
+    apply_article_source_labels,
 )
 
 _IMAGE_RESPONSE_SLOTS = threading.BoundedSemaphore(32)
@@ -1244,7 +1245,7 @@ def api_news_list(params: dict) -> bytes:
                 args,
             ).fetchone()[0]
 
-        items = [_clean_article_display_fields(dict(r)) for r in rows]
+        items = apply_article_source_labels(conn, [_clean_article_display_fields(dict(r)) for r in rows])
         return json.dumps({
             "items": items,
             "total": total,
@@ -1360,7 +1361,7 @@ def _build_news_detail_response(article_id: int) -> bytes:
             conn.close()
 
 
-def api_news_detail(article_id: int) -> bytes:
+def _cached_news_detail(article_id: int) -> bytes:
     """GET /api/news/<id> - single article with body_html (cached)."""
     with _article_cache_lock:
         cached = _get_cached_article(article_id)
@@ -1406,11 +1407,29 @@ def api_news_detail(article_id: int) -> bytes:
         raise
 
 
+def api_news_detail(article_id: int) -> bytes:
+    # Source edits must be reflected even when the large sanitized body is cached.
+    result = _cached_news_detail(article_id)
+    try:
+        item = json.loads(result)
+    except (ValueError, TypeError):
+        return result
+    if item.get("error") or "source" not in item:
+        return result
+    conn = get_db()
+    try:
+        apply_article_source_labels(conn, [item])
+        return json.dumps(item, ensure_ascii=False).encode()
+    finally:
+        conn.close()
+
+
 def api_sources() -> bytes:
     """GET /api/sources — source category metadata."""
     conn = None
     try:
         conn = get_db()
+        read_at = time.time_ns() // 1000
         rows = source_rows(conn)
         definitions = category_definitions(conn)
         return json.dumps({
@@ -1418,6 +1437,8 @@ def api_sources() -> bytes:
             "category_names": {row["category"]: row["label"] for row in definitions},
             "category_definitions": definitions,
             "sources": rows,
+            "aliases": dict(conn.execute("SELECT alias_source,target_source FROM source_aliases")),
+            "source_labels_read_at": read_at,
         }, ensure_ascii=False).encode()
     except Exception:
         log.exception("Failed to read public source metadata")

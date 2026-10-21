@@ -210,6 +210,21 @@ def test_changed_article_and_configuration_expire_old_audio(app):
     assert client.get('/ai/tts/audio/'+second['id'],headers=headers).status_code == 410
 
 
+def test_tts_article_metadata_uses_the_administrator_source_label(app):
+    from source_categories import init_source_categories, update_source_category
+    client, admin, headers, user, cache = app
+    enable(client, admin, user)
+    with sqlite3.connect(web_server.NEWS_DB) as conn:
+        conn.row_factory = sqlite3.Row
+        init_source_categories(conn)
+        update_source_category(conn, '科技观察', 'Tech', '管理员核实来源', status='manual')
+    result = client.post('/ai/tts/1', headers=headers).json
+    assert result['article']['display_source'] == '管理员核实来源'
+    assert result['article']['source_curated'] is True
+    assert result['article']['source_labels_read_at'] > 0
+    assert ready(cache, result['id'])['status'] == 'ready'
+
+
 def _translated_article(app, monkeypatch, *, with_translation=True, translation_format='json'):
     client, admin, headers, user, cache = app
     enable(client, admin, user)

@@ -1056,6 +1056,43 @@ def source_aliases_for_target(
     return [row["alias_source"] if isinstance(row, sqlite3.Row) else row[0] for row in rows]
 
 
+def apply_article_source_labels(conn: sqlite3.Connection, articles: list[dict]) -> list[dict]:
+    """Attach shared display names without requiring reader login or metadata fetches.
+
+    Keep grouping/provenance fields for filtering and administration. Only the
+    resolved display name is presented to readers. Reads never migrate tables.
+    """
+    if not articles:
+        return articles
+    read_at = time.time_ns() // 1000
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name IN ('source_categories','source_aliases','publisher_domains')"
+    )}
+    labels = {row[0]: (row[1], row[2]) for row in conn.execute(
+        "SELECT source,label,status FROM source_categories"
+    )} if "source_categories" in tables else {}
+    aliases = dict(conn.execute("SELECT alias_source,target_source FROM source_aliases")) \
+        if "source_aliases" in tables else {}
+    domains = dict(conn.execute(
+        "SELECT domain,group_source FROM publisher_domains WHERE enabled=1 AND is_builtin=0"
+    )) if "publisher_domains" in tables else {}
+    for article in articles:
+        source = (article.get("group_source") or article.get("source") or article.get("feed_source") or "").strip()
+        mapped = domains.get(article.get("publisher_domain") or "")
+        source = mapped or source
+        seen = set()
+        while source in aliases and source not in seen:
+            seen.add(source)
+            source = aliases[source]
+        label, status = labels.get(source, ("", ""))
+        article["display_source"] = (label or source).strip()
+        article["display_source_key"] = source
+        article["source_curated"] = bool(mapped or seen or status == "manual")
+        article["source_labels_read_at"] = read_at
+    return articles
+
+
 def recent_titles_for_source(conn: sqlite3.Connection, source: str, limit: int = 8) -> list[str]:
     rows = conn.execute(
         """

@@ -10,12 +10,13 @@ context.aiSessionGeneration=1; context.authToken='user-a';
 context.userAutoSettings={view_title_translation:true,view_title_shortening:true};
 context.aiAccessKey=()=>JSON.stringify(context.userAutoSettings);
 context.news=[{id:1},{id:2}]; context.searchItems=[]; context.sourceArticlesState={items:[]};
-context.document={hidden:false,getElementById:()=>null};
+context.document={hidden:false,getElementById:()=>null,querySelectorAll:()=>[]};
+context.displayTitle=item=>item.title || '';
 context.renderList=()=>{}; context.renderSearchResults=()=>{}; context.renderSourceArticles=()=>{}; context.renderFavorites=()=>{};
 context.cancelAIResultReads=()=>{}; context.clearAIArticleView=()=>{};
 context.refreshCurrentAIResult=()=>{};
 context.requests=[];
-context.fetch=(url,options)=>new Promise(resolve=>context.requests.push({url,options,resolve}));
+context.fetch=(url,options)=>new Promise((resolve,reject)=>context.requests.push({url,options,resolve,reject}));
 context.ok=items=>({ok:true,json:async()=>({items})});
 context.flush=()=>new Promise(resolve=>setImmediate(resolve));
 '''
@@ -44,14 +45,14 @@ def test_visible_items_added_while_busy_are_not_lost():
     run_node(LOADER, '''
 const initial=context.loadVisibleAITitles();
 context.news.push({id:3});
-await context.loadVisibleAITitles();
-context.requests[0].resolve(context.ok({'1':{},'2':{}}));
-await initial; await context.flush();
+const expanded=context.loadVisibleAITitles();
 assert.equal(context.requests.length,2);
 assert.match(context.requests[1].url,/ids=3$/);
 context.requests[1].resolve(context.ok({'3':{title_translation:'New article'}}));
 await context.flush();
 assert.equal(vm.runInContext('serverTitleResults.get(3).title_translation',context),'New article');
+context.requests[0].resolve(context.ok({'1':{},'2':{}}));
+await initial; await expanded;
 ''', SETUP)
 
 
@@ -71,14 +72,14 @@ def test_account_change_while_busy_catches_up_without_publishing_previous_accoun
 const initial=context.loadVisibleAITitles();
 context.aiSessionGeneration++; context.authToken='user-b';
 context.resetAITitleResults();
-await context.loadVisibleAITitles();
+const current=context.loadVisibleAITitles();
 context.requests[0].resolve(context.ok({'1':{title_translation:'PRIVATE A'},'2':{}}));
 await initial; await context.flush();
 assert.equal(context.requests.length,2);
 assert.equal(context.requests[1].options.headers.Authorization,'Bearer user-b');
 assert.equal(vm.runInContext('serverTitleResults.has(1)',context),false);
 context.requests[1].resolve(context.ok({'1':{title_translation:'B'},'2':{}}));
-await context.flush();
+await current;
 assert.equal(vm.runInContext('serverTitleResults.get(1).title_translation',context),'B');
 ''', SETUP)
 
@@ -97,4 +98,35 @@ assert.equal(context.requests.length,3);
 context.requests[2].resolve(context.ok({'1':{title_translation:'Recovered'}}));
 await retry;
 assert.equal(vm.runInContext('serverTitleResults.get(1).title_translation',context),'Recovered');
+''', SETUP)
+
+
+def test_rejected_original_request_still_runs_the_queued_invalidation_read():
+    run_node(LOADER + UPDATES, '''
+const initial=context.loadVisibleAITitles().catch(()=>{});
+context.applyAIResultPage({items:[{id:1,version:2}]});
+context.requests[0].reject(new TypeError('network connection lost'));
+await initial; await context.flush();
+assert.equal(context.requests.length,2);
+assert.match(context.requests[1].url,/ids=1$/);
+context.requests[1].resolve(context.ok({'1':{title_translation:'Recovered update'}}));
+await context.flush();
+assert.equal(vm.runInContext('serverTitleResults.get(1).title_translation',context),'Recovered update');
+''', SETUP)
+
+
+def test_cancelled_followups_do_not_restart_reads_after_an_account_change():
+    run_node(LOADER + UPDATES, '''
+const initial=context.loadVisibleAITitles().catch(()=>{});
+context.applyAIResultPage({items:[{id:1,version:2}]});
+context.aiSessionGeneration++; context.authToken='user-b';
+context.resetAITitleResults();
+context.news=[{id:3}];
+const current=context.loadVisibleAITitles();
+context.requests[0].reject(new DOMException('aborted','AbortError'));
+await initial; await context.flush();
+assert.equal(context.requests.length,2);
+assert.match(context.requests[1].url,/ids=3$/);
+context.requests[1].resolve(context.ok({'3':{title_translation:'Current account'}}));
+await current;
 ''', SETUP)

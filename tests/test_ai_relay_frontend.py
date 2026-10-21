@@ -14,7 +14,7 @@ def _auto_display_summary_block():
     return ("const serverTitleResults=new Map(); function storeAITitleResult(id,result) {serverTitleResults.set(id,result);} function displayTitle(item) { return item.title; }\n"
             "function aiArticleContext(id) { return {id}; }\n"
             "function aiContextCurrent() { return true; }\n"
-            "function serverResultStatus() {} function markArticleVisible() {} function findOpenArticleData() { return null; } function renderList() {}\n"
+            "function serverResultStatus() {} function markArticleVisible() {} function findOpenArticleData() { return null; } function refreshAITitleViews() {}\n"
             "async function readServerAIResult(ctx) { return (await fetch('/ai/result/' + ctx.id)).json(); }\n"
             + HTML[start:end])
 
@@ -114,6 +114,8 @@ const timers = [];
 const context = {{
   console,
   userAutoSettings:null,
+  queueMicrotask,
+  loadVisibleAITitles: async () => {{}},
   URLSearchParams,
   AbortController,
   PAGE_SIZE: 20,
