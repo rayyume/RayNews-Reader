@@ -3657,6 +3657,14 @@ async function saveGenerationSettings() {
   showSettingsStatus(response.ok ? '生成设置已保存' : data.error, response.ok ? 'ok':'err');
 }
 
+function formatBytes(n) {
+  if (n === null || n === undefined) return 'N/A';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = n, unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+  return (unit === 0 ? value : value.toFixed(1)) + ' ' + units[unit];
+}
+
 let serverStatsTimer = null;
 // The server's own "today" (date.today(), respecting the process's TZ env var) —
 // same value /admin/articles/purge validates "not after today" against. Used as the
@@ -3671,7 +3679,7 @@ async function loadServerStats() {
   const body = document.getElementById('serverStatsBody');
   if (!body) return;
   if (!body.dataset.loaded) body.innerHTML = '<div class="admin-loading">加载中...</div>';
-  const data = await apiFetch('/admin/server-stats');
+  const data = await apiFetch('/admin/server-stats').catch(() => null);
   if (!data || data.error) {
     body.innerHTML = '<div class="admin-loading">加载失败</div>';
     return;
