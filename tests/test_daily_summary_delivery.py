@@ -7,6 +7,7 @@ in-app copy goes to everyone by default and is independent of the email copy.
 
 import datetime as dt
 import os
+import sqlite3
 import sys
 import unittest
 import uuid
@@ -24,6 +25,13 @@ import web_server
 
 def _beijing(hour, minute=0):
     return dt.datetime(2026, 7, 10, hour, minute, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+
+
+@pytest.fixture(autouse=True)
+def isolated_news_db(tmp_path, monkeypatch):
+    path = tmp_path / 'news.db'
+    sqlite3.connect(path).close()
+    monkeypatch.setattr(web_server, 'NEWS_DB', str(path))
 
 
 class DailySummaryInAppDeliveryTests(unittest.TestCase):
@@ -118,7 +126,7 @@ class DailySummaryScheduleTests(unittest.TestCase):
         self.original_generate = web_server._generate_daily_summary_global
         self.original_inapp = web_server._deliver_daily_summary_inapp
         self.original_email = web_server._deliver_daily_summary_email
-        self.original_now = web_server._beijing_now
+        self.original_now = web_server._daily_summary_now
 
         web_server._generate_daily_summary_global = lambda date_str: (
             self.calls.append(("generate", date_str)),
@@ -135,10 +143,10 @@ class DailySummaryScheduleTests(unittest.TestCase):
         web_server._generate_daily_summary_global = self.original_generate
         web_server._deliver_daily_summary_inapp = self.original_inapp
         web_server._deliver_daily_summary_email = self.original_email
-        web_server._beijing_now = self.original_now
+        web_server._daily_summary_now = self.original_now
 
     def test_generation_runs_before_either_channel(self):
-        web_server._beijing_now = lambda: _beijing(web_server.DAILY_SUMMARY_HOUR, 1)
+        web_server._daily_summary_now = lambda: _beijing(web_server.DAILY_SUMMARY_HOUR, 1)
         outcome = web_server._broadcast_daily_summary(force=False)
         self.assertEqual([c[0] for c in self.calls], ["generate", "inapp", "email"])
         self.assertEqual(outcome["inapp"], {"status": "ok", "recipients": 3})
@@ -147,7 +155,7 @@ class DailySummaryScheduleTests(unittest.TestCase):
         # The email leg owns the RESEND_API_KEY check now; the real one is
         # exercised here rather than the stub.
         web_server._deliver_daily_summary_email = self.original_email
-        web_server._beijing_now = lambda: _beijing(web_server.DAILY_SUMMARY_HOUR, 1)
+        web_server._daily_summary_now = lambda: _beijing(web_server.DAILY_SUMMARY_HOUR, 1)
         old_key = os.environ.pop("RESEND_API_KEY", None)
         try:
             outcome = web_server._broadcast_daily_summary(force=False)
@@ -158,7 +166,7 @@ class DailySummaryScheduleTests(unittest.TestCase):
         self.assertEqual(outcome["inapp"]["status"], "ok")
 
     def test_outside_the_window_nothing_is_generated(self):
-        web_server._beijing_now = lambda: _beijing(9, 0)
+        web_server._daily_summary_now = lambda: _beijing(9, 0)
         outcome = web_server._broadcast_daily_summary(force=False)
         self.assertEqual(outcome["status"], "skipped")
         self.assertEqual(self.calls, [])
@@ -166,11 +174,11 @@ class DailySummaryScheduleTests(unittest.TestCase):
 
 class DailySummaryRouteTests(unittest.TestCase):
     def setUp(self):
-        self.original_now = web_server._beijing_now
+        self.original_now = web_server._daily_summary_now
         self.original_cache = web_server._get_daily_summary_global_cache
 
     def tearDown(self):
-        web_server._beijing_now = self.original_now
+        web_server._daily_summary_now = self.original_now
         web_server._get_daily_summary_global_cache = self.original_cache
 
     def test_manual_generation_is_refused(self):
@@ -194,7 +202,7 @@ class DailySummaryRouteTests(unittest.TestCase):
 
     def test_today_reports_scheduled_before_generation_time(self):
         web_server._get_daily_summary_global_cache = lambda date_str: None
-        web_server._beijing_now = lambda: _beijing(9, 0)
+        web_server._daily_summary_now = lambda: _beijing(9, 0)
         with web_server.app.test_request_context("/ai/daily-summary/today"):
             from flask import g
 
@@ -209,7 +217,7 @@ class DailySummaryRouteTests(unittest.TestCase):
 
     def test_today_reports_generating_inside_the_window(self):
         web_server._get_daily_summary_global_cache = lambda date_str: None
-        web_server._beijing_now = lambda: _beijing(web_server.DAILY_SUMMARY_HOUR, 2)
+        web_server._daily_summary_now = lambda: _beijing(web_server.DAILY_SUMMARY_HOUR, 2)
         with web_server.app.test_request_context("/ai/daily-summary/today"):
             from flask import g
 
@@ -220,7 +228,7 @@ class DailySummaryRouteTests(unittest.TestCase):
 
     def test_today_reports_unavailable_long_after_the_window(self):
         web_server._get_daily_summary_global_cache = lambda date_str: None
-        web_server._beijing_now = lambda: _beijing(23, 59)
+        web_server._daily_summary_now = lambda: _beijing(23, 59)
         with web_server.app.test_request_context("/ai/daily-summary/today"):
             from flask import g
 
@@ -245,7 +253,8 @@ class DailySummaryFrontendContractTests(unittest.TestCase):
         self.assertNotIn("'/ai/daily-summary'", self.html)
 
     def test_scheduled_state_explains_the_time_and_links_to_push_settings(self):
-        self.assertIn("每日总结将在北京时间每天晚 9 点（", self.html)
+        self.assertIn("每日总结将在每天 ", self.html)
+        self.assertIn("esc(timezone)", self.html)
         self.assertIn("function openDailySummaryPushSettings()", self.html)
         self.assertIn("每日总结推送设置", self.html)
         # The jump target has to exist for scrollIntoView to land anywhere.

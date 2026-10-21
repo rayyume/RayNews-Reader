@@ -24,7 +24,7 @@ NORMALIZATION_DEFAULTS = {
 DEFAULT_CONFIG = {
     "enabled": False, "endpoint": "", "model": "kokoro",
     "voice": "zf_001(0.5)+zf_022(0.5)", "lang_code": "z", "speed": 1.3,
-    "response_format": "mp3", "stream": False, "volume_multiplier": None,
+    "response_format": "mp3", "stream": True, "volume_multiplier": None,
     "return_download_link": False, "download_format": None,
     "normalization_options": None,
     "auth_type": "basic", "username": "", "password": "", "authorization": "",
@@ -199,10 +199,47 @@ def listening_lines(html):
     return lines
 
 
-def listening_text(title, body, summary=""):
+def reading_content(article, result):
+    """Use the same permission-filtered variants and title order as the reader."""
+    selected = dict(article)
+    title_kind = "original"
+    required = set()
+    for kind, preferences in (
+        ("translated_title_summary", ("view_title_translation", "view_title_shortening")),
+        ("title_translation", ("view_title_translation",)),
+        ("title_summary", ("view_title_shortening",)),
+    ):
+        if result.get(kind):
+            selected["title"] = result[kind]
+            title_kind = kind
+            required.update(preferences)
+            break
+    translation = result.get("translation") or ""
+    translated_title, html = "", ""
+    if translation.lstrip().startswith("{"):
+        try:
+            payload = json.loads(translation)
+            html, translated_title = payload.get("html") or "", payload.get("title") or ""
+        except (ValueError, TypeError):
+            pass
+    elif translation.lstrip().startswith("<"):
+        html = translation
+    has_translation = isinstance(html, str) and bool(listening_lines(html))
+    if has_translation:
+        selected["body_html"] = html
+        required.add("view_translation")
+    selection = {"title_kind": title_kind, "has_translation": has_translation,
+                 "required_preferences": sorted(required)}
+    aliases = [article.get("title", ""), result.get("title_translation", ""), translated_title]
+    return selected, selection, aliases
+
+
+def listening_text(title, body, summary="", *, title_aliases=()):
     body_lines = listening_lines(body)
     title = " ".join(listening_lines(title))
-    if title and body_lines and body_lines[0].rstrip("。.!！") == title.rstrip("。.!！"):
+    titles = {" ".join(listening_lines(value)).rstrip("。.!！") for value in (title, *title_aliases) if value}
+    # Embedded full titles must not be read again after the displayed short title.
+    while body_lines and body_lines[0].rstrip("。.!！") in titles:
         body_lines.pop(0)
     if not body_lines:
         raise TTSError("TTS_EMPTY_CONTENT", "这篇文章暂无可供语音阅读的内容", 422)
@@ -219,8 +256,8 @@ def listening_text(title, body, summary=""):
     return text, bool(summary_lines)
 
 
-def synthesize(config, text, target: Path, *, max_bytes=64 * 1024 * 1024):
-    """HTTP streaming bounds memory independently of Kokoro's stream option."""
+def synthesize(config, text, target: Path, *, max_bytes=64 * 1024 * 1024, on_progress=None):
+    """Spool validated MP3 bytes and publish flushed progress to live listeners."""
     if not configured(config):
         raise TTSError("TTS_UNAVAILABLE", "语音服务暂未开放", 409)
     if config.get("response_format", "mp3") != "mp3" or config.get("download_format") not in {None, "mp3"}:
@@ -239,7 +276,7 @@ def synthesize(config, text, target: Path, *, max_bytes=64 * 1024 * 1024):
     try:
         payload = {"model": config["model"], "input": text, "voice": config["voice"],
                    "speed": config["speed"], "response_format": "mp3",
-                   "stream": config.get("stream", False),
+                   "stream": config.get("stream", True),
                    "return_download_link": config.get("return_download_link", False)}
         if config.get("lang_code"):
             payload["lang_code"] = config["lang_code"]
@@ -254,7 +291,8 @@ def synthesize(config, text, target: Path, *, max_bytes=64 * 1024 * 1024):
                                "上游返回 HTTP " + str(response.status_code) + ("，请检查鉴权配置" if response.status_code in {401, 403} else ""))
             size, prefix = 0, b""
             with target.open("wb") as output:
-                for chunk in response.iter_content(65536):
+                # Small reads avoid waiting for a large buffer before first playback.
+                for chunk in response.iter_content(4096):
                     if not chunk:
                         continue
                     size += len(chunk)
@@ -263,7 +301,13 @@ def synthesize(config, text, target: Path, *, max_bytes=64 * 1024 * 1024):
                     if time.monotonic() - started > timeout:
                         raise requests.Timeout()
                     prefix = (prefix + chunk)[:4096]
+                    if len(prefix) >= 3 and not (prefix.startswith(b"ID3") or
+                            (prefix[0] == 0xff and prefix[1] & 0xe0 == 0xe0)):
+                        raise TTSError("TTS_INVALID_AUDIO", "语音服务返回的音频无效，请重试", 502)
                     output.write(chunk)
+                    if on_progress and size >= 16:
+                        output.flush()
+                        on_progress(size)
             # Reject HTML/JSON masquerading as successful audio, independent of MIME.
             if size < 16 or not (prefix.startswith(b"ID3") or (prefix[0] == 0xff and prefix[1] & 0xe0 == 0xe0)):
                 raise TTSError("TTS_INVALID_AUDIO", "语音服务返回的音频无效，请重试", 502)

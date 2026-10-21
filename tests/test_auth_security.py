@@ -921,6 +921,8 @@ def test_scheduler_status_requires_admin_and_alias_preserves_payload_shape(auth_
         "today",
         "timezone_hint",
         "daily_summary_send_time",
+        "daily_summary_enabled",
+        "daily_summary_delivery_method",
         "daily_summary_sent_user_ids_today",
     }
     assert set(legacy.get_json()) == expected_fields

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import tempfile
 import threading
@@ -31,6 +32,7 @@ class TTSCache:
             workers = _env_limit("TTS_WORKERS", 2, 1, 8)
         self.ttl, self.max_bytes = ttl, max_bytes
         self.lock = threading.RLock()
+        self.changed = threading.Condition(self.lock)
         self.jobs, self.keys = {}, {}
         self.reserved_bytes = 0
         self.pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tts")
@@ -89,9 +91,11 @@ class TTSCache:
                     total -= job.get("bytes", 0)
                     self._discard(job)
 
-    def request(self, article_id, user_id, config, text, has_summary, namespace="", valid=None):
+    def request(self, article_id, user_id, config, text, has_summary, namespace="", valid=None, selection=None):
         self.start()
-        digest = hashlib.sha256((namespace + "\0" + config["revision"] + "\0" + text).encode()).hexdigest()
+        selection = selection or {}
+        digest = hashlib.sha256((namespace + "\0" + config["revision"] + "\0" + text + "\0" +
+                                 json.dumps(selection, sort_keys=True)).encode()).hexdigest()
         with self.lock:
             self.cleanup()
             old = self.jobs.get(self.keys.get(digest))
@@ -107,8 +111,10 @@ class TTSCache:
             job_id = uuid.uuid4().hex
             job = {"id": job_id, "key": digest, "article_id": article_id, "owner": user_id,
                    "has_summary": has_summary, "revision": config["revision"],
+                   "selection": selection,
                    "text_hash": hashlib.sha256(text.encode()).hexdigest(),
-                   "status": "queued", "created_at": time.time(), "last_used": time.time(), "leases": 0}
+                   "status": "queued", "created_at": time.time(), "last_used": time.time(),
+                   "leases": 0, "published_bytes": 0}
             self.jobs[job_id] = job
             self.keys[digest] = job_id
             try:
@@ -143,7 +149,14 @@ class TTSCache:
                 self.reserved_bytes += allowance
                 reserved = True
                 job["status"] = "generating"
-            synthesize(config, text, part, max_bytes=allowance)
+            def publish(size):
+                with self.changed:
+                    if self.jobs.get(job["id"]) is not job or job.get("invalid"):
+                        raise TTSError("TTS_EXPIRED", "文章已更新或删除，请重新生成语音", 410)
+                    job["published_bytes"] = size
+                    self.changed.notify_all()
+
+            synthesize(config, text, part, max_bytes=allowance, on_progress=publish)
             with self.lock:
                 if self.jobs.get(job["id"]) is not job or job.get("invalid") or (valid and not valid()):
                     raise TTSError("TTS_EXPIRED", "文章已更新或删除，请重新生成语音", 410)
@@ -154,11 +167,13 @@ class TTSCache:
                 self.reserved_bytes -= allowance
                 reserved = False
                 job.update(status="ready", bytes=size)
+                self.changed.notify_all()
         except Exception as exc:
             error = exc if isinstance(exc, TTSError) else TTSError("TTS_STORAGE_ERROR", "语音生成失败，请稍后重试", 503)
             with self.lock:
                 job.update(status="failed", error=str(error), code=error.code, http_status=error.status,
                            admin_detail=error.admin_detail)
+                self.changed.notify_all()
         finally:
             try:
                 part.unlink(missing_ok=True)
@@ -189,6 +204,43 @@ class TTSCache:
             self.jobs[job_id]["leases"] += 1
             return path
 
+    def stream(self, job_id):
+        """Tail only published bytes; a lease protects both the spool and rename."""
+        source = None
+        leased = False
+        position = 0
+        try:
+            with self.changed:
+                self.get(job_id)
+                job = self.jobs[job_id]
+                job["leases"] += 1
+                leased = True
+            while True:
+                with self.changed:
+                    if job.get("invalid"):
+                        raise TTSError("TTS_EXPIRED", "语音已过期，请重新生成", 410)
+                    if job["status"] == "failed":
+                        raise TTSError(job["code"], job["error"], job["http_status"], job.get("admin_detail", ""))
+                    complete = job["status"] == "ready"
+                    available = job["bytes"] if complete else job["published_bytes"]
+                    if position >= available:
+                        if complete:
+                            return
+                        self.changed.wait(timeout=1)
+                        continue
+                    if source is None:
+                        source = (self.directory / (job_id + (".mp3" if complete else ".part"))).open("rb")
+                    chunk = source.read(min(16384, available - position))
+                    if not chunk:
+                        raise TTSError("TTS_STORAGE_ERROR", "语音临时存储不可用，请稍后重试", 503)
+                    position += len(chunk)
+                yield chunk
+        finally:
+            if source:
+                source.close()
+            if leased:
+                self.release(job_id)
+
     def release(self, job_id):
         with self.lock:
             job = self.jobs.get(job_id)
@@ -203,6 +255,7 @@ class TTSCache:
                 if job["article_id"] in article_ids:
                     job["invalid"] = True
                     self._discard(job)
+            self.changed.notify_all()
 
 
 cache = TTSCache()

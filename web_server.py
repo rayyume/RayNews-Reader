@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 from ai_result_updates import ensure_result_versions, read_updates, track_generation, result_state
 
@@ -63,6 +64,8 @@ from image_validation import detect_image_content_type
 from ai_service import AIService, _redact_api_error, validate_ai_endpoint_base_url
 from digest_engine import (MAX_DIGEST_EVENTS, SIGNAL_VERSION, normalize_signals, group_events,
                            rank_events, render_digest)
+from daily_summary_config import (DEFAULT_HOUR as DAILY_SUMMARY_HOUR, DEFAULT_MINUTE as DAILY_SUMMARY_MINUTE,
+                                  get_config as get_daily_summary_config, save_config as save_daily_summary_config)
 from network_safety import UnsafeUrlError, assert_ai_endpoint_url, assert_public_http_url
 from image_cache import (
     enqueue_article_image_prefetch, unpin_article_images,
@@ -135,10 +138,7 @@ AUTO_TITLE_PROCESS_SCAN_LIMIT = int(os.environ.get("AUTO_TITLE_PROCESS_SCAN_LIMI
 AUTO_SOURCE_CLASSIFY_BATCH_LIMIT = int(os.environ.get("AUTO_SOURCE_CLASSIFY_BATCH_LIMIT", "50"))
 AUTO_SOURCE_CLASSIFY_INTERVAL_SECONDS = int(os.environ.get("AUTO_SOURCE_CLASSIFY_INTERVAL_SECONDS", "60"))
 TELEGRAM_EMBED_TIMEOUT_SECONDS = int(os.environ.get("TELEGRAM_EMBED_TIMEOUT_SECONDS", "12"))
-# Daily summary is now server-generated once and broadcast to every subscribed
-# user — the send time is a fixed ops-level setting, not user-configurable.
-DAILY_SUMMARY_HOUR = int(os.environ.get("DAILY_SUMMARY_HOUR", "21"))
-DAILY_SUMMARY_MINUTE = int(os.environ.get("DAILY_SUMMARY_MINUTE", "0"))
+# Server digest settings live in app_state; legacy environment values seed the time.
 DAILY_SUMMARY_WINDOW_MINUTES = int(os.environ.get("DAILY_SUMMARY_WINDOW_MINUTES", "10"))
 # A failed generation is retried on a fixed cadence outside the send window; after
 # DAILY_SUMMARY_MAX_RETRIES further failures the scheduler stops trying for the day
@@ -202,7 +202,7 @@ def finish_request_timing(response):
 # ─── JSON error handler — prevent HTML responses on errors ─────
 @app.after_request
 def protect_ai_responses(response):
-    if request.path.startswith(("/ai/", "/settings", "/auth/users", "/admin/system-ai-config", "/admin/ai-generation")):
+    if request.path.startswith(("/ai/", "/settings", "/auth/users", "/admin/system-ai-config", "/admin/ai-generation", "/admin/daily-summary-config")):
         response.headers["Cache-Control"] = "private, no-store"
     return response
 
@@ -1845,58 +1845,76 @@ def ai_daily_summary():
     deleted: a browser running a cached build still posts here, and a clear
     message beats a bare 404 or, worse, a route that silently reappears.
     """
+    config = get_daily_summary_config()
     return jsonify({
         "error": (
-            f"每日总结由服务器在北京时间每天 "
-            f"{DAILY_SUMMARY_HOUR:02d}:{DAILY_SUMMARY_MINUTE:02d} 统一生成，不支持手动触发"
+            f"每日总结由服务器每天 {config['generate_at']}（{config['timezone']}）"
+            "统一生成，不支持手动触发"
         ),
         "status": "scheduled",
-        "generate_at": f"{DAILY_SUMMARY_HOUR:02d}:{DAILY_SUMMARY_MINUTE:02d}",
+        "generate_at": config["generate_at"],
+        "timezone": config["timezone"],
     }), 403
+
+
+@app.route("/admin/daily-summary-config", methods=["GET", "PUT"])
+@require_role("admin")
+def admin_daily_summary_config():
+    try:
+        config = (save_daily_summary_config(request.get_json(silent=True))
+                  if request.method == "PUT" else get_daily_summary_config())
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({**config, "email_configured": bool(os.environ.get("RESEND_API_KEY", ""))})
 
 
 @app.route("/ai/daily-summary/today", methods=["GET"])
 @require_role("user", "admin")
 def ai_daily_summary_today():
-    """Today's shared summary, or why it isn't showing yet.
+    """The latest scheduled task's shared summary, including after midnight.
 
-    The client renders four states off `status`, so the "not yet" cases are
-    distinguished here rather than in the UI: `scheduled` (today's generation
-    time hasn't arrived), `generating` (it has, but the summary isn't stored
-    yet), `completed`, `unavailable` (the day ended with nothing produced —
-    typically no articles, or the system AI isn't configured).
+    Stored results and failures stay visible until the next local cutoff. With
+    neither, report `generating` during the task's window (plus a little slack),
+    `scheduled` while waiting for the next run, or `unavailable` after a missed
+    generation window.
     """
     if not ai_permissions(g.user_id)["daily_digest"]:
         return _ai_denied()
     if not daily_enabled(g.user_id):
         return jsonify({"status": "disabled", "error": "请先启用每日总结"}), 403
-    today_str = _today_str()
-    generate_at = f"{DAILY_SUMMARY_HOUR:02d}:{DAILY_SUMMARY_MINUTE:02d}"
+    config = get_daily_summary_config()
+    now = _daily_summary_now()
+    task_date = _daily_summary_run_date(now, config)
+    schedule = {"generate_at": config["generate_at"], "timezone": config["timezone"],
+                "server_enabled": config["enabled"]}
 
-    shared = _get_daily_summary_global_cache(today_str)
+    shared = _get_daily_summary_global_cache(task_date)
     if shared:
         return jsonify({
             "status": "completed",
-            "date": today_str,
-            "generate_at": generate_at,
+            "date": task_date,
+            **schedule,
             "summary": shared["summary"],
             "article_count": shared["article_count"],
             "stats": shared["stats"],
             "updated_at": shared["updated_at"],
         })
 
+    if not config["enabled"]:
+        return jsonify({"status": "server_disabled", "date": task_date, **schedule})
+
     # A day that has failed at least once reports differently to admins: they get
     # the reason and the retry control, everyone else gets the ordinary
     # "generating"/"unavailable" wording — a failing system AI key is an ops
     # detail, not something to show every reader.
-    failure = _get_daily_summary_failure(today_str)
+    failure = _get_daily_summary_failure(task_date)
     if failure and int(failure.get("attempts") or 0) > 0:
         given_up = bool(int(failure.get("given_up") or 0))
         if getattr(g, "user_role", "") == "admin":
             return jsonify({
                 "status": "failed" if given_up else "retrying",
-                "date": today_str,
-                "generate_at": generate_at,
+                "date": task_date,
+                **schedule,
                 "error": failure.get("last_error") or "",
                 "attempts": int(failure.get("attempts") or 0),
                 "max_retries": DAILY_SUMMARY_MAX_RETRIES,
@@ -1906,58 +1924,70 @@ def ai_daily_summary_today():
             })
         return jsonify({
             "status": "unavailable" if given_up else "generating",
-            "date": today_str,
-            "generate_at": generate_at,
+            "date": task_date,
+            **schedule,
         })
 
-    now = _beijing_now()
-    target_minutes = DAILY_SUMMARY_HOUR * 60 + DAILY_SUMMARY_MINUTE
-    now_minutes = now.hour * 60 + now.minute
-    if now_minutes < target_minutes:
-        status = "scheduled"
-    elif now_minutes < target_minutes + max(DAILY_SUMMARY_WINDOW_MINUTES, 1) + 5:
+    saved_window = _saved_daily_summary_window(task_date)
+    cutoff = (saved_window[1] if saved_window else
+              _daily_summary_cutoff(_dt.date.fromisoformat(task_date), config).timestamp())
+    elapsed = (now.timestamp() - cutoff) / 60
+    if elapsed < max(DAILY_SUMMARY_WINDOW_MINUTES, 1) + 5:
         # Inside (or just past) the scheduler's send window: a tick is either
         # running or about to. Slack on the tail so a slow AI call reads as
         # "still working" rather than flipping straight to unavailable.
         status = "generating"
+    elif now.timestamp() < _daily_summary_cutoff(now.date(), config).timestamp():
+        # With no saved result or failure from the last task, explain the next
+        # scheduled run. Existing results/retries above stay visible until then.
+        status = "scheduled"
     else:
         status = "unavailable"
-    return jsonify({"status": status, "date": today_str, "generate_at": generate_at})
+    return jsonify({"status": status, "date": task_date, **schedule})
 
 
 @app.route("/ai/daily-summary/retry", methods=["POST"])
 @require_role("admin")
 def ai_daily_summary_retry():
-    """Admin-triggered retry of today's failed generation.
+    """Admin-triggered retry of the latest scheduled task's failed generation.
 
     Not a general "generate now" button: it refuses unless the day actually has
     a failure record, which keeps the retired manual-generation path retired —
     the only way to reach the AI from a client is to re-run a run that already
-    failed. A successful retry clears the failure record and delivers on both
-    channels exactly as the scheduled run would; a failed one restarts the
-    automatic retry chain from attempt 1.
+    failed. A successful retry clears the failure record and delivers on the
+    configured channels exactly as the scheduled run would; a failed one
+    restarts the automatic retry chain from attempt 1.
     """
-    today_str = _today_str()
-    failure = _get_daily_summary_failure(today_str)
+    config = get_daily_summary_config()
+    if not config["enabled"]:
+        return jsonify({"status": "server_disabled", "error": "服务器已暂停每日总结，请先在管理员设置中开启"}), 409
+    task_date = _daily_summary_run_date(_daily_summary_now(), config)
+    failure = _get_daily_summary_failure(task_date)
     if not failure or int(failure.get("attempts") or 0) <= 0:
         return jsonify({
-            "error": "今日每日总结没有失败记录，无需重试",
+            "date": task_date,
+            "error": "当前每日总结任务没有失败记录，无需重试",
             "status": "not_failed",
         }), 409
 
-    _clear_daily_summary_failure(today_str)
-    result = _broadcast_daily_summary(force=False, bypass_window=True)
+    _clear_daily_summary_failure(task_date)
+    result = _broadcast_daily_summary(force=False, bypass_window=True, date_str=task_date)
+    if result.get("reason") == "daily summary disabled":
+        return jsonify({"status": "server_disabled", "date": task_date,
+                        "error": "服务器已暂停每日总结"}), 409
     if result.get("status") == "error":
-        state = _get_daily_summary_failure(today_str) or {}
+        state = _get_daily_summary_failure(task_date) or {}
         return jsonify({
+            "date": task_date,
             "status": "failed" if int(state.get("given_up") or 0) else "retrying",
             "error": result.get("reason") or "",
             "attempts": int(state.get("attempts") or 0),
             "can_retry": True,
         }), 502
     if result.get("status") == "skipped" and result.get("reason") == "generation already running":
-        return jsonify({"status": "retrying", "error": "", "message": "正在生成，请稍候"}), 202
-    return jsonify({"status": "completed", "message": "每日总结生成成功"})
+        return jsonify({"status": "retrying", "date": task_date,
+                        "error": "", "message": "正在生成，请稍候"}), 202
+    return jsonify({"status": "completed", "date": task_date, "message": "每日总结生成成功"})
 
 
 def _beijing_now():
@@ -1967,16 +1997,108 @@ def _beijing_now():
     return _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8)))
 
 
-def _today_str() -> str:
-    return _beijing_now().strftime("%Y-%m-%d")
+def _daily_summary_now():
+    return _dt.datetime.now(ZoneInfo(get_daily_summary_config()["timezone"]))
 
 
-def _digest_window(date_str: str) -> tuple[int, int]:
-    """Half-open Beijing cutoff window; late arrivals enter the next run."""
-    beijing = _dt.timezone(_dt.timedelta(hours=8))
+def _daily_summary_cutoff(day, config=None):
+    config = config or get_daily_summary_config()
+    hour, minute = map(int, config["generate_at"].split(":"))
+    return _dt.datetime.combine(day, _dt.time(hour, minute), ZoneInfo(config["timezone"]))
+
+
+def _daily_summary_run_date(now=None, config=None):
+    """Latest due or already-started task; editing the clock cannot undo a run."""
+    config = config or get_daily_summary_config()
+    now = now or _daily_summary_now()
+    now = now.astimezone(ZoneInfo(config["timezone"]))
+    day = now.date()
+    if now.timestamp() < _daily_summary_cutoff(day, config).timestamp():
+        # The administrator may move today's cutoff after today's task started.
+        # Keep that task visible and retryable, including across a restart. Old
+        # installations have results/failures but no task-window records yet.
+        started = False
+        if os.path.exists(NEWS_DB):
+            with _news_db_conn() as conn:
+                tables = {row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                    "('daily_summary_tasks', 'daily_summary_global', 'daily_summary_failures')"
+                )}
+                for table in ("daily_summary_tasks", "daily_summary_global", "daily_summary_failures"):
+                    if table in tables and conn.execute(
+                            f"SELECT 1 FROM {table} WHERE date=?", (day.isoformat(),)).fetchone():
+                        started = True
+                        break
+        if not started:
+            day -= _dt.timedelta(days=1)
+    return day.isoformat()
+
+
+def _saved_daily_summary_window(date_str):
+    if not os.path.exists(NEWS_DB):
+        return None
+    with _news_db_conn() as conn:
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('daily_summary_tasks', 'daily_summary_global')"
+        )}
+        if "daily_summary_tasks" in tables:
+            row = conn.execute("SELECT window_start, window_end FROM daily_summary_tasks WHERE date=?",
+                               (date_str,)).fetchone()
+            if row:
+                return tuple(row)
+        # Completed digests from before task snapshots already saved their window.
+        if "daily_summary_global" in tables:
+            row = conn.execute("SELECT stats FROM daily_summary_global WHERE date=?", (date_str,)).fetchone()
+            try:
+                stats = json.loads(row[0]) if row else {}
+                start, end = stats.get("window_start"), stats.get("window_end")
+                if type(start) is int and type(end) is int and 0 < start < end:
+                    return start, end
+            except (TypeError, ValueError, AttributeError):
+                pass
+    return None
+
+
+def _remember_daily_summary_task(date_str, config):
+    """Persist the original window before the first AI call, including failures."""
+    if not os.path.exists(NEWS_DB):
+        return
+    start, end = _digest_window(date_str, config)
+    with _news_db_conn() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS daily_summary_tasks ("
+                     "date TEXT PRIMARY KEY, window_start INTEGER NOT NULL, window_end INTEGER NOT NULL)")
+        conn.execute("INSERT OR IGNORE INTO daily_summary_tasks(date,window_start,window_end) VALUES(?,?,?)",
+                     (date_str, start, end))
+        conn.commit()
+
+
+def _digest_window(date_str: str, config=None) -> tuple[int, int]:
+    """Local cutoffs, with continuity when the administrator changes the time."""
+    saved = _saved_daily_summary_window(date_str)
+    if saved:
+        return saved
     day = _dt.date.fromisoformat(date_str)
-    cutoff = _dt.datetime.combine(day, _dt.time(DAILY_SUMMARY_HOUR, DAILY_SUMMARY_MINUTE), beijing)
-    return int((cutoff - _dt.timedelta(days=1)).timestamp()), int(cutoff.timestamp())
+    config = config or get_daily_summary_config()
+    start = _daily_summary_cutoff(day - _dt.timedelta(days=1), config)
+    cutoff = _daily_summary_cutoff(day, config)
+    previous_date = (day - _dt.timedelta(days=1)).isoformat()
+    previous_window = _saved_daily_summary_window(previous_date)
+    previous_end = previous_window[1] if previous_window else None
+    if previous_end is None and os.path.exists(NEWS_DB):
+        try:
+            # A window calculation must stay read-only: callers may already hold
+            # a write transaction, and a first-use cache-table init would block it.
+            with _news_db_conn() as conn:
+                previous = conn.execute("SELECT stats FROM daily_summary_global WHERE date=?",
+                                        (previous_date,)).fetchone()
+            stats = json.loads(previous[0]) if previous else {}
+            previous_end = stats.get("window_end") if isinstance(stats, dict) else None
+        except (sqlite3.Error, TypeError, ValueError):
+            pass  # No saved cutoff yet; use consecutive local scheduled times.
+    if type(previous_end) is int and 0 < previous_end < cutoff.timestamp():
+        return previous_end, int(cutoff.timestamp())
+    return int(start.timestamp()), int(cutoff.timestamp())
 
 
 def _digest_category_definitions() -> list[dict]:
@@ -2009,7 +2131,7 @@ def _previous_digest_signals(date_str: str) -> list[dict]:
 @require_role("admin")
 def admin_daily_digest_events():
     """Explain why each event entered or missed the saved digest."""
-    date_str = request.args.get("date") or _today_str()
+    date_str = request.args.get("date") or _daily_summary_run_date()
     try:
         _dt.date.fromisoformat(date_str)
     except ValueError:
@@ -2360,7 +2482,7 @@ def _get_daily_summary_failure(date_str: str) -> dict | None:
 def _record_daily_summary_failure(date_str: str, reason: str) -> dict:
     """Count one failed attempt for date_str and schedule (or stop) the retry.
 
-    Attempt 1 is the scheduled 21:00 run; each subsequent attempt is a retry
+    Attempt 1 is the scheduled run; each subsequent attempt is a retry
     DAILY_SUMMARY_RETRY_INTERVAL_SECONDS later. Once attempts exceed
     1 + DAILY_SUMMARY_MAX_RETRIES the day is given up on and next_retry_at is
     cleared, which is what makes the admin alert fire exactly once.
@@ -2407,7 +2529,7 @@ def _record_daily_summary_failure(date_str: str, reason: str) -> dict:
             # Only the current day is ever consulted; keep a short tail for support
             # questions ("did last Tuesday fail?") and drop the rest.
             conn.execute("DELETE FROM daily_summary_failures WHERE date < ?",
-                         ((_beijing_now() - timedelta(days=7)).strftime("%Y-%m-%d"),))
+                         ((_daily_summary_now() - timedelta(days=7)).strftime("%Y-%m-%d"),))
             conn.commit()
         state.update({
             "attempts": attempts,
@@ -2491,12 +2613,12 @@ def _alert_admins_daily_summary_failure(date_str: str, state: dict) -> int:
     """
     attempts = int(state.get("attempts") or 0)
     reason = state.get("last_error") or "未知原因"
+    config = get_daily_summary_config()
     body = (
         f"{date_str} 的每日总结生成失败，已重试 {max(attempts - 1, 0)} 次仍未成功，"
         f"今日不再自动重试。\n\n"
         f"失败原因：{reason}\n\n"
-        f"共尝试 {attempts} 次（首次为北京时间 "
-        f"{DAILY_SUMMARY_HOUR:02d}:{DAILY_SUMMARY_MINUTE:02d} 的定时生成，"
+        f"共尝试 {attempts} 次（首次为 {config['generate_at']}（{config['timezone']}）的定时生成，"
         f"之后每 {DAILY_SUMMARY_RETRY_INTERVAL_SECONDS // 60} 分钟重试一次）。\n\n"
         f"可在首页 ✨ 每日总结面板点击「重试生成」手动再试一次。"
     )
@@ -2527,6 +2649,9 @@ def _deliver_daily_summary_inapp(date_str: str, result: dict) -> dict:
     configured, or a deployment with no RESEND_API_KEY at all, still gets the
     in-app copy.
     """
+    config = get_daily_summary_config()
+    if not config["enabled"] or config["delivery_method"] not in {"inapp", "both"}:
+        return {"status": "skipped", "reason": "in-app delivery disabled", "recipients": 0}
     try:
         user_ids = get_daily_summary_inapp_user_ids()
         if not user_ids:
@@ -2557,10 +2682,10 @@ def _deliver_daily_summary_inapp(date_str: str, result: dict) -> dict:
 _daily_summary_generation_lock = threading.Lock()
 
 
-def _broadcast_daily_summary(force: bool = False, bypass_window: bool = False) -> dict:
+def _broadcast_daily_summary(force: bool = False, bypass_window: bool = False, date_str=None) -> dict:
     """Generate the one shared daily summary and deliver it on both channels.
 
-    Runs automatically at DAILY_SUMMARY_HOUR:MINUTE Beijing time; `force=True`
+    Runs automatically at the configured local time; `force=True`
     (admin manual trigger) bypasses the time window and resends to every email
     subscriber regardless of history.
 
@@ -2579,14 +2704,16 @@ def _broadcast_daily_summary(force: bool = False, bypass_window: bool = False) -
     of the day. The in-app leg uses its own all-or-nothing claim row instead —
     it fans out in a single transaction, so it has no partial state to resume.
     """
-    now = _beijing_now()
-    today_str = now.strftime("%Y-%m-%d")
+    config = get_daily_summary_config()
+    if not config["enabled"]:
+        return {"status": "skipped", "reason": "daily summary disabled"}
+    now = _daily_summary_now()
+    today_str = date_str or (now.date().isoformat() if force else _daily_summary_run_date(now, config))
 
     if not force and not bypass_window:
-        target_minutes = DAILY_SUMMARY_HOUR * 60 + DAILY_SUMMARY_MINUTE
-        now_minutes = now.hour * 60 + now.minute
-        diff = now_minutes - target_minutes
-        if diff < 0 or diff >= DAILY_SUMMARY_WINDOW_MINUTES:
+        cutoff = _daily_summary_cutoff(_dt.date.fromisoformat(today_str), config)
+        diff = (now.timestamp() - cutoff.timestamp()) / 60
+        if diff < 0 or diff >= max(DAILY_SUMMARY_WINDOW_MINUTES, 1):
             return {"status": "skipped", "reason": "outside daily send window"}
 
     # A retry tick, an admin's manual retry and the scheduled run can all land on
@@ -2594,6 +2721,8 @@ def _broadcast_daily_summary(force: bool = False, bypass_window: bool = False) -
     if not _daily_summary_generation_lock.acquire(blocking=False):
         return {"status": "skipped", "reason": "generation already running"}
     try:
+        if not force:
+            _remember_daily_summary_task(today_str, config)
         result = _generate_daily_summary_global(today_str)
         if not result:
             reason = _daily_summary_last_error or "生成失败（请检查 管理员设置 → 服务端 API，或当日是否有文章）"
@@ -2626,9 +2755,18 @@ def _broadcast_daily_summary(force: bool = False, bypass_window: bool = False) -
                     "given_up": bool(state.get("given_up"))}
 
         _clear_daily_summary_failure(today_str)
-        inapp = _deliver_daily_summary_inapp(today_str, result)
-        email = _deliver_daily_summary_email(today_str, result, force=force)
-        return {**email, "inapp": inapp}
+        config = get_daily_summary_config()
+        inapp = (_deliver_daily_summary_inapp(today_str, result)
+                 if config["enabled"] and config["delivery_method"] in {"inapp", "both"}
+                 else {"status": "skipped", "reason": "in-app delivery disabled", "recipients": 0})
+        email = (_deliver_daily_summary_email(today_str, result, force=force)
+                 if config["enabled"] and config["delivery_method"] in {"email", "both"}
+                 else {"status": "skipped", "reason": "email delivery disabled"})
+        outcome = {**email, "inapp": inapp}
+        if email["status"] == "skipped" and inapp["status"] == "ok":
+            outcome["status"] = "ok"
+            outcome.pop("reason", None)
+        return outcome
     finally:
         _daily_summary_generation_lock.release()
 
@@ -2638,6 +2776,9 @@ def _deliver_daily_summary_email(date_str: str, result: dict, force: bool = Fals
     import json as _json
     from notifier import send_daily_summary_email
 
+    config = get_daily_summary_config()
+    if not config["enabled"] or config["delivery_method"] not in {"email", "both"}:
+        return {"status": "skipped", "reason": "email delivery disabled"}
     today_str = date_str
     resend_api_key = os.environ.get("RESEND_API_KEY", "")
     if not resend_api_key:
@@ -2679,6 +2820,9 @@ def _deliver_daily_summary_email(date_str: str, result: dict, force: bool = Fals
 
     sent = 0
     for user_id, to_email in pending.items():
+        config = get_daily_summary_config()
+        if not config["enabled"] or config["delivery_method"] not in {"email", "both"}:
+            break
         if not daily_enabled(user_id):
             continue
         try:
@@ -2709,7 +2853,10 @@ def _send_daily_summaries():
     the decision of *whether* this tick may generate is made here, and the
     window check is bypassed once the day has a failure record.
     """
-    today_str = _today_str()
+    config = get_daily_summary_config()
+    if not config["enabled"]:
+        return {"status": "skipped", "reason": "daily summary disabled"}
+    today_str = _daily_summary_run_date(_daily_summary_now(), config)
     state = _get_daily_summary_failure(today_str)
     if state and int(state.get("attempts") or 0) > 0:
         if int(state.get("given_up") or 0):
@@ -2717,8 +2864,8 @@ def _send_daily_summaries():
         if not _daily_summary_retry_due(state):
             return {"status": "skipped", "reason": "waiting for next retry"}
         print(f"[scheduler] Daily summary retry #{int(state['attempts'])} for {today_str}")
-        return _broadcast_daily_summary(force=False, bypass_window=True)
-    return _broadcast_daily_summary(force=False)
+        return _broadcast_daily_summary(force=False, bypass_window=True, date_str=today_str)
+    return _broadcast_daily_summary(force=False, date_str=today_str)
 
 
 def _daily_summary_loop():
@@ -4208,11 +4355,12 @@ def _fetch_articles_by_date(date_str: str, include_ai_summary: bool = True) -> l
         return []
     try:
         _init_ai_results_table()
+        # Resolve the schedule before opening a schema-writing transaction below.
+        start, cutoff = _digest_window(date_str)
         with _news_db_conn() as conn:
             conn.row_factory = sqlite3.Row
             ensure_article_source_columns(conn)
             init_source_categories(conn)
-            start, cutoff = _digest_window(date_str)
             summary_expr = (
                 "COALESCE(NULLIF(r.summary, ''), a.summary)"
                 if include_ai_summary else "a.summary"
@@ -6618,15 +6766,18 @@ def scheduler_status():
     import datetime as _dt
     now = _dt.datetime.now()
     beijing_now = _beijing_now()
-    today_str = beijing_now.strftime("%Y-%m-%d")
+    config = get_daily_summary_config()
+    today_str = _daily_summary_run_date(_daily_summary_now(), config)
     today_sent = sorted(_get_daily_summary_sent_user_ids(today_str))
     return jsonify({
         "running": True,
         "server_time": now.strftime("%Y-%m-%d %H:%M:%S"),
         "beijing_time": beijing_now.strftime("%Y-%m-%d %H:%M:%S"),
         "today": today_str,
-        "timezone_hint": str(_dt.datetime.now().astimezone().tzinfo),
-        "daily_summary_send_time": f"{DAILY_SUMMARY_HOUR:02d}:{DAILY_SUMMARY_MINUTE:02d}",
+        "timezone_hint": config["timezone"],
+        "daily_summary_send_time": config["generate_at"],
+        "daily_summary_enabled": config["enabled"],
+        "daily_summary_delivery_method": config["delivery_method"],
         "daily_summary_sent_user_ids_today": today_sent,
     })
 
@@ -6645,12 +6796,12 @@ def _tts_article(article_id):
     return article
 
 
-def _tts_summary(article_id):
-    return (_get_ai_result(article_id, strict=True) or {}).get("summary") or ""
+def _tts_result(article_id, current):
+    return _public_ai_result(article_id, current)
 
 
 from tts_routes import register_tts_routes
-register_tts_routes(app, _tts_article, _tts_summary, lambda: os.path.abspath(NEWS_DB))
+register_tts_routes(app, _tts_article, _tts_result, lambda: os.path.abspath(NEWS_DB))
 
 
 # ─── Main ─────────────────────────────────────────────────────

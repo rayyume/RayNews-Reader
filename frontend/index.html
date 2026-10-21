@@ -552,7 +552,7 @@ html[data-theme="light"] .ai-grant-state[data-authorized="true"]{color:#509b72}
 .ai-action-btn{padding:6px 14px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-2);font-size:12px;font-weight:600;cursor:pointer;font-family:var(--font);transition:all 0.15s;display:flex;align-items:center;gap:6px}
 .ai-action-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-dim)}
 .ai-action-btn:disabled{opacity:0.4;cursor:default;border-color:var(--border);color:var(--text-3);background:var(--bg-card)}
-.article-ai-btn{border:1px solid var(--border);background:var(--bg-surface);color:var(--accent);font-size:11px;font-weight:700;cursor:pointer;padding:3px 10px;border-radius:100px;font-family:var(--font);transition:background .15s,border-color .15s,color .15s}
+.article-ai-btn{display:inline-flex;align-items:center;justify-content:center;min-width:44px;height:24px;line-height:16px;white-space:nowrap;flex-shrink:0;border:1px solid var(--border);background:var(--bg-surface);color:var(--accent);font-size:11px;font-weight:700;cursor:pointer;padding:3px 10px;border-radius:100px;font-family:var(--font);transition:background .15s,border-color .15s,color .15s}
 .article-ai-btn:hover{background:var(--accent-dim);border-color:var(--accent)}
 .article-ai-btn:disabled{opacity:.45;cursor:default}
 .ai-result{margin-top:12px;padding:14px 16px;background:var(--bg);border-radius:10px;font-size:13px;line-height:1.7;color:var(--text);border:1px solid var(--border);max-height:400px;overflow-x:hidden;overflow-y:auto;white-space:pre-wrap;word-break:break-word}
@@ -613,8 +613,8 @@ html[data-theme="light"] .ai-grant-state[data-authorized="true"]{color:#509b72}
 
 /* ═══ TTS Player ═════════════════════════════════ */
 /* TTS follows the reader's shared dark/light tokens. */
-.tts-speaker{display:inline-flex;align-items:center;justify-content:center;width:32px;padding:6px!important;color:var(--text-2)}
-.tts-speaker svg,.tts-icon{display:block;width:20px;height:20px;flex-shrink:0}
+.tts-icon{display:block;width:20px;height:20px;flex-shrink:0}
+.tts-speaker svg{width:14px;height:14px}
 .tts-speaker.active{color:var(--accent);background:var(--accent-dim)}
 .tts-disc[hidden],.tts-overlay[hidden]{display:none!important}
 .tts-disc{position:fixed;right:24px;bottom:calc(24px + env(safe-area-inset-bottom,0px));z-index:570;width:60px;height:60px;padding:3px;border:0;border-radius:50%;background:conic-gradient(var(--accent) calc(var(--tts-progress,0)*1%),var(--border-hover) 0);box-shadow:0 5px 22px rgba(0,0,0,.28);cursor:pointer;color:#fff;touch-action:manipulation}
@@ -853,7 +853,22 @@ body.tts-active .scroll-top-btn{bottom:calc(102px + env(safe-area-inset-bottom,0
 <input id="autoTitleSummaryEnabled" onclick="event.stopPropagation()" type="checkbox"/>
 <span>🏷️ 自动简写过长文章标题</span>
 </div><p class="ai-hint" style="margin-top:8px">开启后，抓取到当天标题超过 30 个中文字符的文章时，会在后台用系统 API 简写标题，结果供已授权的用户查看。</p><button class="ai-save-btn" onclick="saveSummarySettings()">保存标题简写设置</button></div>
-<div id="adminTabDigest" style="display:none"><p class="ai-hint">每日总结由服务器按现有计划统一生成，默认北京时间 21:00。失败自动重试，管理员可在每日总结面板查看失败状态并重试。用户需获得每日总结权限并开启功能，才能查看或接收推送。</p></div>
+<div id="adminTabDigest" style="display:none">
+<fieldset id="adminDigestFields" disabled style="border:0;padding:0;margin:0;min-width:0">
+<label class="ai-toggle" style="margin-top:12px"><input id="adminDigestEnabled" type="checkbox"><span>启用服务器每日总结</span></label>
+<p class="ai-hint" style="margin-top:8px">开启后，服务器按计划统一生成并推送。关闭后暂停生成和推送，已生成的内容仍可查看。</p>
+<label class="ai-label" for="adminDigestTime">每日生成时间</label>
+<input class="ai-input" id="adminDigestTime" type="time" step="60" required>
+<p class="ai-hint" style="margin-top:8px">执行时区：<strong id="adminDigestTimezone">读取中…</strong>（跟随服务器 TZ 配置）</p>
+<label class="ai-label" for="adminDigestDelivery">推送方式</label>
+<select class="ai-select" id="adminDigestDelivery"><option value="inapp">网页内通知</option><option value="email">邮件</option><option value="both">网页内通知和邮件均开启</option></select>
+<p class="ai-hint" style="margin-top:8px">仅向已获得每日总结权限、开启功能且订阅对应方式的用户推送。邮件需要用户设置有效收件地址。</p>
+<p class="ai-hint" id="adminDigestEmailHint" hidden style="margin-top:8px">服务器尚未配置邮件服务（RESEND_API_KEY），配置完成后才能发送邮件。</p>
+<button class="ai-save-btn" id="adminDigestSave" type="button" onclick="saveDailySummaryConfig()" style="margin-top:16px">保存每日总结设置</button>
+</fieldset>
+<p class="ai-hint" id="adminDigestStatus" role="status" aria-live="polite" style="margin-top:10px"></p>
+<p class="ai-hint" style="margin-top:8px">设置保存后自动生效，无需重启。失败会自动重试；管理员可在首页每日总结面板查看失败状态并重试。</p>
+</div>
 <div id="adminTabTts" style="display:none"></div></div>
   <div id="adminTabSources" style="display:none">
 <div class="source-step">
@@ -1041,7 +1056,7 @@ body.tts-active .scroll-top-btn{bottom:calc(102px + env(safe-area-inset-bottom,0
             <span>📅 邮件推送</span>
           </div>
           <p class="ai-hint" style="margin-top:4px">需填写下方接收邮箱。两个通道相互独立，可只留其一。</p>
-          <p class="ai-hint" style="margin-top:4px">摘要在北京时间每天晚 9 点（21:00）由系统统一生成，生成时间不支持自定义。</p>
+          <p class="ai-hint" style="margin-top:4px">摘要按管理员设置的时间和服务器时区统一生成，推送方式还需由服务器开启。</p>
         </div>
 
         <label class="ai-label" style="margin-top:14px">接收邮箱</label>
@@ -1092,7 +1107,7 @@ body.tts-active .scroll-top-btn{bottom:calc(102px + env(safe-area-inset-bottom,0
     <div class="ai-body" id="dailySummaryBody">
       <div style="text-align:center;padding:36px;color:var(--text-3)">
         <div style="font-size:20px;margin-bottom:10px">🕘</div>
-        <p>每日总结将在北京时间每天晚 9 点（21:00）生成显示</p>
+        <p>每日总结由服务器按计划生成，正在读取生成时间…</p>
       </div>
     </div>
   </div>
@@ -2646,6 +2661,7 @@ function switchAdminAiTab(tab) {
     document.getElementById('adminTab'+t.charAt(0).toUpperCase()+t.slice(1)).style.display = t === tab ? '' : 'none';
   });
   if (tab === 'systemapi') loadSystemAiConfig();
+  if (tab === 'digest') loadDailySummaryConfig();
   if (tab === 'tts') window.RayNewsTTS?.loadConfig();
 }
 
@@ -3785,6 +3801,60 @@ async function testSystemAiConnection() {
   } catch (e) { showSettingsStatus('❌ 测试失败: ' + e.message, 'err'); }
 }
 
+let adminDigestConfigSequence = 0;
+let adminDigestEmailConfigured = false;
+
+function updateAdminDigestEmailHint() {
+  document.getElementById('adminDigestEmailHint').hidden = adminDigestEmailConfigured
+    || document.getElementById('adminDigestDelivery').value === 'inapp';
+}
+document.getElementById('adminDigestDelivery').addEventListener('change', updateAdminDigestEmailHint);
+
+function applyDailySummaryConfig(data) {
+  document.getElementById('adminDigestEnabled').checked = !!data.enabled;
+  document.getElementById('adminDigestTime').value = data.generate_at;
+  document.getElementById('adminDigestTimezone').textContent = data.timezone;
+  document.getElementById('adminDigestDelivery').value = data.delivery_method;
+  adminDigestEmailConfigured = !!data.email_configured;
+  updateAdminDigestEmailHint();
+}
+
+async function loadDailySummaryConfig() {
+  const sequence = ++adminDigestConfigSequence, token = authToken, session = aiSessionGeneration;
+  const fields = document.getElementById('adminDigestFields'), status = document.getElementById('adminDigestStatus');
+  fields.disabled = true; status.textContent = '正在读取每日总结设置…';
+  try {
+    const data = await apiFetch('/admin/daily-summary-config', {cache:'no-store'});
+    if (sequence !== adminDigestConfigSequence || token !== authToken || session !== aiSessionGeneration) return;
+    if (!data || data.error) throw new Error(data?.error || '设置读取失败，请重新打开此页签');
+    applyDailySummaryConfig(data); fields.disabled = false;
+    status.textContent = data.enabled ? `服务器每日 ${data.generate_at}（${data.timezone}）生成。` : '服务器每日总结已暂停。';
+  } catch (error) {
+    if (sequence === adminDigestConfigSequence && token === authToken && session === aiSessionGeneration) status.textContent = error.message;
+  }
+}
+
+async function saveDailySummaryConfig() {
+  const time = document.getElementById('adminDigestTime');
+  if (!time.reportValidity()) return;
+  const sequence = ++adminDigestConfigSequence, token = authToken, session = aiSessionGeneration;
+  const fields = document.getElementById('adminDigestFields'), status = document.getElementById('adminDigestStatus');
+  const payload = {enabled:document.getElementById('adminDigestEnabled').checked, generate_at:time.value,
+    delivery_method:document.getElementById('adminDigestDelivery').value};
+  fields.disabled = true; status.textContent = '正在保存…';
+  try {
+    const data = await apiFetch('/admin/daily-summary-config', {method:'PUT', headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    if (sequence !== adminDigestConfigSequence || token !== authToken || session !== aiSessionGeneration) return;
+    if (!data || data.error) throw new Error(data?.error || '保存失败，请稍后重试');
+    applyDailySummaryConfig(data); status.textContent = '每日总结设置已保存。';
+    void syncDailySummaryToday();
+  } catch (error) {
+    if (sequence === adminDigestConfigSequence && token === authToken && session === aiSessionGeneration) status.textContent = error.message;
+  } finally {
+    if (sequence === adminDigestConfigSequence && token === authToken && session === aiSessionGeneration) fields.disabled = false;
+  }
+}
+
 // ─── Notification Config ─────────────────────────────────
 
 async function loadSummarySettings() { await loadGenerationSettings(); }
@@ -4108,6 +4178,7 @@ let dailySummaryState = {
   error: '',
   unread: false,
   generateAt: '21:00',
+  timezone: '',
   // Failure detail, only ever populated for admins — the server keeps the
   // reason (bad system AI key, no articles…) out of ordinary users' responses.
   attempts: 0,
@@ -4214,6 +4285,7 @@ function renderDailySummaryBody() {
   const body = document.getElementById('dailySummaryBody');
   if (!body) return;
   const generateAt = dailySummaryState.generateAt || '21:00';
+  const timezone = dailySummaryState.timezone || '服务器配置时区';
 
   if (dailySummaryState.status === 'completed' && dailySummaryState.result) {
     const data = dailySummaryState.result;
@@ -4275,9 +4347,15 @@ function renderDailySummaryBody() {
       '<div style="text-align:center;padding:36px;color:var(--text-3)">' +
       '<div style="font-size:20px;margin-bottom:10px">🌙</div>' +
       '<p>今日暂无可用摘要。</p>' +
-      '<p class="ai-hint" style="margin-top:8px">明天 ' + esc(generateAt) + ' 会生成新的每日总结。</p>' +
+      '<p class="ai-hint" style="margin-top:8px">下次计划为每天 ' + esc(generateAt) + '（' + esc(timezone) + '）。</p>' +
       dailySummaryPushSettingsButton() +
       '</div>';
+    return;
+  }
+
+  if (dailySummaryState.status === 'server_disabled') {
+    body.innerHTML = '<div style="text-align:center;padding:36px;color:var(--text-3)">' +
+      '<p>服务器已暂停每日总结。</p><p class="ai-hint" style="margin-top:8px">管理员开启后，将按配置的时间恢复生成和推送。</p></div>';
     return;
   }
 
@@ -4288,7 +4366,7 @@ function renderDailySummaryBody() {
   body.innerHTML =
     '<div style="text-align:center;padding:36px;color:var(--text-3)">' +
     '<div style="font-size:20px;margin-bottom:10px">🕘</div>' +
-    '<p>每日总结将在北京时间每天晚 9 点（' + esc(generateAt) + '）生成显示</p>' +
+    '<p>每日总结将在每天 ' + esc(generateAt) + '（' + esc(timezone) + '）生成显示</p>' +
     dailySummaryPushSettingsButton() +
     '</div>';
 }
@@ -4317,10 +4395,10 @@ function normalizeDailySummaryMarkdown(text) {
 
 function formatDailySummaryTime(value) {
   if (!value) return '--:--';
-  const formatBeijing = d => {
+  const formatConfiguredTime = d => {
     try {
       const parts = new Intl.DateTimeFormat('zh-CN', {
-        timeZone: 'Asia/Shanghai',
+        timeZone: dailySummaryState.timezone || 'Asia/Shanghai',
         hour: '2-digit',
         minute: '2-digit',
         hour12: false,
@@ -4333,13 +4411,13 @@ function formatDailySummaryTime(value) {
     }
   };
   if (typeof value === 'number') {
-    return formatBeijing(new Date(value * 1000));
+    return formatConfiguredTime(new Date(value * 1000));
   }
   const text = String(value);
   const sqliteUtc = text.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})$/);
   const d = sqliteUtc ? new Date(sqliteUtc[1] + 'T' + sqliteUtc[2] + 'Z') : new Date(text);
   if (!Number.isNaN(d.getTime())) {
-    return formatBeijing(d);
+    return formatConfiguredTime(d);
   }
   const m = text.match(/\b(\d{2}):(\d{2})(?::\d{2})?\b/);
   if (m) return m[1] + ':' + m[2];
@@ -4364,6 +4442,7 @@ async function syncDailySummaryToday() {
     if (requestSequence !== dailySummaryRequestSequence || verificationSession !== aiSessionGeneration || verificationToken !== authToken
         || digestAccess!==aiAccessKey() || !userAutoSettings?.view_daily_digest) return;
     if (!data || !data.status) return;
+    if (data.timezone) dailySummaryState.timezone = data.timezone;
     if (data.status === 'completed') {
       // Only flag it unread the first time this session sees it, so reopening
       // the panel (which re-syncs) doesn't relight the ✨ dot after the user
@@ -4839,6 +4918,7 @@ async function autoDisplaySummary(articleId, prefetched = null) {
     const item=findOpenArticleData(articleId);
     if (titleEl && item) titleEl.textContent=displayTitle(item);
     if (data.title_translation || data.title_summary || data.translated_title_summary) renderList();
+    void globalThis.RayNewsTTS?.contentChanged?.(articleId);
     const articleWrap = document.getElementById('articleWrap');
     if (!articleWrap) return;
     
@@ -9571,7 +9651,8 @@ if (window.matchMedia) {
   const audio = new Audio();
   audio.preload = 'metadata';
   const state = {article:null, queue:[], status:'idle', error:'', job:null, hasSummary:false,
-    url:null, sequence:0, controller:null, open:false, speed:1, partial:false, focus:null, validated:0};
+    url:null, sequence:0, controller:null, open:false, speed:1, partial:false, focus:null, validated:0,
+    streaming:false,hasTranslation:false,requiredPreferences:[]};
   const $ = id => document.getElementById(id);
   const busy = () => ['waiting','queued','generating','loading'].includes(state.status);
   const fallback = '/android-chrome-512x512.png';
@@ -9614,7 +9695,7 @@ if (window.matchMedia) {
   }
 
   function progress() {
-    const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+    const duration = state.streaming ? 0 : Number.isFinite(audio.duration) ? audio.duration : 0;
     const percentage = duration ? audio.currentTime / duration : 0;
     $('ttsCurrent').textContent = formatTime(audio.currentTime || 0);
     $('ttsDuration').textContent = formatTime(duration || NaN);
@@ -9644,11 +9725,11 @@ if (window.matchMedia) {
         if ($(id).dataset.cover !== src) { $(id).dataset.cover=src; $(id).src=src; }
       }
       $('ttsTitle').textContent = state.article.title || '新闻语音';
-      $('ttsSource').textContent = [state.article.source, state.hasSummary ? '含 AI 摘要' : '', state.partial ? '已获取的正文' : ''].filter(Boolean).join(' · ');
+      $('ttsSource').textContent = [state.article.source, state.hasTranslation ? '译文朗读' : '', state.hasSummary ? '含 AI 摘要' : '', state.partial ? '已获取的正文' : ''].filter(Boolean).join(' · ');
       $('ttsDisc').title = `${busy() ? '正在生成语音' : playing ? '正在播放' : '语音播放器'}：${state.article.title || ''}`;
     }
     $('ttsHeading').textContent = state.status === 'waiting' ? '等待生成名额' : busy() ? '正在生成语音' : state.error ? '生成失败' : playing ? '正在播放' : state.status === 'ended' ? '播放结束' : '语音阅读';
-    $('ttsStatus').textContent = state.error || (state.status === 'waiting' ? '语音生成名额暂时占用，空出后会自动开始当前文章。' : busy() ? '正在整理文章并生成语音，请稍候…' : state.partial ? '当前语音仅包含已获取的文章内容。' : '');
+    $('ttsStatus').textContent = state.error || (state.status === 'waiting' ? '语音生成名额暂时占用，空出后会自动开始当前文章。' : state.streaming ? (busy() ? '正在缓冲语音，约 5 秒音频就绪后开始播放…' : '边生成边播放，剩余语音正在加载…') : busy() ? '正在整理文章并生成语音，请稍候…' : state.partial ? '当前语音仅包含已获取的文章内容。' : '');
     $('ttsStatus').classList.toggle('error', !!state.error);
     $('ttsRetry').hidden = !state.error;
     $('ttsPlay').disabled = !state.url || busy() || !!state.error;
@@ -9694,6 +9775,7 @@ if (window.matchMedia) {
     audio.load();
     if (state.url) URL.revokeObjectURL(state.url);
     state.url = null;
+    state.streaming = false;
   }
 
   function stop() {
@@ -9702,7 +9784,7 @@ if (window.matchMedia) {
     state.controller?.abort();
     clearAudio();
     collapse();
-    Object.assign(state, {article:null,queue:[],status:'idle',error:'',job:null,controller:null,hasSummary:false});
+    Object.assign(state, {article:null,queue:[],status:'idle',error:'',job:null,controller:null,hasSummary:false,hasTranslation:false,requiredPreferences:[]});
     if ('mediaSession' in navigator) navigator.mediaSession.metadata = null;
     render();
     clearTestAudio();
@@ -9716,12 +9798,12 @@ if (window.matchMedia) {
     return true;
   }
 
-  async function requestData(url, options={}, signal=null, asAudio=false) {
+  async function requestData(url, options={}, signal=null, asAudio=false, consume=null) {
     const controller = new AbortController();
     const abort = () => controller.abort();
     if (signal?.aborted) controller.abort();
     signal?.addEventListener('abort',abort,{once:true});
-    const timer = setTimeout(abort, asAudio ? 90000 : 20000);
+    let timer = setTimeout(abort, consume ? 12*60*1000 : asAudio ? 90000 : 20000);
     try {
       const response = await fetch(url, {...options,cache:'no-store',signal:controller.signal,
         headers:{Authorization:'Bearer '+authToken,...options.headers}});
@@ -9730,6 +9812,10 @@ if (window.matchMedia) {
         const error = new Error((data.error || '语音服务暂时不可用，请稍后重试') + (authUser?.role === 'admin' && data.detail ? '（'+data.detail+'）' : ''));
         error.code=data.code; error.status=response.status; throw error;
       }
+      if (consume) return await consume(response, () => {
+        clearTimeout(timer);
+        timer = setTimeout(abort, 610000);
+      });
       return asAudio ? await response.blob() : await response.json();
     } catch (error) {
       if (signal?.aborted) throw error;
@@ -9757,11 +9843,112 @@ if (window.matchMedia) {
     return ids;
   }
 
-  async function start(id, queue=null) {
+  function mediaEvent(target, name, signal, action) {
+    return new Promise((resolve,reject) => {
+      const cleanup=()=>{clearTimeout(timer);target.removeEventListener(name,done);target.removeEventListener('error',failed);signal.removeEventListener('abort',aborted);};
+      const done=()=>{cleanup();resolve();};
+      const failed=()=>{cleanup();reject(new Error('流式音频加载失败，请重试'));};
+      const aborted=()=>{cleanup();reject(new DOMException('Aborted','AbortError'));};
+      const timer=setTimeout(failed,20000);
+      target.addEventListener(name,done,{once:true});target.addEventListener('error',failed,{once:true});signal.addEventListener('abort',aborted,{once:true});
+      if (signal.aborted) { aborted(); return; }
+      try { action(); } catch(error) { cleanup();reject(error); }
+    });
+  }
+
+  async function loadStream(signal, autoplay=true) {
+    const media=new MediaSource();
+    let buffer;
+    state.url=URL.createObjectURL(media);
+    state.streaming=true; state.status='generating'; render();
+    try {
+      await mediaEvent(media,'sourceopen',signal,()=>{audio.src=state.url;audio.playbackRate=state.speed;});
+      buffer=media.addSourceBuffer('audio/mpeg');
+    } catch(error) {
+      if (signal.aborted) throw error;
+      clearAudio();return false;
+    }
+    let started=false,trimmed=false;
+    const begin=()=>{
+      if (started) return;
+      started=true;state.status='ready';state.validated=Date.now();render();if(autoplay)void play();
+    };
+    try {
+      // Keep Authorization in fetch headers and only use our own audio endpoint.
+      await requestData('/ai/tts/stream/'+state.job,{},signal,true,async(response,touch)=>{
+        if (!response.body || !response.headers.get('Content-Type')?.startsWith('audio/')) throw new Error('音频加载失败，请重试');
+        const reader=response.body.getReader();
+        try {
+          while (true) {
+            touch();
+            const {value,done}=await reader.read();
+            if (signal.aborted) throw new DOMException('Aborted','AbortError');
+            if (done) break;
+            while (true) {
+              try {
+                await mediaEvent(buffer,'updateend',signal,()=>buffer.appendBuffer(value));break;
+              } catch(error) {
+                if (error.name!=='QuotaExceededError') throw error;
+                // Long articles can exceed the browser's decoded audio budget.
+                // Retain the current position and apply backpressure while paused.
+                if (audio.currentTime>1) {
+                  await mediaEvent(buffer,'updateend',signal,()=>buffer.remove(0,audio.currentTime-1));
+                  trimmed=true;
+                }
+                touch();await delay(500,signal);
+              }
+            }
+            if (buffer.buffered.length && buffer.buffered.end(0)-audio.currentTime >= 5*state.speed) begin();
+          }
+          const job=await requestData('/ai/tts/jobs/'+state.job,{},signal);
+          if (job.status==='failed') throw new Error(job.error || '语音生成失败，请重试');
+          if (job.status!=='ready' || !buffer.buffered.length) throw new Error('语音传输中断，请重试');
+          media.endOfStream();
+          if (trimmed) {
+            // Restore the complete cached file so seeking and replay retain history.
+            const blob=await requestData('/ai/tts/audio/'+state.job,{},signal,true);
+            const position=audio.currentTime,resume=!audio.paused,old=state.url;
+            state.url=URL.createObjectURL(blob);
+            try { await mediaEvent(audio,'loadedmetadata',signal,()=>{audio.src=state.url;}); }
+            finally { URL.revokeObjectURL(old); }
+            audio.currentTime=position;audio.playbackRate=state.speed;
+            if (resume) void play();
+          }
+          state.streaming=false;render();
+          // Short articles start as soon as complete, even below five seconds.
+          begin();
+        } finally {
+          await reader.cancel().catch(()=>{});
+          reader.releaseLock();
+        }
+      });
+      return true;
+    } catch(error) {
+      if (!signal.aborted) {
+        // A provider can fail after HTTP headers were already sent.
+        const job=await requestData('/ai/tts/jobs/'+state.job,{},signal).catch(()=>null);
+        if (job?.status==='failed') throw new Error((job.error || '语音生成失败，请重试') + (authUser?.role==='admin' && job.detail ? '（'+job.detail+'）' : ''));
+      }
+      throw error;
+    }
+  }
+
+  async function start(id, queue=null, autoplay=true, refreshes=0) {
     id=Number(id);
     if (!allowed()) return;
     if (Number(state.article?.id) === id && (busy() || state.url) && !state.error && !queue) {
-      open(); if (state.url && audio.paused) await play(); return;
+      const sequence=state.sequence, token=authToken;
+      let reusable=true;
+      if (state.job) {
+        try { reusable=(await requestData('/ai/tts/jobs/'+state.job,{},state.controller?.signal)).status!=='failed'; }
+        catch(error) {
+          if (sequence!==state.sequence || token!==authToken) return;
+          if (error.status===410) reusable=false;
+          else { stop();showToast(error.message);return; }
+        }
+      }
+      if (sequence!==state.sequence || token!==authToken) return;
+      if (reusable) { open(); if (state.url && audio.paused) await play(); return; }
     }
     const sequence=++state.sequence, token=authToken;
     state.controller?.abort();
@@ -9769,8 +9956,8 @@ if (window.matchMedia) {
     state.controller=new AbortController();
     const signal=state.controller.signal;
     const known=findOpenArticleData(id) || favoriteAIItems.find(item=>Number(item.id)===id);
-    Object.assign(state,{article:{id,title:known?.title || '正在加载新闻…',source:known?.source || '',thumb:known?.thumb || ''},
-      queue:queue || queueFor(id),status:'queued',error:'',job:null,hasSummary:false,partial:false});
+    Object.assign(state,{article:{id,title:displayTitle(known) || '正在加载新闻…',source:known?.source || '',thumb:known?.thumb || ''},
+      queue:queue || queueFor(id),status:'queued',error:'',job:null,hasSummary:false,hasTranslation:false,requiredPreferences:[],partial:false});
     render();
     try {
       const waitDeadline=Date.now()+12*60*1000;
@@ -9789,6 +9976,14 @@ if (window.matchMedia) {
       if (sequence!==state.sequence || token!==authToken) return;
       if (result.article) state.article=result.article;
       state.job=result.id; state.hasSummary=!!result.has_summary; state.partial=!!result.partial_content;
+      state.hasTranslation=!!result.has_translation;state.requiredPreferences=result.required_preferences || [];
+      if ('mediaSession' in navigator && 'MediaMetadata' in window) {
+        const cover=state.article.thumb ? new URL(proxyImgSrc(state.article.thumb),location.href).href : new URL(fallback,location.href).href;
+        navigator.mediaSession.metadata=new MediaMetadata({title:state.article.title,artist:state.article.source || 'RayNews',album:'RayNews',artwork:[{src:cover}]});
+      }
+      if (result.status!=='ready' && result.stream_url && window.MediaSource?.isTypeSupported('audio/mpeg')) {
+        if (await loadStream(signal,autoplay)) return;
+      }
       const deadline=Date.now()+12*60*1000;
       while (result.status !== 'ready') {
         if (result.status === 'failed') throw new Error((result.error || '语音生成失败，请重试') + (authUser?.role === 'admin' && result.detail ? '（'+result.detail+'）' : ''));
@@ -9807,14 +10002,12 @@ if (window.matchMedia) {
       state.url=URL.createObjectURL(blob);
       state.status='ready'; state.validated=Date.now();
       audio.src=state.url; audio.playbackRate=state.speed;
-      if ('mediaSession' in navigator && 'MediaMetadata' in window) {
-        const cover=state.article.thumb ? new URL(proxyImgSrc(state.article.thumb),location.href).href : new URL(fallback,location.href).href;
-        navigator.mediaSession.metadata=new MediaMetadata({title:state.article.title,artist:state.article.source || 'RayNews',album:'RayNews',artwork:[{src:cover}]});
-      }
-      render(); await play();
+      render(); if(autoplay)await play();
     } catch (error) {
       if (sequence!==state.sequence || token!==authToken || signal.aborted) return;
       if (error.status===401) { stop(); showToast('登录已过期，请重新登录'); return; }
+      if (error.status===410 && refreshes<1) return start(id,state.queue.slice(),autoplay,refreshes+1);
+      clearAudio();
       state.status='failed'; state.error=error.message || '语音生成失败，请重试';
       render(); showToast(state.error);
     }
@@ -9825,7 +10018,13 @@ if (window.matchMedia) {
     const sequence=state.sequence;
     if (Date.now()-state.validated>30000 && state.job) {
       try { await requestData('/ai/tts/jobs/'+state.job,{},state.controller?.signal); state.validated=Date.now(); }
-      catch (error) { if (sequence===state.sequence) { stop(); showToast(error.message); } return; }
+      catch (error) {
+        if (sequence===state.sequence) {
+          if(error.status===410) return start(Number(state.article.id),state.queue.slice());
+          stop();showToast(error.message);
+        }
+        return;
+      }
     }
     if (sequence!==state.sequence) return;
     try { state.status='ready'; await audio.play(); }
@@ -9845,8 +10044,24 @@ if (window.matchMedia) {
   }
 
   function accessChanged() {
-    if (state.article && (!userAutoSettings?.view_tts || (state.hasSummary && !userAutoSettings?.view_summary))) {
+    if (state.article && (!userAutoSettings?.view_tts || (state.hasSummary && !userAutoSettings?.view_summary)
+        || (state.hasTranslation && !userAutoSettings?.view_translation)
+        || state.requiredPreferences.some(preference=>!userAutoSettings?.[preference]))) {
       stop(); showToast('语音访问权限或设置已变更，播放已停止');
+    }
+  }
+
+  async function contentChanged(articleId) {
+    if (Number(state.article?.id)!==Number(articleId) || !state.job || state.error) return;
+    const sequence=state.sequence,job=state.job;
+    try { await requestData('/ai/tts/jobs/'+job,{},state.controller?.signal); }
+    catch(error) {
+      if(sequence!==state.sequence || job!==state.job)return;
+      if(error.status===410) {
+        const autoplay=!audio.paused || busy();
+        return start(Number(articleId),state.queue.slice(),autoplay);
+      }
+      if([401,403,404,409].includes(error.status)){stop();showToast(error.message);}
     }
   }
 
@@ -9860,14 +10075,14 @@ if (window.matchMedia) {
   $('ttsRetry').addEventListener('click',()=>start(state.article.id,state.queue.slice()));
   $('ttsOriginal').addEventListener('click',()=>{const id=state.article?.id;collapse();if(id)openArticle(id);});
   $('ttsSeek').addEventListener('input',event=>{
-    if(Number.isFinite(audio.duration)) audio.currentTime=audio.duration*Number(event.target.value)/1000;
+    if(!state.streaming && Number.isFinite(audio.duration)) audio.currentTime=audio.duration*Number(event.target.value)/1000;
     progress();
   });
   $('ttsSpeed').addEventListener('change',event=>{state.speed=Number(event.target.value);audio.playbackRate=state.speed;progress();});
   for (const event of ['play','pause','loadedmetadata','durationchange','ratechange']) audio.addEventListener(event,render);
   audio.addEventListener('timeupdate',progress);
   audio.addEventListener('ended',()=>{state.status='ended';render();});
-  audio.addEventListener('error',()=>{if(state.url){state.error='音频播放失败，请重试';state.status='failed';render();}});
+  audio.addEventListener('error',()=>{if(state.url){state.controller?.abort();state.streaming=false;state.error='音频播放失败，请重试';state.status='failed';render();}});
   document.addEventListener('keydown',event=>{
     if(!state.open)return;
     if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();collapse();}
@@ -9879,7 +10094,7 @@ if (window.matchMedia) {
     }
   },true);
   if ('mediaSession' in navigator) {
-    for (const [name,handler] of Object.entries({play,pause:()=>audio.pause(),previoustrack:()=>move(-1),nexttrack:()=>move(1),stop,seekto:event=>{if(Number.isFinite(audio.duration))audio.currentTime=Math.min(audio.duration,event.seekTime);}})) {
+    for (const [name,handler] of Object.entries({play,pause:()=>audio.pause(),previoustrack:()=>move(-1),nexttrack:()=>move(1),stop,seekto:event=>{if(!state.streaming && Number.isFinite(audio.duration))audio.currentTime=Math.min(audio.duration,event.seekTime);}})) {
       try { navigator.mediaSession.setActionHandler(name,handler); } catch (_) {}
     }
   }
@@ -9887,7 +10102,11 @@ if (window.matchMedia) {
     if (!state.job || audio.paused || state.status!=='ready') return;
     const sequence=state.sequence;
     try { await requestData('/ai/tts/jobs/'+state.job,{},state.controller?.signal); if(sequence===state.sequence)state.validated=Date.now(); }
-    catch(error){if(sequence===state.sequence && [401,403,404,409,410].includes(error.status)){stop();showToast(error.message);}}
+    catch(error){
+      if(sequence!==state.sequence)return;
+      if(error.status===410){void start(Number(state.article.id),state.queue.slice());return;}
+      if([401,403,404,409].includes(error.status)){stop();showToast(error.message);}
+    }
   },30000);
 
   // Admin configuration stays in the existing AI settings tab.
@@ -9905,9 +10124,10 @@ if (window.matchMedia) {
       <div><label for="ttsVolumeMultiplier">音量倍数</label><input class="ai-input" id="ttsVolumeMultiplier" type="number" min="0" step="0.1" placeholder="留空使用接口默认 1.0"></div>
       <div><label for="ttsResponseFormat">播放音频格式</label><input class="ai-input" id="ttsResponseFormat" value="MP3" readonly></div>
       <div><label for="ttsDownloadFormat">下载链接格式</label><input class="ai-input" id="ttsDownloadFormat" value="MP3" readonly></div>
-      <label class="tts-option tts-config-wide"><input id="ttsStream" type="checkbox">请求流式生成（stream）</label>
+      <label class="tts-option tts-config-wide"><input id="ttsStream" type="checkbox">流式生成并播放（约 5 秒音频缓冲后起播）</label>
+      <p class="ai-hint tts-config-wide">需上游支持 stream；浏览器不支持 MP3 流式播放时等待完整音频。已有配置若关闭此项，请勾选后保存。</p>
       <label class="tts-option tts-config-wide"><input id="ttsReturnDownloadLink" type="checkbox">请求上游生成下载链接</label>
-      <p class="tts-config-note tts-config-wide">播放和下载统一使用 MP3。RayNews 会在完整音频生成后播放；上游下载链接目前不会展示。</p>
+      <p class="tts-config-note tts-config-wide">播放和下载统一使用 MP3；上游下载链接目前不会展示。</p>
       <details class="tts-normalization tts-config-wide"><summary>文本规范化</summary>
         <label class="tts-option"><input id="ttsNormalizationDefault" type="checkbox" checked>使用接口默认设置</label>
         <p class="tts-config-note">RayNews 会先移除文章中的裸链接，因此网址规范化对已移除的链接不起作用。</p>
@@ -9989,7 +10209,7 @@ if (window.matchMedia) {
   });
 
   window.ttsButtonHtml=id=>`<button type="button" class="article-ai-btn tts-speaker${Number(state.article?.id)===Number(id)?' active':''}" data-article-id="${Number(id)}" onclick="RayNewsTTS.start(${Number(id)})" aria-label="语音阅读" title="语音阅读">${icon('speaker')}</button>`;
-  window.RayNewsTTS={start,stop,open,collapse,loadConfig,accessChanged};
+  window.RayNewsTTS={start,stop,open,collapse,loadConfig,accessChanged,contentChanged};
 })();
 
 

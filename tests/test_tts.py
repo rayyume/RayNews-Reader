@@ -17,6 +17,11 @@ import web_server
 from tts_service import TTSError, listening_text
 
 MP3 = b"ID3" + b"\x00" * 64
+ENGLISH_TITLE = 'A detailed original English headline about changing transportation in modern cities'
+ENGLISH_BODY = 'The original English article describes new transportation technology.'
+FULL_CHINESE_TITLE = '一篇详细介绍现代城市交通技术及其影响的完整中文译名'
+SHORT_CHINESE_TITLE = '城市交通新技术'
+CHINESE_BODY = '已经翻译完成的中文正文，保留具体数字 1.3%。'
 
 
 @pytest.fixture
@@ -205,6 +210,132 @@ def test_changed_article_and_configuration_expire_old_audio(app):
     assert client.get('/ai/tts/audio/'+second['id'],headers=headers).status_code == 410
 
 
+def _translated_article(app, monkeypatch, *, with_translation=True, translation_format='json'):
+    client, admin, headers, user, cache = app
+    enable(client, admin, user)
+    with sqlite3.connect(web_server.NEWS_DB) as db:
+        db.execute('UPDATE articles SET title=?, original_title=NULL, body_html=? WHERE id=2',
+                   (ENGLISH_TITLE, '<h1>'+ENGLISH_TITLE+'</h1><p>'+ENGLISH_BODY+'</p>'))
+    ai_access.set_permissions(user, {'translation':True, 'title_shortening':True})
+    models.set_user_settings(user, view_translation=1, view_title_translation=1, view_title_shortening=1)
+    html = '<h1>'+FULL_CHINESE_TITLE+'</h1><p>'+CHINESE_BODY+'</p>'
+    translation = json.dumps({'title':FULL_CHINESE_TITLE,'html':html}) if translation_format=='json' else html
+    assert web_server._save_ai_result(2, title_summary='Short English headline',
+                                     translation=translation if with_translation else None)
+    assert web_server._save_article_title_update(2, FULL_CHINESE_TITLE, 'translation')
+    with web_server._news_db_conn() as db:
+        db.execute('UPDATE ai_results SET translated_title_summary=? WHERE article_id=2', (SHORT_CHINESE_TITLE,))
+        db.commit()
+    spoken = []
+    def synthesize(config, text, target, **kw):
+        spoken.append(text)
+        target.write_bytes(MP3)
+    monkeypatch.setattr(tts_cache, 'synthesize', synthesize)
+    return spoken, translation
+
+
+@pytest.mark.parametrize('title_translation,shortening,body_translation,title', [
+    (True,True,True,SHORT_CHINESE_TITLE), (True,False,True,FULL_CHINESE_TITLE),
+    (False,True,True,'Short English headline'), (False,False,True,ENGLISH_TITLE),
+    (True,True,False,SHORT_CHINESE_TITLE), (False,True,False,'Short English headline'),
+    (False,False,False,ENGLISH_TITLE),
+])
+def test_tts_matches_display_title_and_uses_available_translation(app, monkeypatch, title_translation, shortening, body_translation, title):
+    client, _, headers, user, cache = app
+    spoken, _ = _translated_article(app, monkeypatch)
+    models.set_user_settings(user, view_title_translation=title_translation,
+                             view_title_shortening=shortening, view_translation=body_translation)
+    response = client.post('/ai/tts/2', headers=headers)
+    assert response.status_code in {200,202}
+    data = response.json
+    assert ready(cache, data['id'])['status'] == 'ready'
+    assert data['article']['title'] == title
+    assert spoken[0].startswith(title)
+    assert data['has_translation'] is body_translation
+    assert (CHINESE_BODY if body_translation else ENGLISH_BODY) in spoken[0]
+    assert (ENGLISH_BODY if body_translation else CHINESE_BODY) not in spoken[0]
+    if shortening:
+        assert ENGLISH_TITLE not in spoken[0]
+    if title_translation and shortening and body_translation:
+        assert FULL_CHINESE_TITLE not in spoken[0]
+        assert spoken[0].count(SHORT_CHINESE_TITLE) == 1
+    # Client-supplied content cannot replace the authorized server result.
+    again = client.post('/ai/tts/2', headers=headers, json={'title':'伪造标题','translation':'伪造译文'})
+    assert again.json['id'] == data['id'] and len(spoken) == 1
+
+
+@pytest.mark.parametrize('translation_format',['json','html'])
+def test_translation_completion_and_updates_expire_original_audio(app, monkeypatch, translation_format):
+    client, _, headers, _, cache = app
+    spoken, translation = _translated_article(app, monkeypatch, with_translation=False, translation_format=translation_format)
+    first = client.post('/ai/tts/2', headers=headers).json
+    ready(cache, first['id'])
+    assert first['has_translation'] is False and ENGLISH_BODY in spoken[0]
+    assert web_server._save_ai_result(2, translation=translation)
+    for path in ('/ai/tts/jobs/','/ai/tts/audio/','/ai/tts/stream/'):
+        assert client.get(path+first['id'], headers=headers).status_code == 410
+    second = client.post('/ai/tts/2', headers=headers).json
+    ready(cache, second['id'])
+    assert first['id'] != second['id'] and second['has_translation']
+    assert CHINESE_BODY in spoken[-1] and ENGLISH_BODY not in spoken[-1]
+    assert web_server._save_ai_result(2, translation='<p>更新完成的另一版中文正文。</p>')
+    assert client.get('/ai/tts/audio/'+second['id'], headers=headers).status_code == 410
+
+
+@pytest.mark.parametrize('preference',['view_translation','view_title_translation','view_title_shortening'])
+def test_tts_rechecks_permissions_of_selected_title_and_body(app, monkeypatch, preference):
+    client, _, headers, user, cache = app
+    _translated_article(app, monkeypatch)
+    result = client.post('/ai/tts/2', headers=headers).json
+    ready(cache, result['id'])
+    assert preference in result['required_preferences']
+    models.set_user_settings(user, **{preference:False})
+    for path in ('/ai/tts/jobs/','/ai/tts/audio/','/ai/tts/stream/'):
+        assert client.get(path+result['id'], headers=headers).status_code == 403
+    replacement = client.post('/ai/tts/2', headers=headers).json
+    ready(cache, replacement['id'])
+    assert replacement['id'] != result['id']
+    assert preference not in replacement['required_preferences']
+    ai_access.set_permissions(user, {'translation':False})
+    original = client.post('/ai/tts/2', headers=headers).json
+    ready(cache, original['id'])
+    assert not original['has_translation']
+    assert original['article']['title'] in {ENGLISH_TITLE,'Short English headline'}
+
+
+def test_identical_original_and_translated_text_have_separate_audio_grants(app):
+    client, admin, headers, user, cache = app
+    enable(client, admin, user)
+    ai_access.set_permissions(user, {'translation':True})
+    models.set_user_settings(user, view_translation=1)
+    admin_id = models.get_user_by_email('admin@tts.test')['id']
+    models.set_user_settings(admin_id, view_tts=1)
+    with sqlite3.connect(web_server.NEWS_DB) as db:
+        db.execute("UPDATE articles SET title='同一标题',body_html='<p>同一正文。</p>' WHERE id=2")
+    assert web_server._save_ai_result(2, translation='<p>同一正文。</p>')
+    translated = client.post('/ai/tts/2', headers=headers).json
+    ready(cache, translated['id'])
+    original = client.post('/ai/tts/2', headers=admin).json
+    ready(cache, original['id'])
+    assert translated['has_translation'] and not original['has_translation']
+    assert translated['id'] != original['id']
+    assert cache.get(translated['id'])['text_hash'] == cache.get(original['id'])['text_hash']
+    ai_access.set_permissions(user, {'translation':False})
+    assert client.get('/ai/tts/audio/'+translated['id'], headers=headers).status_code == 403
+    response = client.get('/ai/tts/audio/'+original['id'], headers=admin)
+    assert response.data == MP3
+    response.close()
+
+
+def test_short_title_does_not_repeat_embedded_full_article_headlines():
+    text, _ = listening_text(SHORT_CHINESE_TITLE,
+        '<h1>'+ENGLISH_TITLE+'</h1><h1>'+FULL_CHINESE_TITLE+'</h1><p>'+CHINESE_BODY+'</p>',
+        title_aliases=[ENGLISH_TITLE,FULL_CHINESE_TITLE])
+    assert text.startswith(SHORT_CHINESE_TITLE)
+    assert ENGLISH_TITLE not in text and FULL_CHINESE_TITLE not in text
+    assert CHINESE_BODY in text
+
+
 def test_inflight_deletion_never_republishes_audio(app, monkeypatch):
     client, admin, headers, user, cache = app
     enable(client, admin, user)
@@ -303,13 +434,119 @@ def test_kokoro_request_contract_and_custom_auth(tmp_path, monkeypatch):
     url,kw=calls[0]
     assert url=='https://tts.example.test/v1/audio/speech'
     assert kw['json']=={'model':'kokoro','input':'标题。正文。','voice':'zf_001(0.5)+zf_022(0.5)',
-                        'speed':1.3,'lang_code':'z','response_format':'mp3','stream':False,
+                        'speed':1.3,'lang_code':'z','response_format':'mp3','stream':True,
                         'return_download_link':False}
     assert kw['headers']['Authorization']=='Basic '+base64.b64encode('reader:密码'.encode()).decode()
     assert kw['stream'] is True and kw['max_redirects']==0 and target.read_bytes()==MP3
     config.update(auth_type='authorization',authorization='Basic custom-header')
     tts_service.synthesize(config,'正文。',target)
     assert calls[-1][1]['headers']['Authorization']=='Basic custom-header'
+    config['stream'] = False
+    tts_service.synthesize(config,'关闭流式。',target)
+    assert calls[-1][1]['json']['stream'] is False
+
+
+def test_provider_publishes_flushed_bytes_before_completion(tmp_path, monkeypatch):
+    target = tmp_path/'progress.mp3'
+    published = []
+    class StreamingResponse(ProviderResponse):
+        def iter_content(self, size):
+            assert size <= 4096
+            yield MP3[:2]
+            assert published == []
+            yield MP3[2:]
+            assert published == [len(MP3)]
+            assert target.read_bytes() == MP3
+            yield b'next audio bytes'
+    monkeypatch.setattr(tts_service, 'safe_post', lambda *args, **kw: StreamingResponse())
+    config = {**tts_service.DEFAULT_CONFIG, 'enabled':True,
+              'endpoint':'https://tts.example.test/v1', 'username':'reader', 'password':'secret'}
+    tts_service.synthesize(config, '正文。', target, on_progress=published.append)
+    assert published == [len(MP3), len(target.read_bytes())]
+
+
+@pytest.mark.parametrize('outcome', ['complete', 'failure', 'deleted', 'disconnect'])
+def test_live_audio_arrives_before_generation_finishes(app, monkeypatch, outcome):
+    client, admin, headers, user, cache = app
+    enable(client, admin, user)
+    published, finish = threading.Event(), threading.Event()
+    tail = b'remaining MP3 frames'
+    def generate(config, text, target, on_progress, **kw):
+        with target.open('wb') as output:
+            output.write(MP3); output.flush(); on_progress(len(MP3)); published.set()
+            assert finish.wait(5)
+            if outcome == 'failure':
+                raise TTSError('TTS_TIMEOUT', '语音生成超时，请重试', 504)
+            output.write(tail)
+    monkeypatch.setattr(tts_cache, 'synthesize', generate)
+    response = None
+    try:
+        result = client.post('/ai/tts/1', headers=headers).json
+        assert result['stream_url'] == '/ai/tts/stream/' + result['id']
+        assert published.wait(2)
+        assert client.get(result['stream_url']).status_code == 401
+        response = client.get(result['stream_url'], headers=headers, buffered=False)
+        assert response.status_code == 200
+        assert response.headers['X-Accel-Buffering'] == 'no'
+        assert response.headers['Cache-Control'] == 'private, no-store'
+        chunks = iter(response.response)
+        assert next(chunks) == MP3
+        assert cache.get(result['id'])['status'] == 'generating'
+        assert cache.jobs[result['id']]['leases'] == 1
+        if outcome == 'disconnect':
+            response.close()
+            assert cache.jobs[result['id']]['leases'] == 0
+        if outcome == 'deleted':
+            cache.invalidate_articles([1])
+        finish.set()
+        cache.pool.shutdown(wait=True)
+        if outcome == 'complete':
+            assert b''.join(chunks) == tail
+            assert cache.get(result['id'])['status'] == 'ready'
+            assert (cache.directory/(result['id']+'.mp3')).read_bytes() == MP3 + tail
+        elif outcome in {'failure', 'deleted'}:
+            with pytest.raises(TTSError) as error:
+                next(chunks)
+            assert error.value.code == ('TTS_TIMEOUT' if outcome == 'failure' else 'TTS_EXPIRED')
+        response.close()
+        if outcome == 'deleted':
+            assert result['id'] not in cache.jobs
+        else:
+            assert cache.jobs[result['id']]['leases'] == 0
+        assert cache.reserved_bytes == 0
+    finally:
+        finish.set()
+        if response:
+            response.close()
+
+
+def test_stream_checks_permissions_expiry_and_early_provider_failure(app, monkeypatch):
+    client, admin, headers, user, cache = app
+    enable(client, admin, user)
+    result = client.post('/ai/tts/1', headers=headers).json
+    ready(cache, result['id'])
+    response = client.get(result['stream_url'], headers=headers)
+    assert response.data == MP3
+    response.close()
+    ai_access.set_permissions(user, {'tts':False})
+    assert client.get(result['stream_url'], headers=headers).status_code == 403
+    ai_access.set_permissions(user, {'tts':True})
+    models.set_user_settings(user, view_tts=1)
+    client.put('/admin/tts-config', headers=admin, json={'speed':1.1})
+    assert client.get(result['stream_url'], headers=headers).status_code == 410
+    def fail(*args, **kw):
+        raise TTSError('TTS_UPSTREAM_ERROR', '语音服务暂时不可用', 502, '上游返回 HTTP 401')
+    monkeypatch.setattr(tts_cache, 'synthesize', fail)
+    failed = client.post('/ai/tts/1', headers=headers).json
+    ready(cache, failed['id'])
+    path = '/ai/tts/stream/' + failed['id']
+    response = client.get(path, headers=headers)
+    assert response.status_code == 502 and response.json['code'] == 'TTS_UPSTREAM_ERROR'
+    assert 'detail' not in response.json
+    admin_id = models.get_db().execute("SELECT id FROM users WHERE role='admin'").fetchone()[0]
+    models.set_user_settings(admin_id, view_tts=1)
+    assert client.get(path, headers=admin).json['detail'] == '上游返回 HTTP 401'
+    assert cache.jobs[failed['id']]['leases'] == 0
 
 
 def test_admin_can_configure_optional_kokoro_parameters(app, tmp_path, monkeypatch):

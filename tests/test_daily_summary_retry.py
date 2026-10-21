@@ -30,7 +30,7 @@ def news_db(tmp_path, monkeypatch):
     db_path = tmp_path / f"news-{uuid.uuid4().hex}.db"
     sqlite3.connect(str(db_path)).close()  # the helpers no-op unless NEWS_DB exists
     monkeypatch.setattr(web_server, "NEWS_DB", str(db_path))
-    monkeypatch.setattr(web_server, "_beijing_now",
+    monkeypatch.setattr(web_server, "_daily_summary_now",
                         lambda: dt.datetime(2026, 7, 10, 21, 3, tzinfo=BEIJING))
     return db_path
 

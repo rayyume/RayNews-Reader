@@ -436,6 +436,8 @@ def _setup_daily_summary_test(monkeypatch, db_path, subscriber_rows, send_result
     monkeypatch.setenv("RESEND_API_KEY", "test-key")
     monkeypatch.setattr(web_server, "NEWS_DB", str(db_path))
     monkeypatch.setattr(web_server, "get_db", lambda: FakeUserSettingsDb(subscriber_rows))
+    monkeypatch.setattr(web_server, "get_daily_summary_config", lambda:{
+        "enabled": True, "generate_at": "21:00", "timezone": "Asia/Shanghai", "delivery_method": "both"})
     monkeypatch.setattr(
         web_server, "_generate_daily_summary_global",
         lambda date_str: {"summary": "today's news", "stats": {}},
@@ -449,7 +451,7 @@ def _setup_daily_summary_test(monkeypatch, db_path, subscriber_rows, send_result
     )
     # Beijing 21:00 — inside the default 10-minute send window.
     fixed_now = dt.datetime(2026, 7, 10, 21, 3, tzinfo=dt.timezone(dt.timedelta(hours=8)))
-    monkeypatch.setattr(web_server, "_beijing_now", lambda: fixed_now)
+    monkeypatch.setattr(web_server, "_daily_summary_now", lambda: fixed_now)
 
     sent_log = []
 

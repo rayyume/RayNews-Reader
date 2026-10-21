@@ -1,6 +1,7 @@
 """Authenticated TTS APIs; browser requests never carry provider credentials."""
 import hashlib
 import tempfile
+from itertools import chain
 from pathlib import Path
 
 from flask import Blueprint, Response, g, jsonify, request, send_file
@@ -8,10 +9,10 @@ from flask import Blueprint, Response, g, jsonify, request, send_file
 from ai_access import access
 from auth import require_role
 from tts_cache import cache
-from tts_service import TTSError, configured, get_config, listening_text, public_config, save_config, synthesize
+from tts_service import TTSError, configured, get_config, listening_text, public_config, reading_content, save_config, synthesize
 
 
-def register_tts_routes(app, load_article, load_summary, namespace):
+def register_tts_routes(app, load_article, load_result, namespace):
     bp = Blueprint("tts", __name__)
 
     @bp.after_request
@@ -46,20 +47,31 @@ def register_tts_routes(app, load_article, load_summary, namespace):
             raise TTSError("TTS_ARTICLE_NOT_FOUND", "文章不存在或已删除", 404)
         if with_summary and not current["view_summary"]:
             raise TTSError("AI_PERMISSION_DENIED", "摘要访问权限已变更，请重新生成语音", 403)
-        summary = load_summary(article_id) if current["view_summary"] and with_summary is not False else ""
-        text, has_summary = listening_text(article.get("title", ""), article.get("body_html", ""), summary)
-        return article, text, has_summary
+        result = load_result(article_id, current)
+        article, selection, aliases = reading_content(article, result)
+        summary = result.get("summary") if current["view_summary"] and with_summary is not False else ""
+        text, has_summary = listening_text(article.get("title", ""), article.get("body_html", ""),
+                                           summary or "", title_aliases=aliases)
+        if has_summary:
+            selection["required_preferences"] = sorted({*selection["required_preferences"], "view_summary"})
+        return article, text, has_summary, selection
 
     def checked_job(job_id):
         current = permitted()
         job = cache.get(job_id)
-        _, text, _ = prepare(job["article_id"], current, job["has_summary"])
-        if job["revision"] != get_config()["revision"] or hashlib.sha256(text.encode()).hexdigest() != job["text_hash"]:
-            raise TTSError("TTS_EXPIRED", "文章或语音配置已更新，请重新生成", 410)
+        if any(not current.get(preference) for preference in job.get("selection", {}).get("required_preferences", [])):
+            raise TTSError("AI_PERMISSION_DENIED", "朗读内容的访问权限或显示设置已变更，请重新生成语音", 403)
+        _, text, _, selection = prepare(job["article_id"], current, job["has_summary"])
+        if (job["revision"] != get_config()["revision"] or selection != job.get("selection") or
+                hashlib.sha256(text.encode()).hexdigest() != job["text_hash"]):
+            raise TTSError("TTS_EXPIRED", "文章、译文、显示标题或语音配置已更新，请重新生成", 410)
         return job
 
     def job_response(job):
         result = {key: job[key] for key in ("id", "article_id", "status", "has_summary")}
+        result.update(job.get("selection", {}))
+        if job["status"] != "failed":
+            result["stream_url"] = "/ai/tts/stream/" + job["id"]
         if job["status"] == "ready":
             result["audio_url"] = "/ai/tts/audio/" + job["id"]
         if job["status"] == "failed":
@@ -92,13 +104,13 @@ def register_tts_routes(app, load_article, load_summary, namespace):
     @require_role("user", "admin")
     def generate(article_id):
         current = permitted()
-        article, text, has_summary = prepare(article_id, current)
+        article, text, has_summary, selection = prepare(article_id, current)
         settings = get_config()
         # All text is read from the canonical server store; client-supplied text,
         # URLs, credentials and arbitrary model parameters are never forwarded.
         job = cache.request(article_id, g.user_id, settings, text, has_summary,
                             namespace=namespace() + ":" + str(article_id),
-                            valid=lambda: load_article(article_id) is not None)
+                            valid=lambda: load_article(article_id) is not None, selection=selection)
         result = job_response(job)
         result["article"] = {key: article.get(key, "") for key in ("id", "title", "source", "thumb", "date", "time")}
         result["partial_content"] = article.get("has_full_content") == 0
@@ -122,5 +134,18 @@ def register_tts_routes(app, load_article, load_summary, namespace):
         except Exception:
             cache.release(job_id)
             raise
+
+    @bp.route("/ai/tts/stream/<job_id>", methods=["GET"])
+    @require_role("user", "admin")
+    def stream_audio(job_id):
+        checked_job(job_id)
+        chunks = cache.stream(job_id)
+        # Report failures before the first audio bytes as ordinary JSON errors.
+        # Later failures interrupt the transfer; clients check job status for detail.
+        first = next(chunks, b"")
+        response = Response(chain((first,), chunks), mimetype="audio/mpeg",
+                            headers={"X-Accel-Buffering": "no", "Content-Disposition": "inline; filename=news.mp3"})
+        response.call_on_close(chunks.close)
+        return response
 
     app.register_blueprint(bp)
