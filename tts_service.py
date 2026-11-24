@@ -6,12 +6,15 @@ import json
 import math
 import os
 import re
+import socket
 import time
 import uuid
+from contextlib import ExitStack, nullcontext
 from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
+from markdown import markdown
 
 from ai_service import validate_ai_endpoint_base_url
 from network_safety import assert_ai_endpoint_url, safe_post
@@ -142,6 +145,14 @@ def save_config(data):
 
 _ACTION = re.compile(r"^(?:点击(?:这里|此处)?(?:查看|阅读|下载|打开)?(?:原文|全文|更多)?|查看原文|阅读原文|阅读全文|返回顶部|分享(?:到.*)?|订阅|关注我们|read more|click here|share|subscribe)[\s。.!！›»→]*$", re.I)
 _URL = re.compile(r"(?:https?://|www\.)[^\s<>\u3000-\u303f\uff00-\uffef]+", re.I)
+_YEAR_NUMBER = r"[12１２][0-9０-９]{3}"
+_YEAR = re.compile(rf"(?<![\d.,])({_YEAR_NUMBER})\s*(?=年)")
+_YEAR_RANGE = re.compile(rf"(?<![\d.,])({_YEAR_NUMBER})\s*(?:[-–—~～]|至|到)\s*({_YEAR_NUMBER})\s*(?=年)")
+_YEAR_DIGITS = str.maketrans("0123456789０１２３４５６７８９", "零一二三四五六七八九" * 2)
+_CJK_TIME_SPACING = re.compile(r"(?<=[0-9]) +(?=[年月日点分秒](?:[0-9\u3400-\u9fff]|\b|$))")
+_CJK_DATE_SPACING = re.compile(r"(?<=[年月]) +(?=[0-9]{1,2}[月日])")
+_CJK_DASH_PAUSE = re.compile(r"(?<=[\u3400-\u9fff])\s*—{2,}\s*(?=[0-9\u3400-\u9fff])")
+_END_OF_PHRASE = re.compile(r"[。！？.!?；;：:]([”’\"』」）)]*)$")
 
 
 def _plain_line(text):
@@ -155,6 +166,13 @@ def _plain_line(text):
     text = re.sub(r"(?<!\w)[*_](?=\S)|(?<=\S)[*_](?!\w)", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     text = re.sub(r"\(\s*\)|（\s*）", "", text).strip()
+    # The year must be read digit by digit even when Kokoro's optional
+    # normalizer is disabled. Leave quantities and non-date numbers intact.
+    text = _YEAR_RANGE.sub(lambda match: f"{match[1].translate(_YEAR_DIGITS)}年至{match[2].translate(_YEAR_DIGITS)}", text)
+    text = _YEAR.sub(lambda match: match[1].translate(_YEAR_DIGITS), text)
+    text = _CJK_TIME_SPACING.sub("", text)
+    text = _CJK_DATE_SPACING.sub("", text)
+    text = _CJK_DASH_PAUSE.sub("，", text)
     if re.fullmatch(r"(?:\[|【|（|\()?\s*(?:图片|配图|链接|image|photo|link|图\s*\d+)\s*(?:\]|】|）|\))?", text, re.I):
         return ""
     if not re.search(r"[\w\u4e00-\u9fff]", text) or _ACTION.fullmatch(text):
@@ -197,6 +215,23 @@ def listening_lines(html):
         if line and (not lines or line != lines[-1]):
             lines.append(line)
     return lines
+
+
+def _spoken_paragraphs(lines):
+    return "\n\n".join(
+        line if _END_OF_PHRASE.search(line) else line + "。"
+        for line in lines
+    )
+
+
+def digest_listening_text(date, content):
+    # Markdown supplies paragraph, heading and list boundaries before the
+    # same content cleanup used for articles. Link icons are discarded there.
+    lines = listening_lines(markdown(content))
+    if not lines:
+        raise TTSError("TTS_EMPTY_CONTENT", "这份每日总结暂无可供语音阅读的内容", 422)
+    year, month, day = date.split("-")
+    return _spoken_paragraphs([f"{year.translate(_YEAR_DIGITS)}年{int(month)}月{int(day)}日，每日总结", *lines])
 
 
 def reading_content(article, result):
@@ -243,20 +278,19 @@ def listening_text(title, body, summary="", *, title_aliases=()):
         body_lines.pop(0)
     if not body_lines:
         raise TTSError("TTS_EMPTY_CONTENT", "这篇文章暂无可供语音阅读的内容", 422)
-    def sentences(lines):
-        return "\n\n".join(line if re.search(r"[。！？.!?；;：:]([”’\"』」）)]*)$", line) else line + "。" for line in lines)
-    parts = [sentences([title])] if title else []
+    parts = [_spoken_paragraphs([title])] if title else []
     summary_lines = listening_lines(summary)
     if summary_lines:
-        parts += ["内容摘要。", sentences(summary_lines), "以下是正文。"]
-    parts.append(sentences(body_lines))
+        parts += ["内容摘要。", _spoken_paragraphs(summary_lines), "以下是正文。"]
+    parts.append(_spoken_paragraphs(body_lines))
     text = "\n\n".join(parts)
     if len(text) > 100000:
         raise TTSError("TTS_TEXT_TOO_LONG", "这篇文章过长，暂时无法生成完整语音", 422)
     return text, bool(summary_lines)
 
 
-def synthesize(config, text, target: Path, *, max_bytes=64 * 1024 * 1024, on_progress=None):
+def synthesize(config, text, target: Path | None, *, max_bytes=64 * 1024 * 1024,
+               on_progress=None, write_audio=None, cancel_scope=None):
     """Spool validated MP3 bytes and publish flushed progress to live listeners."""
     if not configured(config):
         raise TTSError("TTS_UNAVAILABLE", "语音服务暂未开放", 409)
@@ -283,14 +317,33 @@ def synthesize(config, text, target: Path, *, max_bytes=64 * 1024 * 1024, on_pro
         for key in ("volume_multiplier", "download_format", "normalization_options"):
             if config.get(key) is not None:
                 payload[key] = config[key]
-        with safe_post(validate_ai_endpoint_base_url(config["endpoint"]).rstrip("/") + "/audio/speech",
-                       headers=headers, json=payload, timeout=(10, timeout), stream=True,
-                       max_redirects=0, allow_private=os.environ.get("AI_ALLOW_PRIVATE_ENDPOINTS", "").lower() in {"1", "true", "yes", "on"}) as response:
+        with ExitStack() as resources:
+            def on_connect(connected_socket):
+                # Keep a handle even if the HTTP connection hands off the socket
+                # to a close-delimited response. Shutdown unblocks header and body reads.
+                upstream_socket = resources.enter_context(socket.fromfd(
+                    connected_socket.fileno(), connected_socket.family, connected_socket.type, connected_socket.proto,
+                ))
+
+                def abort():
+                    try:
+                        upstream_socket.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+
+                resources.enter_context(cancel_scope(abort))
+
+            response = resources.enter_context(safe_post(
+                validate_ai_endpoint_base_url(config["endpoint"]).rstrip("/") + "/audio/speech",
+                headers=headers, json=payload, timeout=(10, timeout), stream=True,
+                max_redirects=0, allow_private=os.environ.get("AI_ALLOW_PRIVATE_ENDPOINTS", "").lower()
+                in {"1", "true", "yes", "on"}, on_connect=on_connect if cancel_scope else None,
+            ))
             if response.status_code != 200:
                 raise TTSError("TTS_UPSTREAM_ERROR", "语音服务暂时不可用，请稍后重试", 502,
                                "上游返回 HTTP " + str(response.status_code) + ("，请检查鉴权配置" if response.status_code in {401, 403} else ""))
             size, prefix = 0, b""
-            with target.open("wb") as output:
+            with (target.open("wb") if write_audio is None else nullcontext()) as output:
                 # Small reads avoid waiting for a large buffer before first playback.
                 for chunk in response.iter_content(4096):
                     if not chunk:
@@ -304,8 +357,11 @@ def synthesize(config, text, target: Path, *, max_bytes=64 * 1024 * 1024, on_pro
                     if len(prefix) >= 3 and not (prefix.startswith(b"ID3") or
                             (prefix[0] == 0xff and prefix[1] & 0xe0 == 0xe0)):
                         raise TTSError("TTS_INVALID_AUDIO", "语音服务返回的音频无效，请重试", 502)
-                    output.write(chunk)
-                    if on_progress and size >= 16:
+                    if write_audio is not None:
+                        write_audio(chunk)
+                    else:
+                        output.write(chunk)
+                    if output is not None and on_progress and size >= 16:
                         output.flush()
                         on_progress(size)
             # Reject HTML/JSON masquerading as successful audio, independent of MIME.

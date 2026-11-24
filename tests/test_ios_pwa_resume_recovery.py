@@ -22,7 +22,7 @@ SW = (ROOT / "frontend" / "sw.js").read_text(encoding="utf-8")
 
 PARAMS = source_between("function buildNewsPageParams(", "function listUrlForState")
 FETCH_PAGE = source_between("function isSwFallbackResponse(", "function warmPageCoverImages")
-LOAD_PAGE = source_between("async function loadNewsPage(", "function applyPageCalibrationWhenActive")
+LOAD_PAGE = source_between("async function loadNewsPage(", "async function preparePageNavigation(")
 RECOVERY = source_between("let listLoadDegraded = false;", "function renderColdStartError(")
 # `let` bindings live in the script scope, not on the VM's global object, so
 # expose the one the tests assert on.
@@ -261,14 +261,21 @@ def test_cold_start_retry_button_retries_the_list_several_times():
 
 def test_service_worker_bounds_its_own_network_wait():
     assert "function fetchWithTimeout(request" in SW
-    # Every network-first handler that can strand the app on resume.
-    assert SW.count("fetchWithTimeout(event.request)") == 4
+    # Incremental polls, readable API snapshots and navigation all have deadlines.
+    for start, end in (
+        ("  // Poll results depend", "  // List, search"),
+        ("  // List, search", "  // ── Static assets"),
+        ("  // ── Navigation", "  // ── Everything else"),
+    ):
+        start_idx = SW.index(start)
+        assert "fetchWithTimeout(event.request)" in SW[start_idx:SW.index(end, start_idx)]
     run_node(
         SW[SW.index("const NETWORK_TIMEOUT_MS"):SW.index("self.addEventListener('install'")],
         """
 let timerFn = null;
 context.setTimeout = (fn, ms) => { timerFn = fn; context.timeoutMs = ms; return 1; };
 context.clearTimeout = () => {};
+context.AbortController = AbortController;
 context.fetch = () => new Promise(() => {});   // a socket the OS froze
 const pending = context.fetchWithTimeout({ url: '/api/news' });
 timerFn();
@@ -284,6 +291,7 @@ def test_long_resume_releases_stale_card_motion_without_discarding_content():
     )
     run_node(motion, """
 context.cancelled = 0;
+context.categoryPageMotion = null;
 const card = {getAnimations: () => [{cancel: () => context.cancelled++}]};
 const list = {
   classList: {remove: (...names) => {context.removed = names;}},

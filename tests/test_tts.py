@@ -4,6 +4,7 @@ import json
 import sqlite3
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 import requests
@@ -11,6 +12,7 @@ import requests
 import ai_access
 import models
 import tts_cache
+import tts_preparation
 import tts_routes
 import tts_service
 import web_server
@@ -68,6 +70,93 @@ def ready(cache, job_id):
     pytest.fail('TTS worker did not finish')
 
 
+def test_only_last_listener_cancels_a_shared_job(app, monkeypatch):
+    client, admin, headers, user, cache = app
+    enable(client, admin, user)
+    other_id = models.create_user('other@tts.test', 'pw', 'Other')['id']
+    ai_access.set_permissions(other_id, {'tts': True})
+    models.set_user_settings(other_id, view_tts=1)
+    other = {'Authorization': 'Bearer ' + web_server.create_token(other_id, 'user')}
+    first_claim = '1' * 32
+    second_claim = '2' * 32
+    late_claim = '3' * 32
+    upstream_started = threading.Event()
+    upstream_aborted = threading.Event()
+
+    def synthesize(config, text, path, *, cancel_scope, **kwargs):
+        if '原始标题' in text:
+            with cancel_scope(upstream_aborted.set):
+                upstream_started.set()
+                assert upstream_aborted.wait(5)
+            raise TTSError('TTS_EXPIRED', '朗读已停止', 410)
+        path.write_bytes(MP3)
+
+    monkeypatch.setattr(tts_cache, 'synthesize', synthesize)
+    start = lambda article, account, claim: client.post(f'/ai/tts/{article}', headers={**account, 'X-TTS-Listener': claim})
+    stop = lambda account, claim: client.delete('/ai/tts/listeners/' + claim, headers=account)
+    assert stop({}, late_claim).status_code == 401
+    assert stop(headers, late_claim).status_code == 204
+    assert start(1, headers, late_claim).json['code'] == 'TTS_EXPIRED'
+    job = start(1, headers, first_claim).json['id']
+    assert upstream_started.wait(3)
+    assert start(1, other, second_claim).json['id'] == job
+
+    assert stop(other, first_claim).status_code == 204
+    assert start(2, headers, late_claim).json['code'] == 'TTS_EXPIRED'
+    assert start(2, headers, '4' * 32).json['code'] == 'TTS_BUSY'
+    assert stop(headers, first_claim).status_code == 204
+    assert not upstream_aborted.is_set()
+    assert cache.get(job)['status'] == 'generating'
+    next_job = start(2, headers, '4' * 32).json['id']
+    assert ready(cache, next_job)['status'] == 'ready'
+    assert stop(headers, '4' * 32).status_code == 204
+    assert cache.get(next_job)['status'] == 'ready'
+
+    assert stop(other, second_claim).status_code == 204
+    assert upstream_aborted.wait(3)
+    with pytest.raises(TTSError, match='语音已过期'):
+        cache.get(job)
+
+
+def test_switch_releases_single_worker_before_provider_sends_headers(tmp_path, monkeypatch):
+    first_request = threading.Event()
+    finish = threading.Event()
+
+    class Provider(BaseHTTPRequestHandler):
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            if payload['input'] == '第一篇':
+                first_request.set()
+                finish.wait(5)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'audio/mpeg')
+            self.send_header('Content-Length', str(len(MP3)))
+            self.end_headers()
+            self.wfile.write(MP3)
+
+    monkeypatch.setenv('AI_ALLOW_PRIVATE_ENDPOINTS', 'true')
+    monkeypatch.delenv('HTTP_PROXY', raising=False)
+    cache = tts_cache.TTSCache(tmp_path, workers=1, max_bytes=64 * 1024 * 1024)
+    monkeypatch.setattr(cache, '_clean_loop', lambda: None)
+    with ThreadingHTTPServer(('127.0.0.1', 0), Provider) as provider:
+        config = {**tts_service.DEFAULT_CONFIG, 'enabled': True, 'revision': 'audio',
+                  'endpoint': f'http://127.0.0.1:{provider.server_port}/v1', 'username': 'reader', 'password': 'test'}
+        server = threading.Thread(target=provider.serve_forever, daemon=True)
+        server.start()
+        try:
+            cache.request(1, 7, config, '第一篇', False, listener='a' * 32)
+            assert first_request.wait(3)
+            cache.stop_listener(7, 'a' * 32)
+            next_job = cache.request(2, 7, config, '第二篇', False, listener='b' * 32)
+            assert ready(cache, next_job['id'])['status'] == 'ready'
+        finally:
+            finish.set()
+            provider.shutdown()
+            server.join(3)
+            cache.pool.shutdown(wait=True)
+
+
 def test_new_tts_config_requires_own_endpoint_and_username(app):
     client, admin, _, _, _ = app
     assert tts_service.DEFAULT_CONFIG['endpoint'] == ''
@@ -112,6 +201,211 @@ def test_table_markdown_and_empty_content():
     assert '详细数据见原文表格' in text and '机构' in text and '图片' not in text
     with pytest.raises(TTSError, match='暂无可供'):
         listening_text('标题', '<img src="x">', '已有摘要也不能冒充全文')
+
+
+def test_chinese_reading_normalizes_years_and_pauses_without_changing_quantities():
+    text, _ = listening_text(
+        '2027 年展望',
+        '<h1>2027年展望</h1><p>２０２６—２０２７ 年计划 —— 2 月 8 日发布。</p>'
+        '<ul><li>投资 2027 亿元</li><li>增幅 1.3%，型号 GPT-4.1。</li></ul>',
+    )
+    assert text.count('二零二七年展望') == 1
+    assert '二零二六年至二零二七年计划，2月8日发布。' in text
+    assert '2027 亿元。\n\n增幅 1.3%，型号 GPT-4.1。' in text
+
+
+def test_daily_digest_audio_checks_permissions_and_reports_spool_usage(app, monkeypatch):
+    client, admin, user_headers, user, cache = app
+    enable(client, admin, user)
+    day = '2026-10-20'
+    route = '/ai/tts/daily-summary/' + day
+    content = '## 科技\n1. **芯片发布：** 2027 年上市。 [🔗](https://example.test/news)'
+    assert web_server._save_daily_summary_global_cache(day, content, 1, {})
+    assert client.post(route, headers=user_headers).status_code == 403
+    ai_access.set_permissions(user, {'daily_digest': True})
+    models.set_user_settings(user, view_daily_digest=1)
+    spoken = []
+
+    def synthesize(config, text, target, **kwargs):
+        spoken.append(text)
+        target.write_bytes(MP3)
+
+    monkeypatch.setattr(tts_cache, 'synthesize', synthesize)
+    response = client.post(route, headers=user_headers)
+    assert response.status_code in {200, 202}
+    job = response.json['id']
+    assert ready(cache, job)['status'] == 'ready'
+    assert '科技。\n\n芯片发布： 二零二七年上市。' in spoken[0]
+    assert 'https' not in spoken[0]
+    assert client.post(route, headers=user_headers).json['id'] == job
+    stats = client.get('/admin/server-stats', headers=admin).json['tts_cache']
+    assert stats['used_bytes'] == len(MP3) and stats['count'] == 1
+    assert stats['max_bytes'] == cache.max_bytes
+    assert client.get(f'/ai/tts/audio/{job}', headers=user_headers).data == MP3
+    assert web_server._save_daily_summary_global_cache(day, '新版日报。', 1, {})
+    assert client.get(f'/ai/tts/jobs/{job}', headers=user_headers).status_code == 410
+    ai_access.set_permissions(user, {'daily_digest': False})
+    assert client.get(f'/ai/tts/stream/{job}', headers=user_headers).status_code == 403
+
+
+@pytest.mark.parametrize("digest", [False, True])
+def test_tts_uses_contextual_ai_edits_without_rewriting_figures(app, monkeypatch, digest):
+    client, admin, user_headers, user, cache = app
+    enable(client, admin, user)
+    models.set_system_ai_config(enabled=True, api_key="mock-key", model="mock-model")
+    body = "委员会听取了两项提案随后宣布 FDA 已批准项目，增长 1.3%。"
+    if digest:
+        ai_access.set_permissions(user, {'daily_digest': True})
+        models.set_user_settings(user, view_daily_digest=1)
+        assert web_server._save_daily_summary_global_cache("2026-10-20", body, 1, {})
+        path = "/ai/tts/daily-summary/2026-10-20"
+    else:
+        with sqlite3.connect(web_server.NEWS_DB) as db:
+            db.execute("UPDATE articles SET body_html=? WHERE id=1", (f"<p>{body}</p>",))
+        path = "/ai/tts/1"
+    calls, spoken = [], []
+
+    def chat(service, messages, **kwargs):
+        calls.append(json.loads(messages[1]["content"]))
+        segment = next(item["segment"] for item in calls[0]["segments"] if item["text"] == body)
+        return json.dumps({"edits": [
+            {"kind": "pause", "segment": segment, "original": "两项提案随后宣布", "after": 4},
+            {"kind": "reading", "segment": segment, "original": "FDA", "spoken": "F D A"},
+            {"kind": "reading", "segment": segment, "original": "1.3%", "spoken": "百分之13"},
+            {"kind": "reading", "segment": segment, "original": "missing", "spoken": "忽略正文"},
+        ]}, ensure_ascii=False)
+
+    def synthesize(config, text, path, **kwargs):
+        spoken.append(text)
+        path.write_bytes(MP3)
+
+    monkeypatch.setattr(tts_preparation.AIService, "chat", chat)
+    monkeypatch.setattr(tts_cache, "synthesize", synthesize)
+    job = client.post(path, headers=user_headers).json["id"]
+    assert ready(cache, job)["status"] == "ready"
+    assert "两项提案，随后宣布 F D A 已批准项目，增长 1.3%。" in spoken[0]
+    assert client.get(f'/ai/tts/jobs/{job}', headers=user_headers).json["preprocessing"] == "ai"
+    assert client.post(path, headers=user_headers).json["id"] == job
+    assert len(calls) == 1 and len(spoken) == 1
+
+
+@pytest.mark.parametrize("unavailable", ["disabled", "failed", "slow"])
+def test_tts_keeps_rule_audio_available_when_ai_cannot_answer(app, monkeypatch, unavailable):
+    client, admin, user_headers, user, cache = app
+    enable(client, admin, user)
+    models.set_system_ai_config(enabled=unavailable != "disabled", api_key="mock-key", model="mock-model")
+    release = threading.Event()
+    calls, spoken = [], []
+
+    def prepare(text, config, language, context):
+        calls.append(text)
+        if unavailable == "failed":
+            raise TimeoutError
+        assert release.wait(3)
+        return text.replace("正文包含", "正文，包含")
+
+    def synthesize(config, text, path, **kwargs):
+        spoken.append(text)
+        path.write_bytes(MP3)
+
+    monkeypatch.setattr(tts_preparation, "prepare", prepare)
+    monkeypatch.setattr(tts_cache, "synthesize", synthesize)
+    monkeypatch.setattr(tts_cache, "WAIT_SECONDS", 0.05)
+    try:
+        job = client.post('/ai/tts/1', headers=user_headers).json["id"]
+        first = ready(cache, job)
+        assert first["status"] == "ready" and first["preprocessing"] == "rules"
+        assert "正文包含" in spoken[0]
+        assert len(calls) == (0 if unavailable == "disabled" else 1)
+        if unavailable == "slow":
+            release.set()
+            until = time.monotonic() + 2
+            key = tts_preparation.speech_preparation.key(
+                web_server.NEWS_DB + ":1", calls[0], models.get_system_ai_config(), "z",
+            )
+            while time.monotonic() < until and tts_preparation.speech_preparation.ready(key) is None:
+                time.sleep(.005)
+            improved = client.post('/ai/tts/1', headers=user_headers).json["id"]
+            assert improved != job
+            assert ready(cache, improved)["preprocessing"] == "ai"
+            assert "正文，包含" in spoken[1] and len(calls) == 1
+            assert client.get(f'/ai/tts/audio/{job}', headers=user_headers).data == MP3
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("tail", ["文" * 630, "文" * 631, "文" * 690, "文" * 691,
+                                  "文" * 657 + "。", "文" * 655 + "。  "])
+def test_speech_segments_preserve_text_without_empty_tail(tail):
+    text = "文" * 150 + tail
+    segments = [value for value, _ in tts_preparation.speech_segments(text)]
+    assert all(segment.strip() for segment in segments)
+    assert "".join(segments) == text
+
+
+@pytest.mark.parametrize("original", ["3.5%", "３．５％"])
+def test_percent_reading_preserves_numeric_value_at_either_width(original):
+    assert tts_preparation._reading(original, "百分之3.5")
+    assert not tts_preparation._reading(original, "百分之3.6")
+    assert not tts_preparation._reading(original, "3.5")
+
+
+def test_long_tts_prepares_ahead_and_streams_multiple_segments_as_one_mp3(app, monkeypatch):
+    client, admin, user_headers, user, cache = app
+    enable(client, admin, user)
+    models.set_system_ai_config(enabled=True, api_key="mock-key", model="mock-model")
+    paragraphs = [f"第{index}段，委员会介绍了城市交通项目的进展并公布了下一阶段安排。" for index in range(18)]
+    body = "".join(f"<p>{paragraph}</p>" for paragraph in paragraphs)
+    with sqlite3.connect(web_server.NEWS_DB) as db:
+        db.execute("UPDATE articles SET body_html=? WHERE id=1", (body,))
+    plain, _ = listening_text("原始标题", body)
+    expected = [text for text, _ in tts_preparation.speech_segments(plain)]
+    assert all(segment.strip() for segment in expected)
+    assert len(expected) > 1 and "".join(expected) == plain
+
+    later_prepared = threading.Event()
+    release = threading.Event()
+    spoken = []
+    mp3_frame = b"\xff\xfb\x90\xc0" + b"\0" * 413
+    id3 = b"ID3\x04\0\0\0\0\0\0"
+    xing = mp3_frame[:21] + b"Xing" + mp3_frame[25:]
+
+    def prepare(text, config, language, context):
+        if context:
+            assert "段" in context
+            later_prepared.set()
+        return text.replace("委员会介绍", "委员会，介绍")
+
+    def synthesize(config, text, target, **kwargs):
+        spoken.append(text)
+        emit = kwargs["write_audio"]
+        emit(id3[:5])
+        emit(id3[5:] + xing + mp3_frame)
+        if len(spoken) == 1:
+            assert later_prepared.wait(2)
+            assert release.wait(3)
+        emit(mp3_frame + b"TAG" + b"\0" * 125)
+
+    monkeypatch.setattr(tts_preparation, "prepare", prepare)
+    monkeypatch.setattr(tts_cache, "synthesize", synthesize)
+    response = client.post("/ai/tts/1", headers=user_headers)
+    assert response.json["segmented"] is True
+    job = response.json["id"]
+    try:
+        stream = client.get(response.json["stream_url"], headers=user_headers, buffered=False)
+        chunks = iter(stream.response)
+        assert next(chunks) == mp3_frame
+        assert cache.get(job)["status"] == "generating" and len(spoken) == 1
+        assert later_prepared.wait(2)
+        release.set()
+        streamed = mp3_frame + b"".join(chunks)
+        assert streamed == mp3_frame * (2 * len(expected))
+        assert len(spoken) == len(expected)
+        assert spoken[1] == expected[1].replace("委员会介绍", "委员会，介绍")
+        assert ready(cache, job)["preprocessing"] == "ai"
+        assert client.get(response.json["stream_url"], headers=user_headers).data == streamed
+    finally:
+        release.set()
 
 
 def test_config_is_admin_only_secrets_preserved_and_auth_modes_exclusive(app):

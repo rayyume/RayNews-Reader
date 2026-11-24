@@ -494,7 +494,7 @@ def test_news_list_uses_paged_cache_first_loading_without_full_history_requests(
 def test_idle_refresh_only_returns_to_latest_after_five_minutes_and_new_articles():
     html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     assert "const IDLE_LATEST_DELAY_MS = 5 * 60 * 1000;" in html
-    assert "function markUserActivity(event)" in html
+    assert "function markUserActivity()" in html
     assert "function hasBlockingOverlayOpen()" in html
     assert "async function showLatestAfterIdle({" in html
     idle_start = html.index("async function showLatestAfterIdle({")
@@ -506,15 +506,11 @@ def test_idle_refresh_only_returns_to_latest_after_five_minutes_and_new_articles
     assert "const activeFilter = filter;" in idle_block
     assert "pendingRelevantCount(activeFilter)" in idle_block
     assert "hasBlockingOverlayOpen()" in idle_block
-    # The auto-scroll belongs to the refresh flow too, so a cancelled/replaced
-    # flow cannot keep moving the viewport after its guarded page apply stops.
-    assert "const completed = await scrollPageToTop({" in idle_block
-    assert "onNearTop: applyLatest," in idle_block
-    assert "auto: true," in idle_block
-    assert "externalSignal," in idle_block
-    assert "applicationGuard," in idle_block
-    assert "if (!mayApply() || !completed) return;" in idle_block
-    assert "currentPage = 1;" in idle_block
+    assert "window.scrollY <= 4" in idle_block
+    assert "currentPage === 1" in idle_block
+    assert "lastUserActivityAt === activity" in idle_block
+    assert "scrollPageToTop(" not in idle_block
+    assert idle_block.count("if (!mayApply()) return;") == 3
     # Only the just-consumed category's pending items are dropped, not every
     # category's — an unseen article in another category must survive.
     assert "consumePendingNewArticles(activeFilter);" in idle_block
@@ -581,14 +577,14 @@ def test_paged_list_mutations_keep_server_total_and_new_article_prompt():
 
 def test_filter_switch_rolls_back_when_target_page_cannot_load():
     html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
-    start = html.index("async function selectFilter(value)")
+    start = html.index("async function selectFilterFromTopBar(")
     end = html.index("function filteredNews()", start)
     block = html[start:end]
     assert "const previousFilter = filter;" in block
     assert "const previousPage = currentPage;" in block
-    assert "const loaded = await loadNewsPage" in block
-    assert "filter = previousFilter;" in block
-    assert "currentPage = previousPage;" in block
+    assert "if (pageApplied || !targetData || !nearTopReached || !ownsUnappliedNavigation()) return;" in block
+    assert "preparePageNavigation(1, value)" in block
+    assert "if (ownsUnappliedNavigation()) window.scrollTo(0, previousScrollY);" in block
 
 
 def test_cached_page_background_calibration_reuses_existing_cards():
@@ -611,8 +607,7 @@ def test_logo_is_lightweight_and_header_button_starts_refresh_job():
     assert 'class="logo" onclick="refreshHomepage()"' in html
     assert 'id="refreshBtn" onclick="triggerRefresh()"' in html
     logo = html[html.index("async function refreshHomepage()"):html.index("async function scrollToTopAndCheckLatest")]
-    assert "loadSince(cursor, { forceApply: true })" in logo
-    assert logo.count("loadSince(cursor, { forceApply: true })") == 1
+    assert logo.count("loadSince(cursor)") == 1
     assert "preparePageNavigation(1, 'all')" in logo
     assert "scrollPageToTop({" in logo
     assert "requestRefreshOnce" not in logo
@@ -724,9 +719,9 @@ def test_manual_refresh_feeds_new_articles_into_pending_prompt_when_not_on_page_
     assert load_since_call > new_count_check
     assert "externalSignal: flowController.signal" in trigger[load_since_call:]
     assert "applicationGuard: flowIsCurrent" in trigger[load_since_call:]
-    assert "let page1BranchRan = false;" in trigger
-    assert "page1BranchRan = true;" in trigger
-    assert "!page1BranchRan" in trigger
+    assert "let latestPageApplied = false;" in trigger
+    assert "latestPageApplied = true;" in trigger
+    assert "!latestPageApplied" in trigger
     assert trigger.index("const sinceCursor =") < trigger.index("await requestRefreshOnce(")
 
 
@@ -862,7 +857,7 @@ def test_adjacent_pages_are_buffered_immediately_and_cover_images_are_warmed():
     assert "function rememberBufferedPage(" in html
     assert "function warmPageCoverImages(" in html
     prefetch_start = html.index("async function prefetchNewsPage(")
-    prefetch_end = html.index("function cancelActiveAutoMotion()", prefetch_start)
+    prefetch_end = html.index("function markUserActivity()", prefetch_start)
     prefetch_block = html[prefetch_start:prefetch_end]
     assert "pagePrefetchPromises.get(key)" in prefetch_block
     assert "pagePrefetchPromises.set(key, task)" in prefetch_block
@@ -871,7 +866,7 @@ def test_adjacent_pages_are_buffered_immediately_and_cover_images_are_warmed():
     prepare_end = html.index("// Full snapshot compatibility wrapper", prepare_start)
     prepare_block = html[prepare_start:prepare_end]
     assert "const pendingPrefetch = pagePrefetchPromises.get(key);" in prepare_block
-    assert "const prefetched = await pendingPrefetch;" in prepare_block
+    assert "const prefetched = await withPromiseTimeout(pendingPrefetch, null, 400);" in prepare_block
 
 
 def test_must_be_fresh_navigation_has_a_downgrade_budget():
@@ -880,9 +875,9 @@ def test_must_be_fresh_navigation_has_a_downgrade_budget():
     prepare_end = html.index("// Full snapshot compatibility wrapper", prepare_start)
     prepare_block = html[prepare_start:prepare_end]
     assert "const NAVIGATION_FRESH_BUDGET_MS = 2500;" in prepare_block
-    assert "await withPromiseTimeout(networkPromise, null, NAVIGATION_FRESH_BUDGET_MS);" in prepare_block
+    assert "await withPromiseTimeout(networkPromise, null, NAVIGATION_FRESH_BUDGET_MS)" in prepare_block
     assert "peekStaleBufferedPage(page, activeFilter)" in prepare_block
-    assert "applyPageCalibrationWhenActive(result.data, page, activeFilter, requestSeq)" in prepare_block
+    assert "applyNewsPage(" not in prepare_block
     assert "function peekStaleBufferedPage(page, activeFilter)" in html
     start = html.index("function scheduleAdjacentPagePrefetch(")
     end = html.index("async function loadNewsPage(", start)
@@ -918,7 +913,7 @@ def test_page_swap_locks_list_height_and_disables_scroll_anchoring():
     assert "applyNewsPage(data, page, activeFilter" in block
     go_start = html.index("async function goToPage(", end)
     go_end = html.index("function waitForScrollTop(", go_start)
-    assert "releasePageTransitionLock(transitionList);" in html[go_start:go_end]
+    assert "releasePageTransitionLock(transitionList, navigationSeq);" in html[go_start:go_end]
 
 
 def test_mobile_pull_to_refresh_is_not_registered():
@@ -1022,7 +1017,7 @@ def test_foreground_resume_uses_retrying_incremental_check():
 
 def test_cold_start_retry_uses_a_fresh_abort_controller_and_preserves_cache():
     html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
-    load = html[html.index("async function loadNewsPage("):html.index("function applyPageCalibrationWhenActive")]
+    load = html[html.index("async function loadNewsPage("):html.index("async function preparePageNavigation(")]
     assert "networkRetries = 0" in load
     assert "for (let attempt = 0; attempt <= networkRetries; attempt++)" in load
     assert "pageRequestController = new AbortController();" in load
@@ -1098,10 +1093,8 @@ def test_new_article_prompt_and_idle_motion_are_cancellable():
     # Only the revealed category's pending items are consumed, not the whole queue.
     assert "consumePendingNewArticles(activeFilter);" in prompt_block
     assert "hideNewArticlesPrompt();" in prompt_block
-    assert "function cancelActiveAutoMotion()" in html
-    assert "if (!activeScrollMotion || !activeScrollMotion.auto) return;" in html
-    assert "if (!mayApply() || !completed) return;" in html
-    assert "const atLatestTop = currentPage === 1" in html
+    assert "const atLatestTop = () => filter === activeFilter && currentPage === 1" in html
+    assert "if (atLatestTop()) {" in html
 
 
 def test_list_filter_and_page_are_encoded_in_history_url():
@@ -1112,7 +1105,7 @@ def test_list_filter_and_page_are_encoded_in_history_url():
     assert "url.searchParams.set('page'" in html
     assert "function restoreListStateFromUrl({ restoreScroll = false } = {})" in html
     assert "window.addEventListener('popstate'" in html
-    assert "syncListUrl({ push: true });" in html
+    assert "syncListUrl(currentPage === previousPage ? { replace: true } : { push: true });" in html
 
 
 def test_article_return_has_one_scroll_owner_and_preserves_search_scroll():
@@ -1186,9 +1179,9 @@ def test_mobile_sidebar_keeps_open_when_expanding_source_categories():
     rebuild_end = html.index("function toggleCategoryExpansion(cat)", rebuild_start)
     rebuild_block = html[rebuild_start:rebuild_end]
     render_start = html.index("function renderFilters()")
-    render_end = html.index("async function selectFilter(value)", render_start)
+    render_end = html.index("async function selectFilter(value,", render_start)
     render_block = html[render_start:render_end]
-    select_start = render_end
+    select_start = html.index("async function selectFilterFromTopBar(")
     select_end = html.index("function filteredNews()", select_start)
     select_block = html[select_start:select_end]
 
@@ -1214,7 +1207,7 @@ def test_source_filter_rendering_executes_group_rebuild_path():
         const vm = require('vm');
         const html = fs.readFileSync('frontend/index.html', 'utf8');
         const start = html.indexOf('function rebuildSourceFilterGroups()');
-        const end = html.indexOf('async function selectFilter(value)', start);
+        const end = html.indexOf('async function selectFilter(value,', start);
         const code = html.slice(start, end);
         const filters = { innerHTML: '', onclick: null };
         const context = {

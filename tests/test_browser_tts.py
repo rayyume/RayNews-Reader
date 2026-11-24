@@ -50,6 +50,7 @@ def setup_page(browser,viewport,theme='dark',role='user',failure=False,articles=
     def access():
         return {'permissions':{key:True for key in ('summary','translation','title_shortening','daily_digest','tts')},
                 'services':{'tts':True},'view_tts':enabled['tts'],'view_summary':enabled['summary'],
+                'view_daily_digest':enabled.get('daily_digest',False),
                 'view_translation':enabled.get('translation',False),'view_title_translation':enabled.get('title_translation',False),
                 'view_title_shortening':enabled.get('shorten',False)}
     def route(r):
@@ -59,12 +60,18 @@ def setup_page(browser,viewport,theme='dark',role='user',failure=False,articles=
         asset=ROOT/'frontend'/path.lstrip('/')
         if path.endswith(('.png','.ico')) and asset.is_file():
             r.fulfill(body=asset.read_bytes(),content_type='image/png');return
+        if path.startswith('/vendor/') and path.endswith('.js') and asset.is_file():
+            r.fulfill(body=asset.read_bytes(),content_type='application/javascript');return
         data={}
         if path=='/auth/me':data={'user':user}
         elif path=='/settings':data={'access':access(),'theme_preference':theme,'notification_config':{}}
         elif path=='/api/news':data={'items':article_items,'total':2,'page':1,'size':30,'total_pages':1}
         elif path.startswith('/api/news/') and path.rsplit('/',1)[-1].isdigit():
             data={**article_items[int(path.rsplit('/',1)[-1])-1],**control.get('article_detail_override',{})}
+        elif path.startswith('/ai/tts/listeners/'):
+            assert r.request.method == 'DELETE' and r.request.headers.get('authorization') == 'Bearer mock'
+            control.setdefault('released_listeners', []).append(path.rsplit('/', 1)[-1])
+            r.fulfill(status=204);return
         elif path.startswith('/ai/tts/audio/'):
             assert r.request.headers.get('authorization')=='Bearer mock'
             r.fulfill(body=sample_audio(),content_type='audio/wav');return
@@ -73,7 +80,13 @@ def setup_page(browser,viewport,theme='dark',role='user',failure=False,articles=
                 r.fulfill(status=410,json={'code':'TTS_EXPIRED','error':'文章或译文已更新，请重新生成'});return
             data={'id':'job-1','status':'failed' if control.get('job_failed') else 'ready' if control['ready'] else 'generating','has_summary':True}
             if control.get('job_failed'):data['error']='语音生成超时，请重试'
+        elif path == '/ai/tts/daily-summary/2026-10-20':
+            assert r.request.method == 'POST' and r.request.headers.get('authorization') == 'Bearer mock'
+            data={'id':'digest-job','status':'ready','digest_date':'2026-10-20','required_preferences':['view_daily_digest']}
         elif path.startswith('/ai/tts/'):
+            listener = r.request.headers.get('x-tts-listener', '')
+            assert len(listener) == 32
+            control.setdefault('listeners', {})[path] = listener
             if failure:
                 r.fulfill(status=502,json={'code':'TTS_UPSTREAM_ERROR','error':'语音服务暂时不可用，请稍后重试'});return
             if path=='/ai/tts/2' and control['busy_for_2']:
@@ -83,11 +96,14 @@ def setup_page(browser,viewport,theme='dark',role='user',failure=False,articles=
             if control.get('tts_title'):article['title']=control['tts_title']
             data={'id':'job-'+str(article['id']),'status':'ready' if control['ready'] else 'queued','article':article,'has_summary':True}
             data.update(control.get('reading_selection',{}))
+            if control.get('segmented'):data['segmented']=True
             if control.get('stream'):data['stream_url']='/ai/tts/stream/'+data['id']
         elif path.startswith('/ai/result/'):
             data={**control['ai_result'],'access':access()}
         elif path=='/ai/results':data={'items':{str(item['id']):control['ai_result'] for item in article_items},'access':access()}
         elif path=='/ai/result-updates':data={'items':[],'cursor':'test|0','has_more':False,'access':access()}
+        elif path=='/ai/daily-summary/today':
+            data={'status':'completed','date':'2026-10-20','summary':'## 科技\n1. 城市交通正在发生变化。','article_count':1}
         elif path in ('/sources','/sources/public','/api/sources'):
             if not sources_available:
                 r.fulfill(status=503,json={'error':'source metadata unavailable'});return
@@ -109,6 +125,85 @@ def setup_page(browser,viewport,theme='dark',role='user',failure=False,articles=
     page.goto('http://raynews.test/')
     page.wait_for_function('news.length===2' if guest else 'news.length===2 && userAutoSettings?.view_tts')
     return context,page,enabled,calls,errors,control
+
+
+def test_daily_digest_plays_in_global_player_and_stops_on_revocation(browser, tmp_path):
+    context,page,enabled,calls,errors,_=setup_page(
+        browser, {'width':390,'height':844}, preferences={'daily_digest':True},
+    )
+    try:
+        page.evaluate('showDailySummary()')
+        expect(page.locator('#dailySummaryBody')).to_contain_text('城市交通正在发生变化')
+        page.get_by_role('button', name='朗读每日总结').click()
+        page.wait_for_function('!document.getElementById("ttsAudio").paused')
+        page.locator('#ttsDisc').click()
+        expect(page.locator('#ttsTitle')).to_have_text('每日总结')
+        expect(page.locator('#ttsSource')).to_have_text('2026-10-20')
+        expect(page.locator('#ttsPrevious')).to_be_disabled()
+        expect(page.locator('#ttsNext')).to_be_disabled()
+        page.screenshot(path=str(tmp_path / 'daily-digest-player.png'), animations='disabled')
+        page.get_by_role('button', name='查看每日总结').click()
+        expect(page.locator('#dailySummaryOverlay')).to_have_class('ai-overlay open')
+        enabled['daily_digest'] = False
+        page.evaluate('loadUserSettings()')
+        expect(page.locator('#ttsDisc')).to_be_hidden()
+        assert ('GET', '/ai/tts/audio/digest-job') in calls
+        assert not errors
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize('width,has_summary', [(390, True), (1280, False)])
+def test_article_share_offers_link_and_downloadable_png(browser, width, has_summary, tmp_path):
+    context,page,_,calls,errors,_ = setup_page(browser, {'width':width,'height':844}, theme='light',
+                                             ai_result={'summary':'无人驾驶从试点逐渐走向日常应用。' if has_summary else ''})
+    try:
+        page.evaluate("""() => {
+          Object.defineProperty(navigator, 'clipboard', {value:{writeText: async value => { window.copiedArticle = value; }}});
+          navigator.canShare = payload => !!payload.files?.length;
+          navigator.share = async ({files,url}) => { window.sharedCardType = files?.[0]?.type; window.sharedArticle = url; };
+          const fillText = CanvasRenderingContext2D.prototype.fillText;
+          window.shareText = [];
+          CanvasRenderingContext2D.prototype.fillText = function (text, ...args) {
+            shareText.push(text);
+            return fillText.call(this, text, ...args);
+          };
+        }""")
+        page.locator('#list .item[data-id="1"]').click()
+        expect(page.locator('#articleBody')).to_contain_text('城市交通正在发生变化')
+        page.get_by_role('button', name='分享', exact=True).click()
+        dialog = page.get_by_role('dialog', name='分享文章')
+        expect(dialog).to_be_visible()
+        expected_url = 'http://raynews.test/#/article/26-10-20-1'
+        expect(dialog.get_by_label('文章链接')).to_be_hidden()
+        expect(dialog.get_by_role('button', name='分享图片', exact=True)).to_be_visible()
+        dialog.get_by_role('button', name='分享链接', exact=True).click()
+        expect(dialog.get_by_label('文章链接')).to_have_value(expected_url)
+        assert page.evaluate('window.sharedArticle') == expected_url
+        dialog.get_by_role('button', name='复制链接').click()
+        assert page.evaluate('window.copiedArticle') == expected_url
+        dialog.get_by_role('button', name='返回分享选项').click()
+        dialog.get_by_role('button', name='分享图片', exact=True).click()
+        expect(dialog.get_by_alt_text('文章分享卡片预览')).to_be_visible()
+        dialog.get_by_role('button', name='发送图片').click()
+        assert page.evaluate('window.sharedCardType') == 'image/png'
+        assert page.evaluate("document.getElementById('shareCardPreview').naturalWidth === 1680")
+        rendered = page.evaluate('shareText')
+        assert ARTICLES[0]['title'] in ''.join(rendered)
+        assert '科技观察' in rendered
+        assert ('AI 摘要' in rendered) == has_summary
+        assert not any(method == 'POST' and path.startswith('/ai/') for method, path in calls)
+        with page.expect_download() as event:
+            dialog.get_by_role('button', name='下载 PNG').click()
+        assert event.value.suggested_filename == 'raynews-1.png'
+        assert event.value.path().read_bytes().startswith(b'\x89PNG\r\n\x1a\n')
+        event.value.save_as(tmp_path / f'raynews-card-{width}.png')
+        page.screenshot(path=str(tmp_path / f'png-share-{width}.png'))
+        page.keyboard.press('Escape')
+        expect(dialog).to_be_hidden()
+        assert not errors
+    finally:
+        context.close()
 
 
 @pytest.mark.parametrize('viewport,theme', [({'width':390,'height':844},'dark'),({'width':390,'height':844},'light'),({'width':1280,'height':900},'dark')])
@@ -265,6 +360,7 @@ def test_switch_during_generation_waits_for_server_slot(browser,stop_first):
         control['busy_for_2']=True
         page.evaluate('void RayNewsTTS.start(1)')
         expect(page.locator('#ttsDisc')).to_have_class('tts-disc busy')
+        page.wait_for_function("performance.getEntriesByType('resource').some(entry => entry.name.endsWith('/ai/tts/1'))")
         page.locator('#ttsDisc').click()
         if stop_first:
             page.locator('#ttsStop').click()
@@ -274,6 +370,10 @@ def test_switch_during_generation_waits_for_server_slot(browser,stop_first):
         else:
             page.locator('#ttsNext').click()
         expect(page.locator('#ttsStatus')).to_contain_text('空出后会自动开始当前文章')
+        assert control['listeners']['/ai/tts/1'] in control['released_listeners']
+        stop_path = '/ai/tts/listeners/' + control['listeners']['/ai/tts/1']
+        assert calls.index(('DELETE', stop_path)) < calls.index(('POST', '/ai/tts/2'))
+        assert control['listeners']['/ai/tts/1'] != control['listeners']['/ai/tts/2']
         expect(page.locator('#ttsRetry')).to_be_hidden()
         control['busy_for_2']=False
         control['ready']=True
@@ -282,6 +382,24 @@ def test_switch_during_generation_waits_for_server_slot(browser,stop_first):
         assert sum(method=='POST' and path=='/ai/tts/2' for method,path in calls)>=2
         assert errors==[]
     finally:context.close()
+
+
+def test_replacing_login_releases_the_old_tts_listener(browser):
+    context, page, _, calls, errors, control = setup_page(browser, {'width':390,'height':844})
+    try:
+        control['ready'] = False
+        with page.expect_response(lambda response: response.url.endswith('/ai/tts/1')):
+            page.evaluate('void RayNewsTTS.start(1)')
+        expect(page.locator('#ttsDisc')).to_have_class('tts-disc busy')
+        listener = control['listeners']['/ai/tts/1']
+        path = '/ai/tts/listeners/' + listener
+        with page.expect_response(lambda response: response.url.endswith(path)):
+            page.evaluate("saveAuth('replacement', {...authUser, id:8})")
+        expect(page.locator('#ttsDisc')).to_be_hidden()
+        assert ('DELETE', path) in calls and control['released_listeners'] == [listener]
+        assert not errors
+    finally:
+        context.close()
 
 
 def enable_stream(page, control):
@@ -352,6 +470,33 @@ def test_stream_starts_after_five_seconds_before_eof(browser,width,tmp_path):
         assert errors==[]
         assert control['console_logs']==[]
     finally:context.close()
+
+
+def test_segmented_stream_starts_at_three_seconds_and_plays_through_next_segment(browser):
+    context, page, _, _, errors, control = setup_page(browser, {'width':390,'height':844})
+    try:
+        enable_stream(page, control)
+        control['segmented'] = True
+        page.locator('#list .item[data-id="1"]').click()
+        page.locator('.tts-speaker').click()
+        page.locator('#ttsDisc').click()
+        page.wait_for_function('streamProbe.requests===1')
+        expect(page.locator('#ttsStatus')).to_contain_text('约 3 秒音频就绪')
+        page.evaluate('streamProbe.push(2)')
+        page.wait_for_function('document.getElementById("ttsAudio").buffered.length>0')
+        expect(page.locator('#ttsPlay')).to_be_disabled()
+        page.evaluate('streamProbe.push(2)')
+        page.wait_for_function('document.getElementById("ttsAudio").currentTime > 0.5')
+        page.evaluate('streamProbe.push(4)')
+        page.wait_for_function('document.getElementById("ttsAudio").currentTime > 4.25')
+        expect(page.locator('#ttsPlay')).to_have_attribute('aria-label', '暂停')
+        assert page.evaluate('streamProbe.requests') == 1
+        assert not errors
+        control['ready'] = True
+        page.evaluate('streamProbe.close()')
+        expect(page.locator('#ttsSeek')).to_be_enabled()
+    finally:
+        context.close()
 
 
 @pytest.mark.parametrize('outcome',['short','failed','stop','switch','logout'])

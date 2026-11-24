@@ -131,6 +131,9 @@ const context = {{
   searchTotal: 0,
   searchItems: [],
   searchQuery: '',
+  searchResultsReady: false,
+  searchResultsCached: false,
+  isSwFallbackResponse: response => response.headers?.get('X-SW-Fallback') === '1',
   authToken: 'token',
   document: {{
     getElementById(id) {{ requestedIds.push(id); return elements[id] || null; }},

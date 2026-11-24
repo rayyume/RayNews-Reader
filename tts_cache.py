@@ -8,9 +8,14 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
+from contextlib import contextmanager
 from pathlib import Path
 
+from tts_audio import MP3Stream
+from tts_preparation import WAIT_SECONDS, speech_preparation, speech_segments
 from tts_service import TTSError, synthesize
 
 
@@ -34,6 +39,7 @@ class TTSCache:
         self.lock = threading.RLock()
         self.changed = threading.Condition(self.lock)
         self.jobs, self.keys = {}, {}
+        self.cancelled_listeners = OrderedDict()
         self.reserved_bytes = 0
         self.pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tts")
         self.slots = threading.BoundedSemaphore(16)
@@ -91,48 +97,131 @@ class TTSCache:
                     total -= job.get("bytes", 0)
                     self._discard(job)
 
-    def request(self, article_id, user_id, config, text, has_summary, namespace="", valid=None, selection=None):
+    def stats(self):
+        with self.lock:
+            completed = [job for job in self.jobs.values() if job["status"] == "ready"]
+            generating = [job for job in self.jobs.values() if job["status"] == "generating"]
+            return {
+                "used_bytes": sum(job["bytes"] for job in completed)
+                + sum(job["published_bytes"] for job in generating),
+                "max_bytes": self.max_bytes,
+                "count": len(completed),
+            }
+
+    def stop_listener(self, user_id, listener):
+        claim = (user_id, listener)
+        aborts = []
+        with self.changed:
+            now = time.monotonic()
+            self.cancelled_listeners[claim] = now
+            self.cancelled_listeners.move_to_end(claim)
+            # A stop can arrive before its aborted POST reaches the server.
+            while self.cancelled_listeners and (
+                len(self.cancelled_listeners) > 2048 or next(iter(self.cancelled_listeners.values())) < now - 60
+            ):
+                self.cancelled_listeners.popitem(last=False)
+            for job in list(self.jobs.values()):
+                if claim not in job["listeners"]:
+                    continue
+                job["listeners"].remove(claim)
+                if job["status"] in {"queued", "generating"} and not job["listeners"] and not job["legacy_users"]:
+                    job["invalid"] = True
+                    if job.get("abort"):
+                        aborts.append(job["abort"])
+                    future = job.pop("future", None)
+                    if future is not None and future.cancel():
+                        self.slots.release()
+                    self._discard(job)
+            self.changed.notify_all()
+        for abort in aborts:
+            abort()
+
+    @contextmanager
+    def _cancellable_request(self, job, abort):
+        with self.lock:
+            if job.get("invalid"):
+                raise TTSError("TTS_EXPIRED", "朗读已停止", 410)
+            job["abort"] = abort
+        try:
+            yield
+        finally:
+            with self.lock:
+                job.pop("abort", None)
+
+    def request(self, article_id, user_id, config, text, has_summary, namespace="", valid=None,
+                selection=None, speech_config=None, listener=None):
         self.start()
         selection = selection or {}
+        language = config.get("lang_code")
+        speech_key = speech_preparation.key(namespace, text, speech_config, language)
+        segments = speech_segments(text) if speech_key and config.get("stream", True) else [(text, "")]
+        plan = [
+            (f"{speech_key}:{index}" if len(segments) > 1 else speech_key, segment, context)
+            for index, (segment, context) in enumerate(segments)
+        ]
         digest = hashlib.sha256((namespace + "\0" + config["revision"] + "\0" + text + "\0" +
-                                 json.dumps(selection, sort_keys=True)).encode()).hexdigest()
+                                 json.dumps(selection, sort_keys=True) + "\0" + (speech_key or "")).encode()).hexdigest()
         with self.lock:
             self.cleanup()
+            claim = (user_id, listener)
+            if listener and time.monotonic() - self.cancelled_listeners.get(claim, -60) < 60:
+                raise TTSError("TTS_EXPIRED", "朗读已停止", 410)
             old = self.jobs.get(self.keys.get(digest))
             if old and old["article_id"] == article_id and not old.get("invalid"):
                 old["last_used"] = time.time()
-                if old["status"] != "failed":
+                if old["status"] in {"queued", "generating"}:
+                    listeners = old["listeners"] if listener else old["legacy_users"]
+                    interest = claim if listener else user_id
+                    if len(listeners) >= 64 and interest not in listeners:
+                        raise TTSError("TTS_BUSY", "语音生成繁忙，请稍后重试", 429)
+                    listeners.add(interest)
                     return dict(old)
-                self._discard(old)
-            if any(j["owner"] == user_id and j["status"] in {"queued", "generating"} for j in self.jobs.values()):
+                if old["status"] == "ready":
+                    ready = [speech_preparation.ready(key) for key, _, _ in plan]
+                    improved = any(value is not None and hashlib.sha256(value.encode()).hexdigest() != spoken
+                                   for value, spoken in zip(ready, old["spoken_hashes"]))
+                    if not improved:
+                        pending = [index for index in old["unprepared_segments"] if ready[index] is None]
+                        for index in pending[:2]:
+                            key, segment, context = plan[index]
+                            speech_preparation.submit(key, segment, speech_config, language, context)
+                        return dict(old)
+                if old["status"] == "failed":
+                    self._discard(old)
+            if any(not j.get("invalid") and j["status"] in {"queued", "generating"} and
+                   (user_id in j["legacy_users"] or any(user == user_id for user, _ in j["listeners"]))
+                   for j in self.jobs.values()):
                 raise TTSError("TTS_BUSY", "已有语音正在生成，请稍后再试", 429)
             if not self.slots.acquire(blocking=False):
                 raise TTSError("TTS_BUSY", "语音生成繁忙，请稍后重试", 429)
             job_id = uuid.uuid4().hex
-            job = {"id": job_id, "key": digest, "article_id": article_id, "owner": user_id,
+            job = {"id": job_id, "key": digest, "article_id": article_id,
+                   "listeners": {claim} if listener else set(), "legacy_users": set() if listener else {user_id},
                    "has_summary": has_summary, "revision": config["revision"],
-                   "selection": selection,
+                   "selection": selection, "segmented": len(plan) > 1,
                    "text_hash": hashlib.sha256(text.encode()).hexdigest(),
                    "status": "queued", "created_at": time.time(), "last_used": time.time(),
                    "leases": 0, "published_bytes": 0}
             self.jobs[job_id] = job
             self.keys[digest] = job_id
             try:
-                self.pool.submit(self._generate, job, config.copy(), text, valid)
+                first_preparation = speech_preparation.submit(plan[0][0], plan[0][1], speech_config, language, plan[0][2])
+                job["future"] = self.pool.submit(self._generate, job, config.copy(), plan, valid, speech_config, first_preparation)
             except Exception:
                 self._discard(job)
                 self.slots.release()
                 raise
             return dict(job)
 
-    def _generate(self, job, config, text, valid):
+    def _generate(self, job, config, plan, valid, speech_config, first_preparation):
         part = self.directory / (job["id"] + ".part")
         allowance = min(self.max_bytes, 64 * 1024 * 1024)
         reserved = False
         try:
             with self.lock:
+                job.pop("future", None)
                 if self.jobs.get(job["id"]) is not job or job.get("invalid") or (valid and not valid()):
-                    raise TTSError("TTS_EXPIRED", "文章已删除，请选择其他文章", 410)
+                    raise TTSError("TTS_EXPIRED", "朗读内容已失效，请重新选择", 410)
                 # Account for in-progress downloads as well as completed audio.
                 # Reservations prevent two workers temporarily exceeding the
                 # spool budget before their finished files can be evicted.
@@ -152,14 +241,14 @@ class TTSCache:
             def publish(size):
                 with self.changed:
                     if self.jobs.get(job["id"]) is not job or job.get("invalid"):
-                        raise TTSError("TTS_EXPIRED", "文章已更新或删除，请重新生成语音", 410)
+                        raise TTSError("TTS_EXPIRED", "朗读内容已更新，请重新生成语音", 410)
                     job["published_bytes"] = size
                     self.changed.notify_all()
 
-            synthesize(config, text, part, max_bytes=allowance, on_progress=publish)
+            self._synthesize_plan(job, config, plan, speech_config, first_preparation, part, allowance, publish)
             with self.lock:
                 if self.jobs.get(job["id"]) is not job or job.get("invalid") or (valid and not valid()):
-                    raise TTSError("TTS_EXPIRED", "文章已更新或删除，请重新生成语音", 410)
+                    raise TTSError("TTS_EXPIRED", "朗读内容已更新，请重新生成语音", 410)
                 size = part.stat().st_size
                 if size > allowance:
                     raise TTSError("TTS_STORAGE_FULL", "语音临时空间繁忙，请稍后重试", 503)
@@ -167,12 +256,16 @@ class TTSCache:
                 self.reserved_bytes -= allowance
                 reserved = False
                 job.update(status="ready", bytes=size)
+                job["listeners"].clear()
+                job["legacy_users"].clear()
                 self.changed.notify_all()
         except Exception as exc:
             error = exc if isinstance(exc, TTSError) else TTSError("TTS_STORAGE_ERROR", "语音生成失败，请稍后重试", 503)
             with self.lock:
                 job.update(status="failed", error=str(error), code=error.code, http_status=error.status,
                            admin_detail=error.admin_detail)
+                job["listeners"].clear()
+                job["legacy_users"].clear()
                 self.changed.notify_all()
         finally:
             try:
@@ -182,6 +275,61 @@ class TTSCache:
                     with self.lock:
                         self.reserved_bytes -= allowance
                 self.slots.release()
+
+    def _synthesize_plan(self, job, config, plan, speech_config, first_preparation, part, allowance, publish):
+        preparations = {0: first_preparation}
+        spoken_hashes = []
+        unprepared = []
+        optimized = 0
+        segmented = len(plan) > 1
+        language = config.get("lang_code")
+        def cancel_scope(abort):
+            return self._cancellable_request(job, abort)
+
+        def prepare_ahead(start):
+            for index in range(start, min(start + 2, len(plan))):
+                if preparations.get(index) is None:
+                    key, text, context = plan[index]
+                    preparations[index] = speech_preparation.submit(key, text, speech_config, language, context)
+
+        def begin_segment(index, key, text):
+            nonlocal optimized
+            prepare_ahead(index)
+            future = preparations.pop(index)
+            prepared = None
+            if future is not None:
+                try:
+                    prepared = future.result(timeout=WAIT_SECONDS if index == 0 else 0)
+                except FutureTimeout:
+                    pass
+            if key is not None and prepared is None:
+                unprepared.append(index)
+            spoken = prepared or text
+            spoken_hashes.append(hashlib.sha256(spoken.encode()).hexdigest())
+            optimized += spoken != text
+            with self.lock:
+                if self.jobs.get(job["id"]) is not job or job.get("invalid"):
+                    raise TTSError("TTS_EXPIRED", "朗读内容已更新，请重新生成语音", 410)
+                job["preprocessing"] = "ai" if optimized else "rules"
+            # The following segments prepare in parallel with this Kokoro request.
+            prepare_ahead(index + 1)
+            return spoken
+
+        if segmented:
+            with part.open("wb") as output:
+                audio = MP3Stream(output, allowance, publish)
+                for index, (key, text, _) in enumerate(plan):
+                    spoken = begin_segment(index, key, text)
+                    audio.start_segment()
+                    synthesize(config, spoken, None, max_bytes=allowance, write_audio=audio.write,
+                               cancel_scope=cancel_scope)
+                    audio.finish_segment()
+        else:
+            spoken = begin_segment(0, plan[0][0], plan[0][1])
+            synthesize(config, spoken, part, max_bytes=allowance, on_progress=publish,
+                       cancel_scope=cancel_scope)
+        with self.lock:
+            job.update(spoken_hashes=spoken_hashes, unprepared_segments=unprepared)
 
     def get(self, job_id):
         with self.lock:

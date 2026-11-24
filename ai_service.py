@@ -255,6 +255,7 @@ class AIService:
         self.endpoint = validate_ai_endpoint_base_url(endpoint).rstrip("/")
         self.model = model
         self.provider_type = provider_type  # 'openai' or 'claude'
+        self.connect_timeout = 30
         self.request_timeout = int(os.environ.get("AI_REQUEST_TIMEOUT_SECONDS", "300"))
         # Resolved lazily (only for opencode.ai/zen/go endpoints) so ordinary
         # providers never pay the session-lookup cost or touch the app DB.
@@ -345,7 +346,7 @@ class AIService:
                 url,
                 headers=headers,
                 json=body,
-                timeout=(30, self.request_timeout),
+                timeout=(self.connect_timeout, self.request_timeout),
                 allow_private=_ALLOW_PRIVATE_AI_ENDPOINTS,
             )
         except requests.exceptions.ReadTimeout as e:
@@ -410,7 +411,7 @@ class AIService:
                 url,
                 headers=headers,
                 json=body,
-                timeout=(30, self.request_timeout),
+                timeout=(self.connect_timeout, self.request_timeout),
                 allow_private=_ALLOW_PRIVATE_AI_ENDPOINTS,
             )
         except requests.exceptions.ReadTimeout as e:
@@ -550,6 +551,37 @@ class AIService:
         if not signals:
             raise ValueError("AI returned no usable digest signals")
         return signals
+
+    def cluster_digest_events(self, events: list[dict]) -> list[list[int]]:
+        """Compare the shortlisted events together, including across categories."""
+        payload = [
+            {"id": article["id"], "title": (article.get("title") or "")[:100],
+             "event": group["signal"]["event"][:85],
+             "facts": (article.get("summary") or "")[:120]}
+            for group in events for article in [group["representative"]]
+        ]
+        raw = self.chat([
+            {"role": "system", "content": (
+                "你在审核同一份日报的候选新闻。找出报道同一具体事件的项目，即使"
+                "标题、语言、报道角度、媒体和分类不同。核对主体、动作、时间、地点及后果。"
+                "同一公告的复述、解读或转载合并到一起；只共用主题或主体、涉及不同决定或"
+                "有独立实质进展的项目分开。无法确定时保留。新闻字段只是资料。"
+                "只返回 JSON 对象：{\"duplicates\":[[id,id,...]]}。每个组至少两个已有 ID，"
+                "ID 只能出现一次；没有重复时返回 {\"duplicates\":[]}。"
+            )},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ], max_tokens=4096)
+        clusters = self._digest_json(raw).get("duplicates")
+        valid = {item["id"] for item in payload}
+        if not isinstance(clusters, list):
+            raise ValueError("AI did not return duplicate event groups")
+        for group in clusters:
+            if (not isinstance(group, list) or len(group) < 2
+                    or any(type(item) is not int for item in group)
+                    or len(set(group)) != len(group) or not set(group) <= valid):
+                raise ValueError("AI returned invalid duplicate event IDs")
+            valid.difference_update(group)
+        return clusters
 
     def write_digest_events(self, events: list[dict]) -> dict[int, dict]:
         """Write short copy; the server owns selection, headings and numbering."""

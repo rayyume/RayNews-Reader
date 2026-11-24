@@ -153,6 +153,7 @@ def test_prepare_page_navigation_must_be_fresh_uses_network_within_budget():
         """
 context.pageRequestSequence = 0;
 context.pageRequestController = null;
+context.newsPageCacheKey = (page, filter) => page + ':' + filter;
 context.contentEpoch = 1;
 context.AbortController = class { constructor() { this.signal = {}; } abort() {} };
 context.setTimeout = () => 1;
@@ -163,7 +164,6 @@ context.rememberBufferedPage = () => {};
 context.pendingRelevantCount = () => 1; // mustBeFresh
 context.withPromiseTimeout = async promise => promise; // network answers "immediately"
 context.showToast = () => { throw new Error('should not toast'); };
-context.applyPageCalibrationWhenActive = () => { throw new Error('should not calibrate'); };
 context.pageMemoryBuffer = new Map();
 const data = await context.preparePageNavigation(2, 'all');
 assert.deepEqual(data, { items: [{ id: 1 }], total: 1 });
@@ -185,22 +185,25 @@ context.clearTimeout = () => {};
 let resolveNetwork;
 context.fetchNewsPage = () => new Promise(resolve => { resolveNetwork = resolve; });
 context.writeCachedNewsPage = async () => {};
-context.rememberBufferedPage = () => {};
+let warmed = null;
+context.rememberBufferedPage = (page, filter, data) => { warmed = data; };
 context.pendingRelevantCount = () => 1;
 // Simulates withPromiseTimeout's real race semantics losing to the timeout,
 // without needing a real timer in the test.
 context.withPromiseTimeout = async () => null;
-context.showToast = () => { throw new Error('should not toast'); };
+const notices = [];
+context.showToast = text => notices.push(text);
 context.newsPageCacheKey = (page, filter) => page + ':' + filter;
 // A snapshot buffered under a now-stale epoch — still usable as a downgrade.
 context.pageMemoryBuffer = new Map([['2:all', { data: { items: [{ id: 'stale' }] }, epoch: 1 }]]);
-let calibrated = null;
-context.applyPageCalibrationWhenActive = data => { calibrated = data; };
 const data = await context.preparePageNavigation(2, 'all');
-assert.deepEqual(data, { items: [{ id: 'stale' }] });
+assert.equal(data.items[0].id, 'stale');
+assert.equal(data.navigationFallback, true);
+assert.equal(notices.length, 1);
 resolveNetwork({ items: [{ id: 'fresh' }] });
 await new Promise(resolve => setTimeout(resolve, 20));
-assert.deepEqual(calibrated, { items: [{ id: 'fresh' }] });
+assert.deepEqual(warmed, { items: [{ id: 'fresh' }] });
+assert.equal(data.items[0].id, 'stale');
 """,
     )
 
@@ -390,33 +393,23 @@ def test_mobile_article_header_has_a_dedicated_double_tap_top_scroll_zone():
 
 def test_service_worker_rethrows_network_errors_without_a_cached_response():
     source = (ROOT / "frontend" / "sw.js").read_text(encoding="utf-8")
-    # Article detail is network-first: on a network failure it serves a cached
-    # copy only if one exists, otherwise it rethrows (never silently swallows).
-    article_detail_block = source[
-        source.index("// Article detail: network-first"):
-        source.index("// List / other API: network-first")
+    api_block = source[
+        source.index("if (url.pathname.startsWith('/api/')) {"):
+        source.index("// ── Static assets: cache-first ──")
     ]
-    assert "if (cached) return withSwFallbackMarker(cached);" in article_detail_block
-    assert "throw error;" in article_detail_block
+    assert "if (cached) return withSwFallbackMarker(cached);" in api_block
+    assert "throw error;" in api_block
 
 
 def test_service_worker_tags_list_api_fallback_responses():
     source = (ROOT / "frontend" / "sw.js").read_text(encoding="utf-8")
     assert "function withSwFallbackMarker(cached)" in source
     assert "headers.set('X-SW-Fallback', '1');" in source
-    list_api_block = source[
-        source.index("// List / other API: network-first"):
+    api_block = source[
+        source.index("if (url.pathname.startsWith('/api/')) {"):
         source.index("// ── Static assets: cache-first ──")
     ]
-    assert "if (cached) return withSwFallbackMarker(cached);" in list_api_block
-    # Article detail is network-first too: its cached copy is only ever served
-    # as an offline failure fallback (never as a fresh hit), so — like the list —
-    # it must be tagged so callers can tell it apart from a live response.
-    article_detail_block = source[
-        source.index("// Article detail: network-first"):
-        source.index("// List / other API: network-first")
-    ]
-    assert "if (cached) return withSwFallbackMarker(cached);" in article_detail_block
+    assert "if (cached) return withSwFallbackMarker(cached);" in api_block
 
 
 def source_between(start, end):
@@ -607,14 +600,16 @@ def test_service_worker_api_cache_eviction_preserves_recent_offline_entries():
 const pending = [];
 const event = { waitUntil: promise => pending.push(promise) };
 for (let id = 1; id <= 100; id++) {
-  context.cacheApiResponse(event, '/api/news/' + id, { id });
+  context.cacheApiResponse(event, '/api/news/' + id, Response.json({ id }));
 }
+context.cacheApiResponse(event, '/api/news/100', Response.json({ error: 'upstream unavailable' }));
 await Promise.all(pending);
 assert.equal(context.entries.size, 96);
 assert.equal(context.entries.has('/api/news/1'), false);
 assert.equal(context.entries.has('/api/news/4'), false);
 assert.equal(context.entries.has('/api/news/5'), true);
 assert.equal(context.entries.has('/api/news/100'), true);
+assert.deepEqual(await context.entries.get('/api/news/100').json(), {id: 100});
 """,
         setup="""
 context.API_CACHE = 'test-api-cache';
@@ -624,6 +619,53 @@ context.entries = new Map();
 context.caches = { open: async () => ({
   put: async (key, value) => { context.entries.set(key, value); },
   keys: async () => Array.from(context.entries.keys()),
+  delete: async key => context.entries.delete(key),
+}) };
+""",
+    )
+
+
+def test_service_worker_polling_keeps_article_detail_in_offline_cache():
+    source = (ROOT / "frontend" / "sw.js").read_text(encoding="utf-8")
+    run_node(
+        source,
+        """
+async function request(path) {
+  let response, pending = [];
+  context.handlers.fetch({
+    request: new Request('https://reader.example' + path),
+    respondWith: promise => { response = promise; },
+    waitUntil: promise => pending.push(promise),
+  });
+  const resolved = await response;
+  await Promise.all(pending);
+  return resolved;
+}
+await request('/api/news/7');
+for (let cursor = 1; cursor <= 100; cursor++) await request('/api/news?since=' + cursor);
+assert.deepEqual([...context.entries.keys()], ['https://reader.example/api/news/7']);
+context.offline = true;
+const detail = await request('/api/news/7');
+assert.equal(detail.headers.get('X-SW-Fallback'), '1');
+assert.deepEqual(await detail.json(), {items: []});
+await assert.rejects(request('/api/news?since=1'), /offline/);
+""",
+        setup="""
+Object.assign(context, {URL, Request, Response, Headers, AbortController, setTimeout, clearTimeout});
+context.handlers = {};
+context.self = {
+  location: {origin: 'https://reader.example'},
+  addEventListener: (event, callback) => { context.handlers[event] = callback; },
+};
+context.entries = new Map();
+context.fetch = async () => {
+  if (context.offline) throw new Error('offline');
+  return Response.json({items: []});
+};
+context.caches = { open: async () => ({
+  put: async (key, value) => context.entries.set(key.url, value),
+  keys: async () => Array.from(context.entries.keys()),
+  match: async key => context.entries.get(key.url)?.clone(),
   delete: async key => context.entries.delete(key),
 }) };
 """,
@@ -682,6 +724,7 @@ context.applyPageDuringScroll = (data, page, activeFilter) => {
   context.applied.push([data.marker, page, activeFilter]);
   return { marker: 'transition-list' };
 };
+context.topCatEntries = () => ['all', 'cat:Politics', 'cat:Finance', 'cat:Newer'].map(key => ({key}));
 context.applied = [];
 context.releasePageTransitionLock = list => context.released.push(list && list.marker);
 context.released = [];
@@ -690,7 +733,7 @@ context.released = [];
 
 def test_top_category_bar_enables_scroll_navigation_mode():
     top_bar = source_between("function renderTopCatBar()", "function toggleCategoryExpansion")
-    assert "selectFilter(btn.dataset.f, { scrollToTop: true });" in top_bar
+    assert "selectFilter(btn.dataset.f);" in top_bar
 
 
 def test_active_top_category_on_first_page_only_scrolls_without_loading():
@@ -1449,6 +1492,7 @@ context.refreshFlowGeneration = 0;
 context.refreshFlowController = null;
 context.authToken = 'token';
 context.document = {{ hidden: false }};
+context.window = {{ scrollY: 0 }};
 context.filter = 'all';
 context.currentPage = 1;
 context.pageNavigationSequence = 3;
@@ -1898,6 +1942,7 @@ context.window = { scrollY: 200 };
 context.labels = [];
 context.setRefreshProgressLabel = count => context.labels.push(count);
 context.applyStreamedRefreshBatch = async () => { context.applyCalls++; };
+context.loadNewsPage = async () => { context.loadCalls++; };
 context.applyCalls = 0;
 context.pollRefreshJob = async (jobId, timeout, signal, onProgress) => {
   onProgress({ new_count_so_far: 4, new_ids_so_far: [201, 202, 203, 204] });
@@ -1906,6 +1951,8 @@ context.pollRefreshJob = async (jobId, timeout, signal, onProgress) => {
 await context.triggerRefresh();
 assert.deepEqual(context.labels, [4]);
 assert.equal(context.applyCalls, 0);
+assert.equal(context.loadCalls, 0);
+assert.equal(context.loadSinceCalls.length, 2);
 """,
     )
 
@@ -2266,7 +2313,9 @@ context.applies = 0;
 context.consumes = 0;
 context.filter = 'all';
 context.currentPage = 1;
+context.pageNavigationPending = false;
 context.window = { scrollY: 0 };
+context.document = { hidden: false };
 context.hasBlockingOverlayOpen = () => false;
 context.lastUserActivityAt = 0;
 context.IDLE_LATEST_DELAY_MS = 1;
@@ -2426,7 +2475,7 @@ assert.deepEqual(result, { items: [{ id: 1 }] });
 
 
 def test_load_news_page_stamps_cache_writes_with_the_epoch_captured_at_request_start():
-    load_page = source_between("async function loadNewsPage(", "function applyPageCalibrationWhenActive")
+    load_page = source_between("async function loadNewsPage(", "async function preparePageNavigation(")
     run_node(
         load_page,
         """
@@ -2702,7 +2751,7 @@ assert.equal(context.settingsRefreshCalls, 1);
 
 
 def test_load_news_page_checks_application_guard_before_mutating_visible_list():
-    load_page = source_between("async function loadNewsPage(", "function applyPageCalibrationWhenActive")
+    load_page = source_between("async function loadNewsPage(", "async function preparePageNavigation(")
     run_node(
         load_page,
         """
@@ -2742,7 +2791,7 @@ assert.equal(context.applied, 0);
 
 
 def test_manual_refresh_completion_list_fetch_is_aborted_by_flow_signal():
-    load_page = source_between("async function loadNewsPage(", "function applyPageCalibrationWhenActive")
+    load_page = source_between("async function loadNewsPage(", "async function preparePageNavigation(")
     run_node(
         load_page,
         """
@@ -2795,7 +2844,7 @@ assert.equal(context.applied, 0);
 
 
 def test_startup_empty_network_response_keeps_nonempty_cached_articles_visible():
-    load_page = source_between("async function loadNewsPage(", "function applyPageCalibrationWhenActive")
+    load_page = source_between("async function loadNewsPage(", "async function preparePageNavigation(")
     run_node(
         load_page,
         """
@@ -2848,7 +2897,7 @@ assert.equal(context.cacheWrites, 0);
 
 
 def test_load_news_page_checks_application_guard_before_applying_cached_list():
-    load_page = source_between("async function loadNewsPage(", "function applyPageCalibrationWhenActive")
+    load_page = source_between("async function loadNewsPage(", "async function preparePageNavigation(")
     run_node(
         load_page,
         """
@@ -2888,7 +2937,7 @@ assert.equal(context.applied, 0);
 
 
 def test_overlapping_list_request_finally_cannot_clear_newer_pending_marker():
-    load_page = source_between("async function loadNewsPage(", "function applyPageCalibrationWhenActive")
+    load_page = source_between("async function loadNewsPage(", "async function preparePageNavigation(")
     run_node(
         load_page,
         """
@@ -3339,10 +3388,12 @@ def test_idle_latest_apply_exits_after_refresh_flow_cancellation_during_cache_wr
         show_latest,
         """
 context.filter = 'all';
-context.currentPage = 2;
+context.currentPage = 1;
+context.pageNavigationPending = false;
 context.contentEpoch = 5;
 context.pendingRelevantCount = () => 1;
 context.document = { hidden: false };
+context.window = { scrollY: 0 };
 context.hasBlockingOverlayOpen = () => false;
 context.lastUserActivityAt = 0;
 context.IDLE_LATEST_DELAY_MS = 1;
@@ -3367,80 +3418,47 @@ current = false;
 controller.abort();
 finishCacheWrite();
 await applying;
-assert.equal(context.currentPage, 2);
+assert.equal(context.currentPage, 1);
 assert.equal(context.scrollCalls, 0);
 assert.equal(context.applyCalls, 0);
 """,
     )
 
 
-def test_idle_latest_scroll_stops_after_owning_refresh_flow_is_cancelled():
-    cancel_flow = source_between("function cancelRefreshFlow()", "function cancelViewBoundRefreshWork()")
+def test_idle_latest_keeps_pending_items_if_reader_scrolls_during_fetch():
     show_latest = source_between("async function showLatestAfterIdle(", "function scheduleAdjacentPagePrefetch")
-    scroll_to_top = source_between("function scrollPageToTop(", "function stabilizePageTop")
     run_node(
-        cancel_flow + show_latest + scroll_to_top,
+        show_latest,
         """
-const frames = [];
-context.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
-context.performance = { now: () => 0 };
-context.window = {
-  scrollY: 100,
-  scrollTo: () => { context.scrollCalls++; },
-};
-context.document = { hidden: false, documentElement: { scrollTop: 0 } };
-context.activeScrollMotion = null;
-context.PAGE_SWITCH_TOP_THRESHOLD = 4;
-context.filter = 'all';
-context.currentPage = 2;
+context.window = { scrollY: 100 };
+context.document = { hidden: false };
+context.filter = 'cat:News';
+context.currentPage = 1;
+context.pageNavigationPending = false;
 context.contentEpoch = 5;
-context.pendingNewArticleCount = 1;
-context.pendingRelevantCount = () => context.pendingNewArticleCount;
+context.pendingRelevantCount = () => 1;
 context.hasBlockingOverlayOpen = () => false;
 context.lastUserActivityAt = 0;
 context.IDLE_LATEST_DELAY_MS = 1;
 context.Date = { now: () => 100 };
-context.fetchNewsPage = async () => ({ items: [{ id: 7 }] });
-context.writeCachedNewsPage = async () => {};
-context.applyCalls = 0;
-context.applyNewsPage = () => { context.applyCalls++; };
-context.consumeCalls = 0;
-context.consumePendingNewArticles = () => { context.consumeCalls++; };
-context.syncCalls = 0;
-context.syncListUrl = () => { context.syncCalls++; };
-context.scrollCalls = 0;
-context.programmaticScrollUntil = 0;
-context.refreshInProgress = true;
-context.refreshFlowGeneration = 1;
-const controller = new AbortController();
-context.refreshFlowController = controller;
-context.setRefreshRunning = running => { context.refreshInProgress = running; };
-const applying = context.showLatestAfterIdle({
-  externalSignal: controller.signal,
-  applicationGuard: () => context.refreshFlowController === controller && !controller.signal.aborted,
-});
-while (frames.length === 0) await Promise.resolve();
-// Let the motion begin, then invalidate its owning refresh flow before its next frame.
-frames.shift()(0);
-await Promise.resolve();
-assert.equal(context.scrollCalls, 1);
-assert.ok(frames.length > 0);
-context.cancelRefreshFlow();
-const scrollCallsAtCancel = context.scrollCalls;
-const programmaticScrollAtCancel = context.programmaticScrollUntil;
-while (frames.length) {
-  frames.shift()(400);
-  await Promise.resolve();
-}
+let finishFetch;
+let fetches = 0;
+context.fetchNewsPage = () => {
+  fetches++;
+  return new Promise(resolve => { finishFetch = resolve; });
+};
+context.writeCachedNewsPage = () => assert.fail('cache write after scrolling');
+context.applyNewsPage = () => assert.fail('apply after scrolling');
+context.consumePendingNewArticles = () => assert.fail('prompt consumed after scrolling');
+await context.showLatestAfterIdle();
+assert.equal(fetches, 0);
+context.window.scrollY = 0;
+const applying = context.showLatestAfterIdle();
+assert.equal(fetches, 1);
+context.window.scrollY = 720;
+finishFetch({items: [{id: 7}]});
 await applying;
-assert.equal(context.scrollCalls, scrollCallsAtCancel);
-assert.equal(context.applyCalls, 0);
-assert.equal(context.consumeCalls, 0);
-assert.equal(context.syncCalls, 0);
-assert.equal(context.currentPage, 2);
-assert.equal(context.pendingNewArticleCount, 1);
-assert.equal(context.contentEpoch, 5);
-assert.equal(context.programmaticScrollUntil, programmaticScrollAtCancel);
+assert.equal(context.window.scrollY, 720);
 """,
     )
 
@@ -3854,7 +3872,7 @@ def test_load_news_page_surfaces_a_toast_for_sw_fallback_failures_even_when_quie
     # A SW-fallback failure is the one exception — see isSwFallbackResponse().
     params = source_between("function buildNewsPageParams(", "function listUrlForState")
     fetch_page = source_between("function isSwFallbackResponse(", "function warmPageCoverImages")
-    load_page = source_between("async function loadNewsPage(", "function applyPageCalibrationWhenActive")
+    load_page = source_between("async function loadNewsPage(", "async function preparePageNavigation(")
     run_node(
         params + fetch_page + load_page,
         """
@@ -3902,7 +3920,7 @@ def test_load_news_page_stays_quiet_for_ordinary_background_prefetch_failures():
     # shape must remain silent, same as before this change.
     params = source_between("function buildNewsPageParams(", "function listUrlForState")
     fetch_page = source_between("function isSwFallbackResponse(", "function warmPageCoverImages")
-    load_page = source_between("async function loadNewsPage(", "function applyPageCalibrationWhenActive")
+    load_page = source_between("async function loadNewsPage(", "async function preparePageNavigation(")
     run_node(
         params + fetch_page + load_page,
         """
@@ -3943,7 +3961,7 @@ assert.deepEqual(context.toasts, []);
 def test_real_load_news_page_forwards_source_snapshot_to_fetch_query():
     params = source_between("function buildNewsPageParams(", "function listUrlForState")
     fetch_page = source_between("async function fetchNewsPage(", "function warmPageCoverImages")
-    load_page = source_between("async function loadNewsPage(", "function applyPageCalibrationWhenActive")
+    load_page = source_between("async function loadNewsPage(", "async function preparePageNavigation(")
     run_node(
         params + fetch_page + load_page,
         """
@@ -3978,7 +3996,7 @@ context.fetch = async (url, options) => {
   assert.ok(options.signal);
   return {
     ok: true,
-    json: async () => ({ items: [{ id: 1 }], total: 1 }),
+    json: async () => ({ page: 1, items: [{ id: 1 }], total: 1 }),
   };
 };
 context.setTimeout = () => 1;
@@ -4130,7 +4148,7 @@ assert.equal(context.applied, 0);
 
 
 def test_cold_start_network_retry_uses_a_fresh_abort_controller():
-    load_page = source_between("async function loadNewsPage(", "function applyPageCalibrationWhenActive")
+    load_page = source_between("async function loadNewsPage(", "async function preparePageNavigation(")
     run_node(
         load_page,
         """
@@ -4196,7 +4214,7 @@ assert.equal(context.pageRequestPendingSequence, 0);
 
 
 def test_hung_page_cache_read_cannot_block_cold_start_network():
-    load_page = source_between("async function loadNewsPage(", "function applyPageCalibrationWhenActive")
+    load_page = source_between("async function loadNewsPage(", "async function preparePageNavigation(")
     run_node(
         load_page,
         """
@@ -4243,7 +4261,7 @@ assert.deepEqual(context.applied, ['fresh']);
 
 
 def test_hung_page_cache_write_cannot_block_fresh_network_application():
-    load_page = source_between("async function loadNewsPage(", "function applyPageCalibrationWhenActive")
+    load_page = source_between("async function loadNewsPage(", "async function preparePageNavigation(")
     run_node(
         load_page,
         """
@@ -4285,7 +4303,7 @@ assert.deepEqual(context.applied, ['fresh']);
 
 
 def test_network_timeout_aborts_first_attempt_then_retries_with_fresh_controller():
-    load_page = source_between("async function loadNewsPage(", "function applyPageCalibrationWhenActive")
+    load_page = source_between("async function loadNewsPage(", "async function preparePageNavigation(")
     run_node(
         load_page,
         """
@@ -4366,7 +4384,7 @@ assert.deepEqual(context.applied, ['fresh']);
 
 
 def test_retry_stops_when_an_overlapping_request_supersedes_the_owner():
-    load_page = source_between("async function loadNewsPage(", "function applyPageCalibrationWhenActive")
+    load_page = source_between("async function loadNewsPage(", "async function preparePageNavigation(")
     run_node(
         load_page,
         """
@@ -4424,7 +4442,7 @@ assert.equal(context.pageRequestPendingSequence, 0);
 
 
 def test_final_cold_start_failure_keeps_cached_articles_visible():
-    load_page = source_between("async function loadNewsPage(", "function applyPageCalibrationWhenActive")
+    load_page = source_between("async function loadNewsPage(", "async function preparePageNavigation(")
     run_node(
         load_page,
         """

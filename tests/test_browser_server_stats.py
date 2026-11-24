@@ -19,6 +19,7 @@ def statistics(memory_used=64 * 1024**2):
                     'avatars': 0, 'misc': 1024**2, 'data_dir_total': 8 * 1024**2},
         'disk': {'used': 2 * 1024**3, 'total': 8 * 1024**3, 'free': 6 * 1024**3},
         'image_cache': {'used_bytes': 4 * 1024**2, 'max_bytes': 16 * 1024**2, 'enabled': True},
+        'tts_cache': {'used_bytes': 16 * 1024**2, 'max_bytes': 256 * 1024**2, 'count': 3},
         'counts': {'articles': 1234, 'cached_images': 70, 'favorites': 35, 'users': 12},
         'container': {'cpu_percent': 12.5, 'cpu_count': 2,
                       'mem_used_bytes': memory_used, 'mem_limit_bytes': 256 * 1024**2},
@@ -53,6 +54,7 @@ def test_stats_render_and_refresh_with_formatted_memory_disk_and_storage(browser
         expect(panel).to_contain_text('2.0 GB / 8.0 GB')
         expect(panel).to_contain_text('8.0 MB / 8.0 GB')
         expect(panel).to_contain_text('图片缓存用量 4.0 MB / 16.0 MB (25%)')
+        expect(panel).to_contain_text('TTS 音频缓存用量 16.0 MB / 256.0 MB (6%)')
         expect(panel.locator('.admin-stat-num')).to_have_text(['1234', '70', '35', '12'])
         expect(panel).not_to_contain_text('加载中')
         assert page.evaluate('serverTodayDate') == '2026-10-21'

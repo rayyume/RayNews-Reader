@@ -63,7 +63,8 @@ def title_page():
             elif path == '/ai/translation-updates':
                 data = {'items': [], 'cursor': '2026-10-15 12:00:00.000|0'}
             elif path in ('/sources', '/api/sources'):
-                data = {'sources': [], 'categories': []}
+                data = {'sources': [], 'categories': ['News', 'Tech'],
+                        'category_names': {'News': '政经', 'Tech': '科技'}}
             elif path.endswith(('.png', '.ico')):
                 asset = ROOT/'frontend'/path.lstrip('/')
                 r.fulfill(body=asset.read_bytes(), content_type='image/png')
@@ -130,6 +131,86 @@ def test_page_first_paint_uses_titles_and_open_return_keeps_cards(title_page, wi
     page.screenshot(path=str(tmp_path/f'translated-list-{width}.png'))
 
 
+def test_late_page_revalidation_warms_cache_without_replacing_visible_cards(title_page, tmp_path):
+    page, control, release = title_page
+    control['enabled'] = False
+    page.set_viewport_size({'width': 390, 'height': 844})
+    page.goto('http://raynews.test/')
+    page.wait_for_function("pageMemoryBuffer.has(newsPageCacheKey(2, 'all'))")
+    delayed = []
+
+    def hold_page_two(route):
+        if parse_qs(urlsplit(route.request.url).query).get('page') == ['2']:
+            delayed.append(route)
+        else:
+            route.fallback()
+
+    page.route('**/api/news?*', hold_page_two)
+    page.get_by_role('button', name='下一页', exact=True).click()
+    expect(page.locator('#list .item').first).to_have_attribute('data-id', '31')
+    page.wait_for_function("currentPage === 2 && !pageNavigationPending")
+    assert len(delayed) == 1
+    page.evaluate("window.beforeLateResponse = document.querySelector('#list .item')")
+    delayed[0].fulfill(json={'page': 2, 'total': 90, 'items': [
+        {'id': 991, 'title': '新的缓存页面', 'source': 'Example', 'timestamp': 1792065800}
+    ]})
+    page.wait_for_function("pageMemoryBuffer.get(newsPageCacheKey(2, 'all')).data.items[0].id === 991")
+    assert page.evaluate("window.beforeLateResponse === document.querySelector('#list .item')")
+    page.evaluate("pendingNewItems = [{id: 991}]; pendingNewArticleCount = 1; lastUserActivityAt = 0")
+    page.evaluate("showLatestAfterIdle()")
+    assert page.evaluate("currentPage") == 2
+    expect(page.locator('#list .item').first).to_have_attribute('data-id', '31')
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(tmp_path / 'stable-page-2.png'))
+
+
+@pytest.mark.parametrize('standalone', [False, True])
+def test_home_swipe_switches_categories_and_reserves_browser_edges(title_page, tmp_path, standalone):
+    page, control, _ = title_page
+    control['enabled'] = False
+    page.set_viewport_size({'width': 430, 'height': 932})
+    page.add_init_script(f"Object.defineProperty(navigator, 'standalone', {{value: {str(standalone).lower()}}})")
+    page.goto('http://raynews.test/')
+    expect(page.locator('#list .item').first).to_be_visible()
+    page.wait_for_function("CATEGORY_ORDER[0] === 'News'")
+    initial_length = page.evaluate('history.length')
+    assert page.evaluate("document.documentElement.classList.contains('home-gestures')") == standalone
+    if standalone:
+        assert page.evaluate("getComputedStyle(document.querySelector('.header')).backdropFilter") == 'none'
+        assert page.evaluate("getComputedStyle(document.querySelector('.header')).backgroundColor") == page.evaluate(
+            "getComputedStyle(document.documentElement).backgroundColor"
+        )
+    page.evaluate("""() => {
+      window.categorySweeps = [];
+      document.getElementById('topCatBar').addEventListener('animationstart', event => {
+        if (event.animationName === 'category-sweep') categorySweeps.push(event.target.dataset.f);
+      });
+      window.swipeCategory = (x, endX, y, endY) => {
+        const target = document.querySelector('#list .item');
+        return [['touchstart', x, y], ['touchmove', endX, endY], ['touchend', endX, endY]].map(([type, clientX, clientY]) => {
+          const point = new Touch({target, identifier:7, clientX, clientY});
+          return !target.dispatchEvent(new TouchEvent(type, {bubbles:true, cancelable:true,
+            touches:type === 'touchend' ? [] : [point], changedTouches:[point]}));
+        });
+      };
+    }""")
+    assert page.evaluate('swipeCategory(425, 72, 250, 258)') == [standalone] * 3
+    if not standalone:
+        assert page.evaluate('swipeCategory(5, 320, 250, 248)') == [False] * 3
+        expect(page.locator('#topCatBar .active')).to_have_text('All')
+        page.evaluate('swipeCategory(325, 72, 250, 258)')
+    expect(page.locator('#topCatBar .active')).to_have_text('政经')
+    page.wait_for_function("categorySweeps.includes('cat:News') && !pageNavigationPending")
+    assert page.evaluate('history.length') == initial_length
+    assert 'category=News' in page.url
+    page.evaluate('swipeCategory(150, 161, 250, 480)')
+    expect(page.locator('#topCatBar .active')).to_have_text('政经')
+    page.screenshot(path=str(tmp_path / ('category-mobile-pwa.png' if standalone else 'category-mobile-browser.png')))
+    page.evaluate('swipeCategory(75, 320, 250, 248)')
+    expect(page.locator('#topCatBar .active')).to_have_text('All')
+    assert page.evaluate('history.length') == initial_length
+
+
 def test_slow_titles_do_not_block_navigation_and_arrive_without_replacing_cards(title_page):
     page, _, release = title_page
     page.goto('http://raynews.test/')
@@ -188,3 +269,135 @@ def test_title_refresh_and_preference_changes_preserve_source_selection_and_favo
     expect(page.locator('#favBody .fav-item-title')).to_have_text('Original headline 31')
     assert page.evaluate('window.sourceCheck === document.querySelector(".source-article-check[data-article-id=\\"31\\"]") && window.sourceCheck.checked')
     assert page.evaluate('window.favoriteCard === document.querySelector("#favBody .fav-item")')
+
+
+def test_slow_page_navigation_retains_focus_and_recovers_from_deleted_page(title_page):
+    page, control, _ = title_page
+    control['enabled'] = False
+    page.set_viewport_size({'width': 390, 'height': 844})
+    page.goto('http://raynews.test/')
+    page.wait_for_function("pageMemoryBuffer.has(newsPageCacheKey(2, 'all'))")
+    page.evaluate("async () => { pageMemoryBuffer.clear(); await clearCachedNewsPages(); }")
+    deleted, recovered = [], []
+
+    def hold_page(route):
+        params = parse_qs(urlsplit(route.request.url).query)
+        if params.get('page') == ['2']:
+            deleted.append(route)
+        elif params.get('page') == ['1']:
+            recovered.append(route)
+        else:
+            route.fallback()
+
+    page.route('**/api/news?*', hold_page)
+    next_button = page.get_by_role('button', name='下一页', exact=True)
+    next_button.focus()
+    next_button.press('Enter')
+    expect(next_button).to_be_focused()
+    expect(next_button).to_be_disabled()
+    expect(page.locator('#pagination [role=status]')).to_have_text('1 / 3 · 加载中…')
+    expect(page.locator('#list .item')).to_have_count(30)
+    for _ in range(100):
+        if deleted:
+            break
+        page.wait_for_timeout(20)
+    assert len(deleted) == 1
+    deleted[0].fulfill(json={'items': [], 'page': 2, 'total': 12})
+    for _ in range(100):
+        if recovered:
+            break
+        page.wait_for_timeout(20)
+    assert len(recovered) == 1
+    expect(page.locator('#list .item')).to_have_count(30)
+    recovered[0].fulfill(json={'page': 1, 'total': 12, 'items': [
+        {'id': index, 'title': f'Remaining headline {index}', 'source': 'Example'}
+        for index in range(1, 13)
+    ]})
+    expect(page.locator('#list .item')).to_have_count(12)
+    expect(page.locator('#list')).to_be_focused()
+    expect(page.locator('#list')).to_have_attribute('aria-busy', 'false')
+    assert page.evaluate('currentPage') == 1
+    assert 'page=2' not in page.url
+
+
+def test_search_labels_cached_results_and_updates_on_reconnect(title_page):
+    page, control, _ = title_page
+    control['enabled'] = False
+    page.goto('http://raynews.test/')
+    searches = []
+
+    def route(request):
+        params = parse_qs(urlsplit(request.request.url).query)
+        if params.get('q') != ['城市交通']:
+            request.fallback()
+            return
+        searches.append(request)
+        cached = len(searches) == 1
+        request.fulfill(headers={'X-SW-Fallback': '1'} if cached else {}, json={
+            'items': [{'id': 111, 'title': '缓存摘要' if cached else '在线搜索结果', 'source': 'Example',
+                       'date': '2026-11-24', 'time': '12:05', 'timestamp': 1795512300}],
+            'page': 1, 'total': 1,
+        })
+
+    page.route('**/api/news?*', route)
+    page.evaluate('openSearch()')
+    page.locator('#articleSearchInput').fill('城市交通')
+    expect(page.locator('#searchStatus')).to_contain_text('缓存结果')
+    expect(page.locator('#searchResults .item-title')).to_have_text('缓存摘要')
+    expect(page.locator('#searchResults').get_by_role('button', name='重新搜索')).to_be_visible()
+    page.evaluate("window.dispatchEvent(new Event('online'))")
+    expect(page.locator('#searchResults .item-title')).to_have_text('在线搜索结果')
+    expect(page.locator('#searchStatus')).to_have_text('已显示 1 / 1 条与「城市交通」相关的新闻')
+    assert len(searches) == 2
+
+
+def test_category_background_refresh_waits_for_reader_to_reveal_news(title_page):
+    page, control, _ = title_page
+    control['enabled'] = False
+    page.set_viewport_size({'width': 390, 'height': 844})
+    page.goto('http://raynews.test/')
+    page.wait_for_function("pageMemoryBuffer.has(newsPageCacheKey(2, 'all'))")
+    page.evaluate("void selectFilter('cat:News')")
+    page.wait_for_function("filter === 'cat:News' && !pageNavigationPending")
+    page.evaluate("""() => {
+      loadSourceCategories = async () => true;
+      sourceMeta['Example'] = {category:'News', label:'Example'};
+    }""")
+    held = []
+    cursor = 1792066000
+    newest = {'id': 888, 'title': '后台新增新闻', 'source': 'Example', 'timestamp': cursor + 100}
+    refreshed = {'page': 1, 'total': 91, 'items': [newest] + [
+        {'id': index, 'title': f'Original headline {index}', 'source': 'Example', 'timestamp': cursor - index}
+        for index in range(1, 30)
+    ]}
+
+    def route(request):
+        params = parse_qs(urlsplit(request.request.url).query)
+        if 'since' in params:
+            request.fulfill(json={'items': [newest]})
+        elif params.get('page') == ['1'] and params.get('category') == ['News']:
+            if not held:
+                held.append(request)
+            else:
+                request.fulfill(json=refreshed)
+        else:
+            request.fallback()
+
+    page.route('**/api/news?*', route)
+    page.evaluate(f"void loadSince({cursor})")
+    for _ in range(100):
+        if held:
+            break
+        page.wait_for_timeout(20)
+    assert held
+    page.evaluate('window.scrollTo(0, 720)')
+    page.wait_for_function('scrollY >= 700')
+    before = page.evaluate('scrollY')
+    held[0].fulfill(json=refreshed)
+    prompt = page.locator('#newArticlesPrompt')
+    expect(prompt).to_have_class('new-articles-prompt show')
+    expect(page.locator('#list .item').first).to_have_attribute('data-id', '1')
+    assert page.evaluate('scrollY') == before
+    prompt.click()
+    expect(page.locator('#list .item').first).to_have_attribute('data-id', '888')
+    expect(prompt).to_have_class('new-articles-prompt')

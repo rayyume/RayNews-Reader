@@ -65,11 +65,11 @@ def test_viewport_and_root_prepare_translucent_status_bar_safe_area():
     assert "viewport-fit=cover" in HTML
     assert '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">' in HTML
     assert "appleStatusBarMeta" not in HTML
-    assert "html{font-size:16px;scroll-behavior:smooth;-webkit-font-smoothing:antialiased;max-width:100%;overflow-x:hidden;background:var(--bg)}" in HTML
+    assert "html{font-size:16px;scroll-behavior:auto;-webkit-font-smoothing:antialiased;max-width:100%;overflow-x:hidden;background:var(--bg)}" in HTML
     assert "padding:env(safe-area-inset-top,0px)" in HTML
 
 
-def test_ios_headers_keep_translucent_blur():
+def test_ios_standalone_headers_use_a_solid_safe_area():
     from test_frontend_refresh_behavior import HTML
 
     assert ".header{position:fixed;top:0;" in HTML
@@ -77,4 +77,4 @@ def test_ios_headers_keep_translucent_blur():
     assert ".topcat-bar{position:fixed;" in HTML
     assert ".overlay-header{position:sticky;" in HTML
     assert ".search-header{flex-shrink:0;" in HTML
-    assert ".header,.topcat-bar,.overlay-header,.search-header{background:var(--bg);backdrop-filter:none" not in HTML
+    assert ".ios-standalone :is(.header,.topcat-bar,.overlay-header,.search-header){background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}" in HTML

@@ -242,9 +242,19 @@ def _trusted_environment_proxy(url: str) -> _TrustedProxy | None:
 class _BoundConnectionMixin:
     """Connect urllib3 to prevalidated sockaddrs without resolving again."""
 
-    def __init__(self, *args, resolved_addresses: tuple[tuple, ...], **kwargs):
+    def __init__(self, *args, resolved_addresses: tuple[tuple, ...], on_connect=None, **kwargs):
         self._resolved_addresses = resolved_addresses
+        self._on_connect = on_connect
         super().__init__(*args, **kwargs)
+
+    def connect(self):
+        super().connect()
+        if self._on_connect is not None:
+            try:
+                self._on_connect(self.sock)
+            except BaseException:
+                self.close()
+                raise
 
     def _new_conn(self) -> socket.socket:
         last_error: OSError | None = None
@@ -302,9 +312,11 @@ class _BoundAddressAdapter(HTTPAdapter):
         resolved_addresses: tuple[tuple, ...],
         *,
         trusted_proxy: _TrustedProxy | None = None,
+        on_connect=None,
     ):
         self._resolved_addresses = resolved_addresses
         self._trusted_proxy = trusted_proxy
+        self._on_connect = on_connect
         self._proxy_manager = (
             ProxyManager(trusted_proxy.url) if trusted_proxy is not None else None
         )
@@ -323,6 +335,7 @@ class _BoundAddressAdapter(HTTPAdapter):
                 proxy.host,
                 proxy.port,
                 resolved_addresses=self._trusted_proxy.resolved_addresses,
+                on_connect=self._on_connect,
             )
         if parsed.scheme == "https":
             proxy_kwargs = {}
@@ -338,6 +351,7 @@ class _BoundAddressAdapter(HTTPAdapter):
                 parsed.hostname,
                 parsed.port,
                 resolved_addresses=connection_addresses,
+                on_connect=self._on_connect,
                 **proxy_kwargs,
                 **(pool_kwargs or {}),
             )
@@ -345,6 +359,7 @@ class _BoundAddressAdapter(HTTPAdapter):
             parsed.hostname,
             parsed.port,
             resolved_addresses=self._resolved_addresses,
+            on_connect=self._on_connect,
         )
 
     def get_connection_with_tls_context(
@@ -376,6 +391,7 @@ def _send_bound_request(
     method: str,
     resolved_addresses: tuple[tuple, ...],
     trusted_proxy: _TrustedProxy | None = None,
+    on_connect=None,
     **kwargs,
 ) -> requests.Response:
     """Send one hop through an adapter bound to the validated socket addresses."""
@@ -389,7 +405,7 @@ def _send_bound_request(
     )
     session = requests.Session()
     session.trust_env = False
-    adapter = _BoundAddressAdapter(resolved_addresses, trusted_proxy=trusted_proxy)
+    adapter = _BoundAddressAdapter(resolved_addresses, trusted_proxy=trusted_proxy, on_connect=on_connect)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     try:

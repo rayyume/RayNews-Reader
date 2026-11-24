@@ -13,6 +13,7 @@ from difflib import SequenceMatcher
 SIGNAL_VERSION = 1
 MIN_EVENT_SCORE = 55
 MAX_DIGEST_EVENTS = 60
+SEMANTIC_CANDIDATE_LIMIT = 90
 
 
 def _plain(value: object, limit: int = 160) -> str:
@@ -101,24 +102,37 @@ def group_events(articles: list[dict]) -> list[dict]:
             group = {"signal": signal, "articles": []}
             groups.append(group)
         group["articles"].append(article)
-        # Prefer the article with the clearest facts as the representative.
-        representative = max(
-            group["articles"],
-            key=lambda item: (
-                item["digest_signals"]["evidence"],
-                bool(item.get("summary")),
-                int(item.get("ingested_at") or 0),
-            ),
-        )
-        group["representative"] = representative
-        group["signal"] = representative["digest_signals"]
+        _select_representative(group)
     return groups
+
+
+def _select_representative(group: dict) -> None:
+    representative = max(group["articles"], key=lambda article: (
+        article["digest_signals"]["evidence"],
+        bool(article.get("summary")),
+        int(article.get("ingested_at") or 0),
+    ))
+    group["representative"] = representative
+    group["signal"] = representative["digest_signals"]
+
+
+def merge_event_groups(groups: list[dict], clusters: list[list[int]]) -> list[dict]:
+    by_id = {group["representative"]["id"]: group for group in groups}
+    absorbed = set()
+    for primary, *duplicates in clusters:
+        group = by_id[primary]
+        for duplicate in duplicates:
+            group["articles"].extend(by_id[duplicate]["articles"])
+        absorbed.update(duplicates)
+        _select_representative(group)
+    return [group for key, group in by_id.items() if key not in absorbed]
 
 
 def rank_events(groups: list[dict], previous: list[dict], *, cutoff: int,
                 max_events: int = MAX_DIGEST_EVENTS, min_score: int = MIN_EVENT_SCORE,
-                min_events: int = 0) -> list[dict]:
+                min_events: int = 0, candidate_ids: set[int] | None = None) -> list[dict]:
     for group in groups:
+        group.pop("selection_basis", None)
         signal = group["signal"].copy()
         for field in ("impact", "novelty", "evidence"):
             signal[field] = max(article["digest_signals"][field] for article in group["articles"])
@@ -142,7 +156,9 @@ def rank_events(groups: list[dict], previous: list[dict], *, cutoff: int,
         )
         group["publisher_count"] = len(publishers)
         group["reason"] = ""
-        if any(same_event(signal, old) for old in previous) and not signal["material_update"]:
+        if candidate_ids is not None and group["representative"]["id"] not in candidate_ids:
+            group["reason"] = "outside semantic review"
+        elif any(same_event(signal, old) for old in previous) and not signal["material_update"]:
             group["reason"] = "already covered"
         elif group["score"] < min_score and not (
             signal["impact"] >= 4 and signal["evidence"] >= 2

@@ -86,6 +86,39 @@ def test_matching_specific_event_merges_different_source_wording():
     assert len(engine.group_events([left, right])) == 1
 
 
+def test_model_groups_paraphrased_events_across_categories_and_leaves_later_event_separate(monkeypatch):
+    launch = article(1, '甲报', '星河公司发布新一代芯片', entity='星河公司')
+    paraphrase = article(2, '乙报', 'Galaxy unveils next-gen processors', entity='Galaxy')
+    paraphrase['category'] = 'Tech'
+    later = article(3, '丙报', '星河公司撤回该芯片并宣布召回', entity='星河公司')
+    later['digest_signals']['action'] = '召回'
+    groups = engine.group_events([launch, paraphrase, later])
+    assert len(groups) == 3
+    service = AIService(api_key='unused', endpoint='https://example.test', model='mock')
+
+    def chat(messages, **kwargs):
+        assert {item['id'] for item in json.loads(messages[1]['content'])} == {1, 2, 3}
+        return '{"duplicates":[[2,1]]}'
+
+    monkeypatch.setattr(service, 'chat', chat)
+    merged = engine.merge_event_groups(groups, service.cluster_digest_events(groups))
+    ranked = engine.rank_events(merged, [], cutoff=2000, min_events=2)
+    assert {frozenset(row['id'] for row in group['articles']) for group in ranked} == {
+        frozenset({1, 2}), frozenset({3}),
+    }
+    assert ranked[0]['publisher_count'] == 2
+
+
+@pytest.mark.parametrize('response', ['{"duplicates":[[1,99]]}', '{"duplicates":[[1,2],[2,1]]}',
+                                      '{"duplicates":[[true,2]]}', '{"duplicates":[[1,1]]}'])
+def test_semantic_dedup_rejects_unknown_overlapping_and_invalid_ids(monkeypatch, response):
+    service = AIService(api_key='unused', endpoint='https://example.test', model='mock')
+    monkeypatch.setattr(service, 'chat', lambda *args, **kwargs: response)
+    groups = engine.group_events([article(1, '甲', '第一起事件'), article(2, '乙', '另一件新闻')])
+    with pytest.raises(ValueError, match='invalid duplicate event IDs'):
+        service.cluster_digest_events(groups)
+
+
 def test_relative_ranking_fills_requested_count_even_with_low_scores():
     reliable = article(1, "甲报", "机构A发布消息", impact=2, entity="机构A")
     fallback = article(2, "乙报", "机构B发布消息", impact=2, entity="机构B")
@@ -245,7 +278,8 @@ def test_beijing_cutoff_and_shared_category_mapping(tmp_path, monkeypatch):
     assert [r["id"] for r in web_server._fetch_articles_by_date("2026-09-24")] == [3]
 
 
-def test_generation_persists_selected_and_rejected_events(tmp_path, monkeypatch):
+@pytest.mark.parametrize("fallback", [False, True])
+def test_generation_persists_selected_and_rejected_events(tmp_path, monkeypatch, fallback):
     db_path = tmp_path / "news.db"
     monkeypatch.setattr(fetcher, "DB_FILE", db_path)
     monkeypatch.setattr(web_server, "NEWS_DB", str(db_path))
@@ -255,6 +289,7 @@ def test_generation_persists_selected_and_rejected_events(tmp_path, monkeypatch)
         (1, "甲报", "A公司公布重大决定"),
         (2, "乙报", "A公司公布重大决定"),
         (3, "丙报", "普通消息"),
+        (4, "丁报", "StarCo Board approves its biggest decision"),
     ]:
         conn.execute("INSERT INTO articles "
                      "(id, title, source, group_source, date, timestamp, ingested_at, summary) "
@@ -280,20 +315,39 @@ def test_generation_persists_selected_and_rejected_events(tmp_path, monkeypatch)
                 "headline": "重大决定", "sentence": "A公司公布重大决定。"
             } for g in events}
 
+        def cluster_digest_events(self, events):
+            assert len(events) == 3
+            if fallback:
+                raise ValueError("invalid deduplication result")
+            original = next(group["representative"]["id"] for group in events
+                            if len(group["articles"]) == 2)
+            return [[original, 4]]
+
     monkeypatch.setattr(web_server, "AIService", FakeService)
     monkeypatch.setattr(web_server, "get_system_ai_config", lambda: {
         "enabled": True, "api_key": "key", "endpoint": "https://example.com",
         "model": "test", "provider_type": "openai",
     })
     result = web_server._generate_daily_summary_global("2026-09-23")
-    assert result["stats"]["total_articles"] == 3
-    assert result["stats"]["events"] == 2
-    assert result["stats"]["selected_events"] == 2
+    assert result["stats"]["total_articles"] == 4
+    expected_count = 3 if fallback else 2
+    assert result["stats"]["events"] == expected_count
+    assert result["stats"]["selected_events"] == expected_count
+    assert result["stats"]["semantic_review_candidates"] == 3
+    assert result["stats"]["semantic_merges"] == (0 if fallback else 1)
+    assert result["stats"]["semantic_dedup_fallback"] is fallback
+    assert result["stats"]["event_selection_scope"] == (
+        "all_rule_grouped_events" if fallback else "semantic_review"
+    )
     assert "重大决定" in result["summary"]
     with sqlite3.connect(db_path) as check:
         audit = check.execute("SELECT selected, reason FROM daily_digest_events ORDER BY selected DESC").fetchall()
-        assert audit == [(1, ""), (1, "")]
-        assert check.execute("SELECT COUNT(*) FROM ai_results WHERE digest_signals_json IS NOT NULL").fetchone()[0] == 3
+        assert audit == [(1, "")] * expected_count
+        records = [json.loads(row[0]) for row in check.execute("SELECT event_json FROM daily_digest_events")]
+        combined_ids = {1, 2} if fallback else {1, 2, 4}
+        assert any(set(record["article_ids"]) == combined_ids and record["publisher_count"] == len(combined_ids)
+                   for record in records)
+        assert check.execute("SELECT COUNT(*) FROM ai_results WHERE digest_signals_json IS NOT NULL").fetchone()[0] == 4
     assert web_server._generate_daily_summary_global("2026-09-23")["summary"] == result["summary"]
 
 

@@ -1221,7 +1221,7 @@ def api_news_list(params: dict) -> bytes:
                 "SELECT id, title, original_title, title_source, COALESCE(NULLIF(group_source, ''), NULLIF(feed_source, ''), source) AS source, "
                 "       feed_source, group_source, publisher_domain, origin_source, "
                 "       time, date, timestamp, thumb, has_full_content, telegraph_url, summary "
-                f"FROM articles{since_where} ORDER BY timestamp DESC LIMIT ?",
+                f"FROM articles{since_where} ORDER BY timestamp DESC, id DESC LIMIT ?",
                 (*since_args, size),
             ).fetchall()
             total = conn.execute(
@@ -1237,7 +1237,7 @@ def api_news_list(params: dict) -> bytes:
                 "FROM articles"
             )
             rows = conn.execute(
-                f"{base_select}{where_sql} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                f"{base_select}{where_sql} ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?",
                 (*args, size, offset),
             ).fetchall()
             total = conn.execute(

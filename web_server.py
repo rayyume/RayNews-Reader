@@ -62,7 +62,8 @@ from auth import init_auth, create_token, require_auth, require_role
 from auth_validation import is_valid_email
 from image_validation import detect_image_content_type
 from ai_service import AIService, _redact_api_error, validate_ai_endpoint_base_url
-from digest_engine import (MAX_DIGEST_EVENTS, SIGNAL_VERSION, normalize_signals, group_events,
+from digest_engine import (MAX_DIGEST_EVENTS, SEMANTIC_CANDIDATE_LIMIT, SIGNAL_VERSION,
+                           merge_event_groups, normalize_signals, group_events,
                            rank_events, render_digest)
 from daily_summary_config import (DEFAULT_HOUR as DAILY_SUMMARY_HOUR, DEFAULT_MINUTE as DAILY_SUMMARY_MINUTE,
                                   get_config as get_daily_summary_config, save_config as save_daily_summary_config)
@@ -2336,9 +2337,26 @@ def _generate_daily_summary_global(date_str: str) -> dict | None:
         if signal_failures == len(articles):
             raise RuntimeError("AI event signal generation failed")
         groups = group_events(articles)
+        previous = _previous_digest_signals(date_str)
+        candidates = rank_events(
+            groups, previous, cutoff=cutoff,
+            max_events=SEMANTIC_CANDIDATE_LIMIT, min_events=SEMANTIC_CANDIDATE_LIMIT,
+        )
+        reviewed_ids = None
+        semantic_merges = 0
+        semantic_fallback = False
+        if len(candidates) > 1:
+            try:
+                clusters = svc.cluster_digest_events(candidates)
+                groups = merge_event_groups(groups, clusters)
+                reviewed_ids = {group["representative"]["id"] for group in candidates}
+                semantic_merges = sum(len(cluster) - 1 for cluster in clusters)
+            except Exception as exc:
+                semantic_fallback = True
+                app.logger.warning("Daily digest deduplication failed: %s", _redact_api_error(str(exc)))
         selected = rank_events(
-            groups, _previous_digest_signals(date_str), cutoff=cutoff,
-            min_events=MAX_DIGEST_EVENTS,
+            groups, previous, cutoff=cutoff,
+            min_events=MAX_DIGEST_EVENTS, candidate_ids=reviewed_ids,
         )
         written = {}
         writing_failures = 0
@@ -2353,6 +2371,9 @@ def _generate_daily_summary_global(date_str: str) -> dict | None:
                  "articles_after_dedup": len(groups),
                  "selected_events": len(selected), "missing_signals": len(missing),
                  "signal_fallbacks": signal_failures, "writing_fallback_batches": writing_failures,
+                 "semantic_merges": semantic_merges, "semantic_dedup_fallback": semantic_fallback,
+                 "semantic_review_candidates": len(candidates) if len(candidates) > 1 else 0,
+                 "event_selection_scope": "semantic_review" if reviewed_ids is not None else "all_rule_grouped_events",
                  "selected_articles_with_summary": sum(
                      bool(group["representative"].get("summary")) for group in selected
                  ),
@@ -5671,6 +5692,8 @@ def _count_scalar(conn, sql: str) -> int:
 @app.route("/admin/server-stats", methods=["GET"])
 @require_role("admin")
 def admin_server_stats():
+    from tts_cache import cache as tts_cache
+
     # Sample the sibling process before opening/using any SQLite connection in
     # this view; a one-second local network timeout must never extend a DB lock.
     refresh_stats = _refresh_runtime_stats()
@@ -5717,6 +5740,7 @@ def admin_server_stats():
         },
         "disk": disk,
         "image_cache": cache,
+        "tts_cache": tts_cache.stats(),
         "counts": {
             "articles": articles,
             "users": users,
@@ -6816,7 +6840,8 @@ def _tts_result(article_id, current):
 
 
 from tts_routes import register_tts_routes
-register_tts_routes(app, _tts_article, _tts_result, lambda: os.path.abspath(NEWS_DB))
+register_tts_routes(app, _tts_article, _tts_result, lambda: os.path.abspath(NEWS_DB),
+                    lambda day: _get_daily_summary_global_cache(day))
 
 
 # ─── Main ─────────────────────────────────────────────────────

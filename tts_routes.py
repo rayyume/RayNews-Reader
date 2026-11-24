@@ -1,6 +1,8 @@
 """Authenticated TTS APIs; browser requests never carry provider credentials."""
 import hashlib
+import re
 import tempfile
+from datetime import date
 from itertools import chain
 from pathlib import Path
 
@@ -8,11 +10,13 @@ from flask import Blueprint, Response, g, jsonify, request, send_file
 
 from ai_access import access
 from auth import require_role
+from models import get_system_ai_config
 from tts_cache import cache
-from tts_service import TTSError, configured, get_config, listening_text, public_config, reading_content, save_config, synthesize
+from tts_service import (TTSError, configured, digest_listening_text, get_config,
+                         listening_text, public_config, reading_content, save_config, synthesize)
 
 
-def register_tts_routes(app, load_article, load_result, namespace):
+def register_tts_routes(app, load_article, load_result, namespace, load_digest):
     bp = Blueprint("tts", __name__)
 
     @bp.after_request
@@ -56,20 +60,34 @@ def register_tts_routes(app, load_article, load_result, namespace):
             selection["required_preferences"] = sorted({*selection["required_preferences"], "view_summary"})
         return article, text, has_summary, selection
 
+    def prepare_digest(day, current):
+        if not current["view_daily_digest"]:
+            raise TTSError("AI_PERMISSION_DENIED", "请先启用每日总结并获得访问权限", 403)
+        digest = load_digest(day)
+        if not digest or not digest.get("summary"):
+            raise TTSError("TTS_DIGEST_NOT_FOUND", "这份每日总结暂无可供语音阅读的内容", 404)
+        return digest_listening_text(day, digest["summary"])
+
     def checked_job(job_id):
         current = permitted()
         job = cache.get(job_id)
         if any(not current.get(preference) for preference in job.get("selection", {}).get("required_preferences", [])):
             raise TTSError("AI_PERMISSION_DENIED", "朗读内容的访问权限或显示设置已变更，请重新生成语音", 403)
-        _, text, _, selection = prepare(job["article_id"], current, job["has_summary"])
+        selection = job["selection"]
+        if selection.get("digest_date"):
+            text = prepare_digest(selection["digest_date"], current)
+        else:
+            _, text, _, selection = prepare(job["article_id"], current, job["has_summary"])
         if (job["revision"] != get_config()["revision"] or selection != job.get("selection") or
                 hashlib.sha256(text.encode()).hexdigest() != job["text_hash"]):
-            raise TTSError("TTS_EXPIRED", "文章、译文、显示标题或语音配置已更新，请重新生成", 410)
+            raise TTSError("TTS_EXPIRED", "朗读内容或语音配置已更新，请重新生成", 410)
         return job
 
     def job_response(job):
-        result = {key: job[key] for key in ("id", "article_id", "status", "has_summary")}
+        result = {key: job[key] for key in ("id", "article_id", "status", "has_summary", "segmented")}
         result.update(job.get("selection", {}))
+        if "preprocessing" in job:
+            result["preprocessing"] = job["preprocessing"]
         if job["status"] != "failed":
             result["stream_url"] = "/ai/tts/stream/" + job["id"]
         if job["status"] == "ready":
@@ -79,6 +97,15 @@ def register_tts_routes(app, load_article, load_result, namespace):
             if g.user_role == "admin" and job.get("admin_detail"):
                 result["detail"] = job["admin_detail"]
         return result
+
+    def listener_id(value):
+        if not re.fullmatch(r"[0-9a-f]{32}", value):
+            raise TTSError("TTS_INVALID_LISTENER", "朗读会话无效", 400)
+        return value
+
+    def request_listener():
+        value = request.headers.get("X-TTS-Listener")
+        return listener_id(value) if value is not None else None
 
     @bp.route("/admin/tts-config", methods=["GET", "PUT"])
     @require_role("admin")
@@ -110,13 +137,36 @@ def register_tts_routes(app, load_article, load_result, namespace):
         # URLs, credentials and arbitrary model parameters are never forwarded.
         job = cache.request(article_id, g.user_id, settings, text, has_summary,
                             namespace=namespace() + ":" + str(article_id),
-                            valid=lambda: load_article(article_id) is not None, selection=selection)
+                            valid=lambda: load_article(article_id) is not None, selection=selection,
+                            speech_config=get_system_ai_config(), listener=request_listener())
         result = job_response(job)
         result["article"] = {key: article.get(key, "") for key in (
             "id", "title", "source", "display_source", "display_source_key", "source_curated", "source_labels_read_at",
             "thumb", "date", "time")}
         result["partial_content"] = article.get("has_full_content") == 0
         return jsonify(result), 200 if job["status"] == "ready" else 202
+
+    @bp.route("/ai/tts/daily-summary/<day>", methods=["POST"])
+    @require_role("user", "admin")
+    def generate_digest(day):
+        current = permitted()
+        try:
+            if date.fromisoformat(day).isoformat() != day:
+                raise ValueError
+        except ValueError:
+            raise TTSError("TTS_DIGEST_NOT_FOUND", "每日总结日期无效", 404) from None
+        text = prepare_digest(day, current)
+        selection = {"digest_date": day, "required_preferences": ["view_daily_digest"]}
+        job = cache.request(None, g.user_id, get_config(), text, False,
+                            namespace=f"{namespace()}:digest:{day}", selection=selection,
+                            speech_config=get_system_ai_config(), listener=request_listener())
+        return jsonify(job_response(job)), 200 if job["status"] == "ready" else 202
+
+    @bp.route("/ai/tts/listeners/<listener>", methods=["DELETE"])
+    @require_role("user", "admin")
+    def stop_listener(listener):
+        cache.stop_listener(g.user_id, listener_id(listener))
+        return "", 204
 
     @bp.route("/ai/tts/jobs/<job_id>", methods=["GET"])
     @require_role("user", "admin")

@@ -15,6 +15,8 @@ const PRECACHE = [
   '/favicon-32x32.png?v=2',
   '/favicon-16x16.png?v=2',
   '/apple-touch-icon.png?v=2',
+  '/android-chrome-192x192.png',
+  '/vendor/qrcode-generator-2.0.4.js',
 ];
 
 function normalizedApiRequest(request) {
@@ -31,6 +33,13 @@ function normalizedApiRequest(request) {
 
 function cacheApiResponse(event, cacheRequest, cloned) {
   const write = apiCacheWriteQueue.catch(() => {}).then(async () => {
+    // Public APIs can report an application error with HTTP 200. Retain the
+    // last readable snapshot if that happens during an upstream restart.
+    const data = await cloned.clone().json();
+    if (!data || data.error) {
+      void cloned.body?.cancel();
+      return;
+    }
     const cache = await caches.open(API_CACHE);
     await cache.put(cacheRequest, cloned);
     const keys = await cache.keys();
@@ -73,14 +82,24 @@ const NETWORK_TIMEOUT_MS = 8000;
 
 function fetchWithTimeout(request, timeoutMs = NETWORK_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    request.signal?.addEventListener('abort', abort, {once: true});
+    if (request.signal?.aborted) abort();
+    const cleanup = () => {
+      clearTimeout(timer);
+      request.signal?.removeEventListener('abort', abort);
+    };
     const timer = setTimeout(() => {
       const error = new Error('SW network timeout');
       error.name = 'SwNetworkTimeoutError';
+      cleanup();
       reject(error);
+      abort();
     }, timeoutMs);
-    fetch(request).then(
-      response => { clearTimeout(timer); resolve(response); },
-      error => { clearTimeout(timer); reject(error); },
+    fetch(request, { signal: controller.signal }).then(
+      response => { cleanup(); resolve(response); },
+      error => { cleanup(); reject(error); },
     );
   });
 }
@@ -123,7 +142,7 @@ self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
 
   // External assets use the browser network path directly.
-  if (url.origin !== self.location.origin) {
+  if (url.origin !== self.location.origin || event.request.method !== 'GET') {
     return;
   }
 
@@ -144,44 +163,20 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // This endpoint is polled every 12 seconds. Its old responses do not help
-  // offline reading and should not displace cached article pages or details.
-  if (url.pathname === '/api/news/title-updates') {
+  // Poll results depend on a live cursor. Cache storage is for readable snapshots.
+  if (url.pathname === '/api/news/title-updates' ||
+      (url.pathname === '/api/news' && url.searchParams.has('since'))) {
     event.respondWith(fetchWithTimeout(event.request));
     return;
   }
 
-  // ── API list: network-first + background cache (no cold-start delay) ──
+  // List, search and article detail use live data with an offline fallback.
   if (url.pathname.startsWith('/api/')) {
     const cacheRequest = normalizedApiRequest(event.request);
-    // Article detail: network-first, cache fallback only when offline.
-    // Stale-while-revalidate here served the pre-translation body on the first
-    // read after an automatic translation (and again on every fresh session
-    // whose SW cache predates the translation), so a completed translation only
-    // appeared one open later. Fast in-session re-opens are already covered by
-    // the in-page articleBodyCache, so the SW cache only needs to be an offline
-    // fallback — mirroring the list handler below.
-    if (/^\/api\/news\/\d+$/.test(url.pathname)) {
-      event.respondWith(
-        fetchWithTimeout(event.request).then(network => {
-          if (network.ok) {
-            const cloned = network.clone();
-            cacheApiResponse(event, cacheRequest, cloned);
-          }
-          return network;
-        }).catch(error => {
-          return caches.open(API_CACHE).then(cache => cache.match(cacheRequest)).then(cached => {
-            if (cached) return withSwFallbackMarker(cached);
-            throw error;
-          });
-        })
-      );
-      return;
-    }
-    // List / other API: network-first (avoids cold-start cache delay)
     event.respondWith(
       fetchWithTimeout(event.request).then(network => {
-        if (network.ok) {
+        if (network.status >= 500) throw new Error('News API unavailable');
+        if (network.ok && network.headers.get('Content-Type')?.includes('application/json')) {
           const cloned = network.clone();
           cacheApiResponse(event, cacheRequest, cloned);
         }
@@ -218,6 +213,8 @@ self.addEventListener('fetch', event => {
   if (event.request.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html') {
     event.respondWith(
       fetchWithTimeout(event.request).then(network => {
+        if (network.status >= 500) throw new Error('App shell unavailable');
+        if (!network.ok || !network.headers.get('Content-Type')?.includes('text/html')) return network;
         const cloned = network.clone();
         return caches.open(CACHE).then(cache => {
           cache.put(event.request, cloned).catch(err => {

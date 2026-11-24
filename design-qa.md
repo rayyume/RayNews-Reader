@@ -31,3 +31,13 @@
 没有剩余 P0／P1／P2 布局或交互问题。真实 Kokoro 鉴权、实际音色听感和 iOS 后台播放仍需部署后使用管理员保存的凭据及实机验证；这些不属于本次受控浏览器验收的已验证范围。
 
 final result: passed
+
+## v6.1 文章分享图片验收
+
+- 设计参考为 `/tmp/raynews-share-prototypes/share-card-rounded-summary.png`，尺寸 1680 × 1552。实现证据为 `/tmp/raynews-v61.xTrky6/chromium-actual-share.png` 和 `/tmp/raynews-v61.xTrky6/webkit-actual-share.png`，均为 1680 × 1406。PNG 以 840 CSS px、2 倍密度绘制。弹窗另在 390 × 844 和 1280 × 844 CSS px、deviceScaleFactor 1 下检查。
+- 在同批图像输入中对比原型和同标题、同来源、同摘要的实际导出。衬线标题、深蓝紫渐变、来源色块、品牌位置和底部二维码布局一致。运行时按可用宽度换行，示例标题占两行，卡片高度随内容收拢。
+- 检查摘要局部时确认蓝色边缘沿 15 px 圆角衔接顶底，浅色文字在半透明底色上清晰。标题使用系统可用的中文衬线字体，来源和摘要使用无衬线字体。品牌使用站点原始位图，二维码中心保留清晰的小标志。用解码器核对了原尺寸和缩至 840 像素后的二维码。
+- WebKit 首次截图捕获到 PNG 解码前的空白预览。改为解码完成后统一显示图片和下载按钮，再以真实本地 HTTP 页面核对 `/tmp/raynews-v61.xTrky6/webkit-actual-preview.png` 的渲染像素、下载文件和文章链接。
+- Chromium 和 WebKit 均验证了文章分享入口、链接复制、PNG 预览和下载。Chromium 另验证文件分享调用和有无 AI 摘要两种状态。页面 JavaScript 错误为空。原型参考中的示例域名在测试导出里对应测试站点地址。
+
+final result: passed
