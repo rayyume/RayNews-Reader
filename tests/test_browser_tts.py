@@ -193,6 +193,31 @@ def test_article_share_offers_link_and_downloadable_png(browser, width, has_summ
         assert '科技观察' in rendered
         assert ('AI 摘要' in rendered) == has_summary
         assert not any(method == 'POST' and path.startswith('/ai/') for method, path in calls)
+        pixels = dialog.get_by_alt_text('文章分享卡片预览').evaluate("""(image, hasSummary) => {
+          const canvas = document.createElement('canvas');
+          canvas.width = image.naturalWidth;
+          canvas.height = image.naturalHeight;
+          const context = canvas.getContext('2d', {willReadFrequently:true});
+          context.drawImage(image, 0, 0);
+          const rgb = (x, y) => [...context.getImageData(x, y, 1, 1).data].slice(0, 3);
+          const qrTop = canvas.height - 332;
+          const summaryTop = canvas.height - 626;
+          return {
+            quietZone: rgb(1324 + 16, qrTop + 17),
+            firstModule: rgb(1324 + 17, qrTop + 17),
+            summary: hasSummary ? [
+              rgb(122, summaryTop + 45),
+              rgb(119, summaryTop + 45),
+              rgb(149, summaryTop)
+            ] : null
+          };
+        }""", has_summary)
+        assert pixels['quietZone'] == [255, 255, 255]
+        assert pixels['firstModule'] == [17, 27, 49]
+        if has_summary:
+            accent, outside, top = pixels['summary']
+            assert accent == [180, 191, 254]
+            assert outside[0] < 70 and top[0] < 100
         with page.expect_download() as event:
             dialog.get_by_role('button', name='下载 PNG').click()
         assert event.value.suggested_filename == 'raynews-1.png'

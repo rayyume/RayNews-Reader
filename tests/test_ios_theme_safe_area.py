@@ -1,12 +1,25 @@
 """Check document theming; the native iOS status bar needs device validation."""
 
+import json
+from urllib.parse import urljoin
+
 import pytest
 
-from test_frontend_refresh_behavior import run_node, source_between
+from test_frontend_refresh_behavior import HTML, ROOT, run_node, source_between
 
 
 EARLY_THEME = source_between("<script>\n(function()", "</script>").split("<script>\n", 1)[1]
 THEME_FUNCTIONS = source_between("function resolveThemePreference(", "// ═══ Auth State")
+
+
+def test_pwa_declares_its_existing_home_identity_on_each_deployment_origin():
+    manifest = json.loads((ROOT / "frontend" / "manifest.json").read_text(encoding="utf-8"))
+    assert '<link rel="manifest" href="/manifest.json">' in HTML
+    assert f'<meta name="apple-mobile-web-app-title" content="{manifest["short_name"]}">' in HTML
+    for origin in ("https://news.example.test/", "https://another.example.test/"):
+        start_url = urljoin(origin, manifest["start_url"])
+        assert urljoin(start_url, manifest["id"]) == start_url == origin
+        assert urljoin(origin, manifest["scope"]) == origin
 
 
 @pytest.mark.parametrize(

@@ -584,7 +584,7 @@ def test_filter_switch_rolls_back_when_target_page_cannot_load():
     assert "const previousPage = currentPage;" in block
     assert "if (pageApplied || !targetData || !nearTopReached || !ownsUnappliedNavigation()) return;" in block
     assert "preparePageNavigation(1, value)" in block
-    assert "if (ownsUnappliedNavigation()) window.scrollTo(0, previousScrollY);" in block
+    assert "if (!fromSwipe && ownsUnappliedNavigation()) window.scrollTo(0, previousScrollY);" in block
 
 
 def test_cached_page_background_calibration_reuses_existing_cards():
@@ -866,7 +866,7 @@ def test_adjacent_pages_are_buffered_immediately_and_cover_images_are_warmed():
     prepare_end = html.index("// Full snapshot compatibility wrapper", prepare_start)
     prepare_block = html[prepare_start:prepare_end]
     assert "const pendingPrefetch = pagePrefetchPromises.get(key);" in prepare_block
-    assert "const prefetched = await withPromiseTimeout(pendingPrefetch, null, 400);" in prepare_block
+    assert "await withPromiseTimeout(pendingPrefetch, null, interactive ? 80 : 400)" in prepare_block
 
 
 def test_must_be_fresh_navigation_has_a_downgrade_budget():
@@ -874,7 +874,7 @@ def test_must_be_fresh_navigation_has_a_downgrade_budget():
     prepare_start = html.index("async function preparePageNavigation(")
     prepare_end = html.index("// Full snapshot compatibility wrapper", prepare_start)
     prepare_block = html[prepare_start:prepare_end]
-    assert "const NAVIGATION_FRESH_BUDGET_MS = 2500;" in prepare_block
+    assert "const NAVIGATION_FRESH_BUDGET_MS = interactive ? 150 : 2500;" in prepare_block
     assert "await withPromiseTimeout(networkPromise, null, NAVIGATION_FRESH_BUDGET_MS)" in prepare_block
     assert "peekStaleBufferedPage(page, activeFilter)" in prepare_block
     assert "applyNewsPage(" not in prepare_block
@@ -933,7 +933,7 @@ def test_mobile_cold_start_resets_scroll_before_and_after_bootstrap():
     initial_start = html.index("// Initial load")
     initial_end = html.index("// Restore sidebar preference", initial_start)
     initial_block = html[initial_start:initial_end]
-    assert initial_block.index("resetMobileColdStartScroll();") < initial_block.index("bootstrapNews();")
+    assert initial_block.index("resetMobileColdStartScroll();") < initial_block.index("bootstrapNews()")
     assert "history.scrollRestoration = 'manual';" in html
     assert "pageshow" not in initial_block
 
