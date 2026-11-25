@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="RayNews">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0a0a0c" id="themeColorMeta">
@@ -77,8 +78,8 @@ html[data-theme="light"] {
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html{font-size:16px;scroll-behavior:auto;-webkit-font-smoothing:antialiased;max-width:100%;overflow-x:hidden;background:var(--bg)}
 html.home-gestures,html.home-gestures body{overscroll-behavior-x:none}
-.home-gestures .app{touch-action:pan-y pinch-zoom}
-.home-gestures .topcat-bar{touch-action:auto;overscroll-behavior-x:contain}
+.app{touch-action:pan-y pinch-zoom}
+.topcat-bar{overscroll-behavior-x:contain}
 body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.6;max-width:100%;overflow-x:hidden;-webkit-overflow-scrolling:touch}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
@@ -144,7 +145,8 @@ a:hover{text-decoration:underline}
 .topcat-bar::-webkit-scrollbar{display:none}
 .topcat-btn{flex-shrink:0;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-2);font-size:12px;font-weight:700;cursor:pointer;padding:5px 14px;border-radius:100px;font-family:var(--font);white-space:nowrap;transition:background .15s,border-color .15s,color .15s}
 .topcat-btn:hover{background:var(--accent-dim);border-color:var(--accent);color:var(--accent)}
-.topcat-btn.active{background:var(--accent-dim);border-color:var(--accent);color:var(--accent)}
+.topcat-btn.active,.topcat-btn.pending{background:var(--accent-dim);border-color:var(--accent);color:var(--accent)}
+.topcat-btn.pending{box-shadow:inset 0 -2px var(--accent)}
 .topcat-btn.category-sweep{position:relative;overflow:hidden}
 .topcat-btn.category-sweep::after{content:'';position:absolute;inset:0;pointer-events:none;background:linear-gradient(90deg,transparent,var(--accent-dim) 35%,var(--accent) 53%,transparent);opacity:.5;animation:category-sweep .34s ease-out both}
 .topcat-btn.category-sweep.reverse::after{animation-direction:reverse}
@@ -159,24 +161,26 @@ a:hover{text-decoration:underline}
 .list.page-switching .item{animation:pageFadeIn .28s cubic-bezier(.22,.61,.36,1) both;animation-delay:calc(var(--motion-index,0) * 40ms)}
 @keyframes listRefreshSweep{0%{transform:translateX(-110%);opacity:.35}50%{opacity:.9}100%{transform:translateX(385%);opacity:.35}}
 @keyframes pageFadeIn{from{opacity:0;transform:translateY(-12px)}to{opacity:1;transform:translateY(0)}}
-.item{display:flex;min-width:0;max-width:100%;gap:16px;padding:18px 20px;background:var(--bg-card);cursor:pointer;transition:background 0.12s;position:relative}
-.item:hover{background:var(--bg-card-hover)}
+.item{display:flex;min-width:0;max-width:100%;gap:16px;padding:18px 20px;background:var(--bg-card);cursor:pointer;transition:background 0.12s;position:relative;-webkit-tap-highlight-color:transparent}
 .item-thumb{width:120px;height:80px;border-radius:6px;overflow:hidden;flex-shrink:0;background:var(--bg-surface)}
 .item-thumb img{width:100%;height:100%;object-fit:cover;transition:transform 0.3s}
-.item:hover .item-thumb img{transform:scale(1.05)}
 .item-body{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:space-between}
 .item-title{font-size:15px;font-weight:600;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;transition:color 0.12s}
-.item:hover .item-title{color:var(--text)}
 .item-meta{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--text-3);margin-top:8px}
 .badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:100px;font-weight:700;font-size:10px;letter-spacing:0.04em}
 .full-tag{color:var(--accent);font-size:10px;font-weight:700}
 .item-arrow{position:absolute;right:20px;top:50%;transform:translateY(-50%);color:var(--text-3);opacity:0;transition:opacity 0.12s,transform 0.12s;font-size:14px}
-.item:hover .item-arrow{opacity:1;transform:translateY(-50%) translateX(2px)}
+@media(hover:hover) and (pointer:fine){
+  html:not(.touch-input) .item:hover{background:var(--bg-card-hover)}
+  html:not(.touch-input) .item:hover .item-thumb img{transform:scale(1.05)}
+  html:not(.touch-input) .item:hover .item-title{color:var(--text)}
+  html:not(.touch-input) .item:hover .item-arrow{opacity:1;transform:translateY(-50%) translateX(2px)}
+}
 
 /* ═══ Locked Section (guest paywall blur) ═════════ */
 .locked-section{position:relative;min-height:180px}
 .locked-content{filter:blur(9px) saturate(0.85);pointer-events:none;user-select:none;-webkit-user-select:none}
-.locked-content .item:hover{background:var(--bg-card)}
+.locked-content .item{background:var(--bg-card)}
 .locked-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;cursor:pointer;background:linear-gradient(180deg,transparent 0%,var(--bg-card) 50%)}
 .locked-overlay-card{display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center}
 .locked-lock-icon{width:44px;height:44px;border-radius:50%;background:var(--bg-card);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 10px 30px rgba(0,0,0,0.35)}
@@ -2438,6 +2442,8 @@ function topCatEntries() {
   );
 }
 
+let pendingCategory = null;
+
 // renderFilters() (and thus this) runs on every background refresh, not just
 // on user clicks. Rebuilding the button DOM every time can swap the node out
 // from under an in-flight click (mousedown fires on the old node, the redraw
@@ -2465,6 +2471,7 @@ function renderTopCatBar() {
     const btn = buttons[i];
     if (!btn) return;
     btn.classList.toggle('active', filter === entry.key);
+    btn.classList.toggle('pending', pendingCategory === entry.key && filter !== entry.key);
     btn.title = entry.full;
     btn.textContent = entry.key === 'all' ? 'All' : (isNarrow ? entry.full.slice(0, 2) : entry.full);
   });
@@ -6946,6 +6953,16 @@ function scheduleAdjacentPagePrefetch(page = currentPage, activeFilter = filter,
   if (page < totalPages) prefetchNewsPage(page + 1, activeFilter);
 }
 
+function prefetchAdjacentCategories(activeFilter) {
+  if (!authToken) return;
+  const tabs = topCatEntries();
+  const index = tabs.findIndex(tab => tab.key === activeFilter);
+  if (index < 0) return;
+  for (const tab of [tabs[index - 1], tabs[index + 1]]) {
+    if (tab) void prefetchNewsPage(1, tab.key);
+  }
+}
+
 async function loadNewsPage(page = 1, options = {}) {
   const requestSeq = ++pageRequestSequence;
   pageRequestPendingSequence = requestSeq;
@@ -7143,7 +7160,7 @@ async function preparePageNavigation(page, activeFilter) {
   return sequence === pageRequestSequence ? data : null;
 }
 
-async function prepareNewsPageNavigation(page, activeFilter) {
+async function prepareNewsPageNavigation(page, activeFilter, {interactive = false} = {}) {
   const requestSeq = ++pageRequestSequence;
   if (pageRequestController) pageRequestController.abort();
   const epochAtStart = contentEpoch;
@@ -7179,7 +7196,7 @@ async function prepareNewsPageNavigation(page, activeFilter) {
 
   // A single snapshot is committed per navigation. A slow network response
   // from a snapshot-based visit can only warm a future visit.
-  const NAVIGATION_FRESH_BUDGET_MS = 2500;
+  const NAVIGATION_FRESH_BUDGET_MS = interactive ? 150 : 2500;
   const mustBeFresh = pendingRelevantCount(activeFilter) > 0;
   if (mustBeFresh) {
     const networkPromise = startNetworkFetch();
@@ -7207,12 +7224,12 @@ async function prepareNewsPageNavigation(page, activeFilter) {
   }
   const pendingPrefetch = pagePrefetchPromises.get(key);
   if (pendingPrefetch) {
-    const prefetched = await withPromiseTimeout(pendingPrefetch, null, 400);
+    const prefetched = await withPromiseTimeout(pendingPrefetch, null, interactive ? 80 : 400);
     if (!isCurrent()) return null;
     if (isUsable(prefetched) && epochAtStart === contentEpoch) return prefetched;
   }
   const networkPromise = startNetworkFetch();
-  const cached = await withCacheTimeout(readCachedNewsPage(page, activeFilter), null, 200);
+  const cached = await withCacheTimeout(readCachedNewsPage(page, activeFilter), null, interactive ? 80 : 200);
   if (!isCurrent()) return null;
   if (isUsable(cached) && epochAtStart === contentEpoch) return cached;
   const result = await networkPromise;
@@ -7502,6 +7519,12 @@ async function selectFilterFromTopBar(value, direction = 0, fromSwipe = false) {
   // applying to this unchanged list. Only invalidate an older page navigation
   // when one is actually pending, otherwise its late result could still win.
   if (value === previousFilter && previousPage === 1) {
+    if (fromSwipe && pageNavigationPending) {
+      ++pageNavigationSequence;
+      pageRequestController?.abort();
+      setPageNavigationPending(false);
+      return;
+    }
     const navigationSeq = pageNavigationPending
       ? ++pageNavigationSequence
       : pageNavigationSequence;
@@ -7528,31 +7551,50 @@ async function selectFilterFromTopBar(value, direction = 0, fromSwipe = false) {
   const navigationSeq = ++pageNavigationSequence;
   let transitionList = null;
   let targetData = null;
-  let nearTopReached = false;
+  let nearTopReached = fromSwipe;
   let pageApplied = false;
   const ownsUnappliedNavigation = () => (
     navigationSeq === pageNavigationSequence
     && filter === previousFilter
     && currentPage === previousPage
+    && (!fromSwipe || !hasBlockingOverlayOpen())
   );
   const applyTargetWhenReady = () => {
     if (pageApplied || !targetData || !nearTopReached || !ownsUnappliedNavigation()) return;
+    if (fromSwipe) {
+      programmaticScrollUntil = Date.now() + 300;
+      window.scrollTo(0, 0);
+    }
     applyFilterSelectionState(value);
     transitionList = applyPageDuringScroll(targetData, 1, value, direction);
     pageApplied = true;
   };
 
   setPageNavigationPending(true);
-  programmaticScrollUntil = Date.now() + 1200;
+  if (fromSwipe) {
+    pendingCategory = value;
+    renderTopCatBar();
+    const tab = document.querySelector('#topCatBar .topcat-btn.pending');
+    tab?.scrollIntoView({block: 'nearest', inline: 'nearest'});
+  } else {
+    if (pendingCategory !== null) {
+      pendingCategory = null;
+      renderTopCatBar();
+    }
+    programmaticScrollUntil = Date.now() + 1200;
+  }
   try {
-    // Start data preparation before the scroll, but do not await it: both work
-    // concurrently and the old list stays visible until the viewport is near top.
-    const dataPromise = Promise.resolve(preparePageNavigation(1, value)).then(data => {
+    // Taps prepare data alongside the scroll. Swipes keep the old scroll
+    // position until the destination snapshot is ready to commit.
+    const loading = fromSwipe
+      ? prepareNewsPageNavigation(1, value, {interactive: true})
+      : preparePageNavigation(1, value);
+    const dataPromise = Promise.resolve(loading).then(data => {
       targetData = data;
       applyTargetWhenReady();
       return data;
     });
-    const scrollPromise = scrollPageToTop({
+    const scrollPromise = fromSwipe ? Promise.resolve(true) : scrollPageToTop({
       onNearTop: () => {
         nearTopReached = true;
         applyTargetWhenReady();
@@ -7566,7 +7608,7 @@ async function selectFilterFromTopBar(value, direction = 0, fromSwipe = false) {
       applyTargetWhenReady();
     }
     if (!data || !pageApplied) {
-      if (ownsUnappliedNavigation()) window.scrollTo(0, previousScrollY);
+      if (!fromSwipe && ownsUnappliedNavigation()) window.scrollTo(0, previousScrollY);
       return;
     }
 
@@ -7574,9 +7616,10 @@ async function selectFilterFromTopBar(value, direction = 0, fromSwipe = false) {
     if (!data.navigationFallback) consumePendingNewArticles(value);
     syncListUrl(fromSwipe ? {replace: true} : {push: true});
     scheduleAdjacentPagePrefetch(1, value, Number(data.total || 0));
+    if (fromSwipe) prefetchAdjacentCategories(value);
     if (window.matchMedia && window.matchMedia('(max-width: 768px)').matches) closeSidebar();
   } catch (error) {
-    if (ownsUnappliedNavigation()) window.scrollTo(0, previousScrollY);
+    if (!fromSwipe && ownsUnappliedNavigation()) window.scrollTo(0, previousScrollY);
     console.error('Top category navigation failed', error);
   } finally {
     if (navigationSeq === pageNavigationSequence) setPageNavigationPending(false);
@@ -7584,12 +7627,12 @@ async function selectFilterFromTopBar(value, direction = 0, fromSwipe = false) {
   }
 }
 
-async function selectFilter(value, {fromSwipe = false} = {}) {
+async function selectFilter(value, {fromSwipe = false, gestureDirection = 0} = {}) {
   if (value !== filter || currentPage !== 1) cancelViewBoundRefreshWork();
   const keys = topCatEntries().map(item => item.key);
   const from = keys.indexOf(filter);
   const to = keys.indexOf(value);
-  const direction = from >= 0 && to >= 0 ? Math.sign(to - from) : 0;
+  const direction = gestureDirection || (from >= 0 && to >= 0 ? Math.sign(to - from) : 0);
   return selectFilterFromTopBar(value, direction, fromSwipe);
 }
 
@@ -8127,6 +8170,10 @@ function renderPagination(totalPages) {
 function setPageNavigationPending(isPending) {
   pageNavigationPending = isPending;
   document.getElementById('list').setAttribute('aria-busy', String(isPending));
+  if (!isPending && pendingCategory !== null) {
+    pendingCategory = null;
+    renderTopCatBar();
+  }
   const totalPages = Math.max(1, Math.ceil(currentTotal / PAGE_SIZE));
   renderPagination(totalPages);
 }
@@ -9152,6 +9199,7 @@ const articleShare = (() => {
   const download = el('shareDownloadCard');
   const nativeCard = el('shareNativeCard');
   const linkInput = el('shareLinkInput');
+  const pixelRatio = 2;
   let active, qrScript;
 
   function setMode(mode) {
@@ -9234,18 +9282,25 @@ const articleShare = (() => {
 
   function drawQr(context, matrix, logo, x, y) {
     const size = 118, count = matrix.getModuleCount();
-    const pixel = Math.floor(size / (count + 8));
-    const start = Math.floor((size - count * pixel) / 2);
+    // Match the reference inset while reserving four quiet modules. Snap the
+    // edges, not each module's width, so rounding cannot shrink the full grid.
+    const margin = Math.ceil(Math.max(8.5, size * 4 / (count + 8)) * pixelRatio);
+    const span = size * pixelRatio - margin * 2;
+    const edges = Array.from({length: count + 1}, (_, index) =>
+      (margin + Math.round(index * span / count)) / pixelRatio);
     context.fillStyle = '#fff';
     roundedPath(context, x, y, size, size, 9);
     context.fill();
-    context.fillStyle = '#141925';
+    context.fillStyle = '#111b31';
     for (let row = 0; row < count; row++) {
       for (let column = 0; column < count; column++) {
-        if (matrix.isDark(row, column)) context.fillRect(x + start + column * pixel, y + start + row * pixel, pixel, pixel);
+        if (matrix.isDark(row, column)) {
+          context.fillRect(x + edges[column], y + edges[row],
+            edges[column + 1] - edges[column], edges[row + 1] - edges[row]);
+        }
       }
     }
-    const logoSize = Math.min(19, Math.floor(count * pixel * .21));
+    const logoSize = 19;
     const center = (size - logoSize) / 2;
     context.fillStyle = '#fff';
     roundedPath(context, x + center - 2, y + center - 2, logoSize + 4, logoSize + 4, 5);
@@ -9265,9 +9320,15 @@ const articleShare = (() => {
 
   async function cardPng(data) {
     const [qr, logo, summary] = await Promise.all([loadQrGenerator(), loadLogo(), existingSummary(data)]);
-    const matrix = qr(0, 'H');
-    matrix.addData(data.url, 'Byte');
-    matrix.make();
+    const makeQr = version => {
+      const matrix = qr(version, 'H');
+      matrix.addData(data.url, 'Byte');
+      matrix.make();
+      return matrix;
+    };
+    const smallest = makeQr(0);
+    // Version 8 gives the 49-module grid of the reference at short link lengths.
+    const matrix = smallest.getModuleCount() < 49 ? makeQr(8) : smallest;
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
     const font = '"DejaVu Sans", "Noto Sans CJK SC", system-ui, sans-serif';
@@ -9287,9 +9348,9 @@ const articleShare = (() => {
     const summaryHeight = body.length ? 56 + body.length * 44 : 0;
     const footerTop = summaryTop + summaryHeight + (body.length ? 22 : 0);
     const height = footerTop + 25 + 118 + 48;
-    canvas.width = width * 2;
-    canvas.height = height * 2;
-    context.scale(2, 2);
+    canvas.width = width * pixelRatio;
+    canvas.height = height * pixelRatio;
+    context.scale(pixelRatio, pixelRatio);
     context.textBaseline = 'top';
     roundedPath(context, 0, 0, width, height, 32);
     context.clip();
@@ -9342,16 +9403,23 @@ const articleShare = (() => {
       roundedPath(context, x, y, inner, summaryHeight, radius);
       context.fillStyle = inset;
       context.fill();
+      roundedPath(context, x + .5, y + .5, inner - 1, summaryHeight - 1, radius - .5);
       context.strokeStyle = rule;
       context.stroke();
+      // Fill the left border inside the panel. Its ends meet the fine border
+      // partway around each corner, like the original rounded CSS border.
+      const center = x + radius, top = y + radius, bottom = y + summaryHeight - radius;
+      const join = Math.PI * .32;
       context.beginPath();
-      context.moveTo(x + radius, y);
-      context.arcTo(x, y, x, y + summaryHeight, radius);
-      context.arcTo(x, y + summaryHeight, x + radius, y + summaryHeight, radius);
-      context.strokeStyle = accent;
-      context.lineWidth = 3;
-      context.stroke();
+      context.arc(center, top, radius, Math.PI + join, Math.PI, true);
+      context.lineTo(x, bottom);
+      context.arc(center, bottom, radius, Math.PI, Math.PI - join, true);
+      context.ellipse(center, bottom, radius - 3, radius - 1, 0, Math.PI - join, Math.PI);
+      context.lineTo(x + 3, top);
+      context.ellipse(center, top, radius - 3, radius - 1, 0, Math.PI, Math.PI + join);
+      context.closePath();
       context.fillStyle = accent;
+      context.fill();
       context.font = '600 17px ' + font;
       context.fillText('AI 摘要', x + 26, y + 15);
       context.fillStyle = '#ccd4eb';
@@ -10808,61 +10876,89 @@ if (window.matchMedia) {
 
 loadAuth();
 resetMobileColdStartScroll();
-bootstrapNews();
+void bootstrapNews().then(loaded => {
+  if (loaded) prefetchAdjacentCategories(filter);
+});
 if (navigator.standalone || (window.matchMedia('(display-mode: standalone)').matches
     && (/iPad|iPhone|iPod/.test(navigator.userAgent) || usesIpadTrackpadNavigation()))) {
   document.documentElement.classList.add('ios-standalone');
 }
 (() => {
+  const root = document.documentElement;
   const home = document.querySelector('.app');
+  const list = document.getElementById('list');
   const standalone = navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
-  document.documentElement.classList.toggle('home-gestures', !!standalone);
-  let touchStart = null;
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  root.classList.toggle('home-gestures', !!standalone);
+  let gesture = null;
   let wheelDistance = 0;
   let wheelUsed = false;
   let wheelTimer;
-  const canSwipe = target => !hasBlockingOverlayOpen()
-    && !target.closest('#topCatBar, button, a, input, select, textarea')
+  const canSwipe = target => (home.contains(target) || target === document.body)
+    && !hasBlockingOverlayOpen()
+    && !target.closest('#topCatBar, #sidebar, #sidebarBackdrop, #userMenu, input, select, textarea, [contenteditable]')
     && !(window.matchMedia('(max-width: 768px)').matches && document.getElementById('sidebar')?.classList.contains('open'));
+
   function moveCategory(direction) {
-    if (pageNavigationPending) return;
     const entries = topCatEntries();
-    const index = entries.findIndex(entry => entry.key === filter);
-    const category = sourceFilterGroups[filter]?.baseCategory;
+    const start = pendingCategory ?? filter;
+    const index = entries.findIndex(entry => entry.key === start);
+    const category = sourceFilterGroups[start]?.baseCategory;
     const current = index >= 0 ? index : Math.max(0, entries.findIndex(entry => entry.key === 'cat:' + category));
     const target = entries[current + direction];
-    if (target) void selectFilter(target.key, {fromSwipe: true});
+    if (target) void selectFilter(target.key, {fromSwipe: true, gestureDirection: direction});
   }
-  home.addEventListener('touchstart', event => {
-    touchStart = null;
+
+  function clearGesture() {
+    if (gesture?.axis === 'horizontal') list.style.removeProperty('transform');
+    gesture = null;
+  }
+
+  document.addEventListener('pointerdown', event => {
+    root.classList.toggle('touch-input', event.pointerType === 'touch');
+  }, {capture: true, passive: true});
+  document.addEventListener('pointermove', event => {
+    if (event.pointerType === 'mouse') root.classList.remove('touch-input');
+  }, {passive: true});
+
+  document.addEventListener('touchstart', event => {
+    clearGesture();
+    root.classList.add('touch-input');
     if (event.touches.length !== 1 || !canSwipe(event.target)) return;
     const {clientX: x, clientY: y, identifier} = event.touches[0];
-    const fromEdge = x < 21 || x > window.innerWidth - 21;
-    if (fromEdge && !standalone) return;
-    touchStart = {x, y, identifier};
-    if (fromEdge && event.cancelable) event.preventDefault();
-  }, {passive: false});
-  home.addEventListener('touchmove', event => {
-    if (!touchStart) return;
-    if (event.touches.length !== 1) { touchStart = null; return; }
-    const dx = Math.abs(event.touches[0].clientX - touchStart.x);
-    const dy = Math.abs(event.touches[0].clientY - touchStart.y);
-    if (dy > 15 && dy > dx) { touchStart = null; return; }
-    if (dx > 12 && dx > dy * 1.5 && event.cancelable) event.preventDefault();
-  }, {passive: false});
-  home.addEventListener('touchend', event => {
-    const start = touchStart;
-    touchStart = null;
-    const end = start && [...event.changedTouches].find(touch => touch.identifier === start.identifier);
-    if (!end || !canSwipe(event.target)) return;
-    const dx = end.clientX - start.x;
-    if (Math.abs(dx) >= 54 && Math.abs(dx) > Math.abs(end.clientY - start.y) * 1.5) {
-      if (event.cancelable) event.preventDefault();
-      moveCategory(dx < 0 ? 1 : -1);
+    if (!standalone && (x < 21 || x > window.innerWidth - 21)) return;
+    gesture = {x, y, identifier, axis: null};
+  }, {passive: true});
+  document.addEventListener('touchmove', event => {
+    if (!gesture) return;
+    const point = event.touches.length === 1 ? event.touches[0] : null;
+    if (!point || point.identifier !== gesture.identifier || hasBlockingOverlayOpen()) {
+      clearGesture();
+      return;
+    }
+    const dx = point.clientX - gesture.x;
+    const x = Math.abs(dx), y = Math.abs(point.clientY - gesture.y);
+    if (!gesture.axis && x >= 11 && x > y * 1.12) gesture.axis = 'horizontal';
+    if (!gesture.axis && y >= 11 && y > x * 1.12) gesture.axis = 'vertical';
+    if (gesture.axis !== 'horizontal') return;
+    if (event.cancelable) event.preventDefault();
+    if (!reduceMotion.matches) {
+      const offset = Math.max(-44, Math.min(44, dx * .36));
+      list.style.transform = 'translateX(' + offset + 'px)';
     }
   }, {passive: false});
-  home.addEventListener('touchcancel', () => { touchStart = null; });
-  home.addEventListener('wheel', event => {
+  document.addEventListener('touchend', event => {
+    const start = gesture;
+    clearGesture();
+    const end = start && Array.from(event.changedTouches).find(touch => touch.identifier === start.identifier);
+    if (!end || start.axis === 'vertical' || hasBlockingOverlayOpen()) return;
+    const dx = end.clientX - start.x, y = Math.abs(end.clientY - start.y);
+    const switchCategory = Math.abs(dx) >= 32 && Math.abs(dx) > y * 1.12;
+    if ((start.axis === 'horizontal' || switchCategory) && event.cancelable) event.preventDefault();
+    if (switchCategory) moveCategory(dx < 0 ? 1 : -1);
+  }, {passive: false});
+  document.addEventListener('touchcancel', clearGesture, {passive: true});
+  document.addEventListener('wheel', event => {
     if (event.ctrlKey || !canSwipe(event.target) || Math.abs(event.deltaX) <= Math.abs(event.deltaY) * 1.5) return;
     if (event.cancelable) event.preventDefault();
     clearTimeout(wheelTimer);

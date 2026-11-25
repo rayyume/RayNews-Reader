@@ -682,6 +682,7 @@ context.filter = 'cat:Old';
 context.currentPage = 1;
 context.pageNavigationSequence = 0;
 context.pageNavigationPending = false;
+context.pendingCategory = null;
 context.programmaticScrollUntil = 0;
 context.CATEGORY_ORDER = [];
 context.sourceFilterGroups = {};

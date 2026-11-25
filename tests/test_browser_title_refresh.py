@@ -164,6 +164,25 @@ def test_late_page_revalidation_warms_cache_without_replacing_visible_cards(titl
     page.screenshot(path=str(tmp_path / 'stable-page-2.png'))
 
 
+def install_swipe_probe(page):
+    page.evaluate("""() => {
+      window.categorySweeps = [];
+      document.getElementById('topCatBar').addEventListener('animationstart', event => {
+        if (event.animationName === 'category-sweep') categorySweeps.push(event.target.dataset.f);
+      });
+      window.swipeCategory = (x, endX, y, endY, selector = '#list .item') => {
+        const target = document.querySelector(selector);
+        return [['touchstart', x, y], ['touchmove', endX, endY], ['touchend', endX, endY]].map(([type, clientX, clientY]) => {
+          const point = new Touch({target, identifier:7, clientX, clientY});
+          const handled = !target.dispatchEvent(new TouchEvent(type, {bubbles:true, cancelable:true,
+            touches:type === 'touchend' ? [] : [point], changedTouches:[point]}));
+          if (type === 'touchmove') window.listDrag = document.getElementById('list').style.transform;
+          return handled;
+        });
+      };
+    }""")
+
+
 @pytest.mark.parametrize('standalone', [False, True])
 def test_home_swipe_switches_categories_and_reserves_browser_edges(title_page, tmp_path, standalone):
     page, control, _ = title_page
@@ -180,25 +199,13 @@ def test_home_swipe_switches_categories_and_reserves_browser_edges(title_page, t
         assert page.evaluate("getComputedStyle(document.querySelector('.header')).backgroundColor") == page.evaluate(
             "getComputedStyle(document.documentElement).backgroundColor"
         )
-    page.evaluate("""() => {
-      window.categorySweeps = [];
-      document.getElementById('topCatBar').addEventListener('animationstart', event => {
-        if (event.animationName === 'category-sweep') categorySweeps.push(event.target.dataset.f);
-      });
-      window.swipeCategory = (x, endX, y, endY) => {
-        const target = document.querySelector('#list .item');
-        return [['touchstart', x, y], ['touchmove', endX, endY], ['touchend', endX, endY]].map(([type, clientX, clientY]) => {
-          const point = new Touch({target, identifier:7, clientX, clientY});
-          return !target.dispatchEvent(new TouchEvent(type, {bubbles:true, cancelable:true,
-            touches:type === 'touchend' ? [] : [point], changedTouches:[point]}));
-        });
-      };
-    }""")
-    assert page.evaluate('swipeCategory(425, 72, 250, 258)') == [standalone] * 3
+    install_swipe_probe(page)
+    assert page.evaluate('swipeCategory(425, 385, 250, 258)') == [False, standalone, standalone]
     if not standalone:
         assert page.evaluate('swipeCategory(5, 320, 250, 248)') == [False] * 3
         expect(page.locator('#topCatBar .active')).to_have_text('All')
-        page.evaluate('swipeCategory(325, 72, 250, 258)')
+        page.evaluate("swipeCategory(325, 285, 250, 258, 'body')")
+    assert page.evaluate("listDrag.startsWith('translateX(-')")
     expect(page.locator('#topCatBar .active')).to_have_text('政经')
     page.wait_for_function("categorySweeps.includes('cat:News') && !pageNavigationPending")
     assert page.evaluate('history.length') == initial_length
@@ -209,6 +216,88 @@ def test_home_swipe_switches_categories_and_reserves_browser_edges(title_page, t
     page.evaluate('swipeCategory(75, 320, 250, 248)')
     expect(page.locator('#topCatBar .active')).to_have_text('All')
     assert page.evaluate('history.length') == initial_length
+
+
+def test_horizontal_swipe_shows_pending_category_and_accepts_another_swipe(title_page):
+    page, control, release = title_page
+    page.set_viewport_size({'width': 430, 'height': 932})
+    page.goto('http://raynews.test/')
+    page.wait_for_function("pageMemoryBuffer.has(newsPageCacheKey(1, 'cat:News'))")
+    page.evaluate("async () => { pageMemoryBuffer.clear(); await clearCachedNewsPages(); window.scrollTo(0, 670); }")
+    page.wait_for_function('scrollY >= 650')
+    scroll_y = page.evaluate('scrollY')
+    held = {}
+
+    def route(request):
+        query = parse_qs(urlsplit(request.request.url).query)
+        category = query.get('category', [''])[0]
+        if query.get('page') == ['1'] and category in ('News', 'Tech'):
+            held[category] = request
+        else:
+            request.fallback()
+
+    page.route('**/api/news?*', route)
+    install_swipe_probe(page)
+    assert page.evaluate("swipeCategory(325, 285, 470, 488, '#pagination button')") == [False, True, True]
+    expect(page.locator('#topCatBar .pending')).to_have_text('政经')
+    expect(page.locator('#topCatBar .active')).to_have_text('All')
+    assert page.evaluate('scrollY') == scroll_y
+    assert page.evaluate("!document.getElementById('overlay').classList.contains('open')")
+    page.evaluate("swipeCategory(325, 285, 475, 489, '#footer')")
+    expect(page.locator('#topCatBar .pending')).to_have_text('科技')
+    for _ in range(100):
+        if 'Tech' in held:
+            break
+        page.wait_for_timeout(20)
+    held['Tech'].fulfill(json={'items': [{
+        'id': 901, 'title': 'Technology headline', 'source': 'Example', 'timestamp': 1792066100
+    }], 'page': 1, 'total': 1})
+    expect(page.locator('#topCatBar .active')).to_have_text('科技')
+    expect(page.locator('#list .item-title')).to_have_text('Technology headline')
+    expect(page.locator('#topCatBar .pending')).to_have_count(0)
+    page.wait_for_function('titleReadsInFlight.has(901)')
+    release(lambda ids: 901 in ids)
+    expect(page.locator('#list .item-title')).to_have_text('翻译后的新闻标题 901')
+    assert page.evaluate('scrollY') == 0
+
+
+def test_touch_scrolling_does_not_latch_article_hover_and_tap_still_opens(title_page):
+    page, control, _ = title_page
+    control['enabled'] = False
+    page.set_viewport_size({'width': 430, 'height': 932})
+    page.add_init_script("Object.defineProperty(navigator, 'standalone', {value: true})")
+    page.goto('http://raynews.test/')
+    articles = page.locator('#list .item')
+    expect(articles.first).to_be_visible()
+    normal = articles.first.evaluate("el => getComputedStyle(el).backgroundColor")
+    articles.first.hover()
+    expect(articles.first).not_to_have_css('background-color', normal)
+
+    touch = page.context.new_cdp_session(page)
+    touch.send('Emulation.setTouchEmulationEnabled', {'enabled': True, 'maxTouchPoints': 1})
+    touch.send('Input.dispatchTouchEvent', {'type': 'touchStart', 'touchPoints': [{'x': 210, 'y': 475}]})
+    for y in (440, 395, 345, 295, 245):
+        touch.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': [{'x': 210, 'y': y}]})
+    touch.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+    page.wait_for_function('scrollY >= 100')
+    expect(page.locator('#topCatBar .active')).to_have_text('All')
+    assert "#/article/" not in page.url
+    assert articles.evaluate_all(
+        "(items, color) => items.every(item => getComputedStyle(item).backgroundColor === color)", normal
+    )
+    page.evaluate('window.scrollTo(0, 0)')
+    touch.send('Input.dispatchTouchEvent', {'type': 'touchStart', 'touchPoints': [{'x': 300, 'y': 300}]})
+    for x in (285, 270, 255):
+        touch.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': [{'x': x, 'y': 308}]})
+    touch.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+    expect(page.locator('#topCatBar .active')).to_have_text('政经')
+    assert "#/article/" not in page.url
+    page.wait_for_function('!pageNavigationPending && !document.querySelector("#list").getAnimations().length')
+    box = articles.first.bounding_box()
+    point = {'x': box['x'] + box['width'] / 2, 'y': box['y'] + box['height'] / 2}
+    touch.send('Input.dispatchTouchEvent', {'type': 'touchStart', 'touchPoints': [point]})
+    touch.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+    expect(page.locator('#articleBody')).to_contain_text('Original body 1')
 
 
 def test_slow_titles_do_not_block_navigation_and_arrive_without_replacing_cards(title_page):
