@@ -15,16 +15,12 @@
 
 <table>
   <tr>
-    <th width="72%">桌面端</th>
-    <th width="28%">移动端 PWA</th>
+    <td align="center"><img src="docs/screenshots/home.png" alt="首页：分类与文章列表" width="100%"><br><sub>首页 · 分类与列表</sub></td>
+    <td align="center"><img src="docs/screenshots/article.png" alt="文章详情页：AI 摘要与正文" width="100%"><br><sub>文章详情 · 摘要与正文</sub></td>
   </tr>
   <tr>
-    <td align="center" valign="top">
-      <img src="https://img.rayyu.me/file/1781248235309_PC.png" alt="RayNews 桌面端页面" width="100%">
-    </td>
-    <td align="center" valign="top">
-      <img src="https://img.rayyu.me/file/1781248235931_PWA.jpg" alt="RayNews 移动端 PWA 页面" width="100%">
-    </td>
+    <td align="center"><img src="docs/screenshots/tts.png" alt="语音朗读播放器" width="100%"><br><sub>语音朗读 · 边生成边播放</sub></td>
+    <td align="center"><img src="docs/screenshots/share.png" alt="分享图片：带摘要与二维码的海报" width="100%"><br><sub>分享图片 · 海报生成</sub></td>
   </tr>
 </table>
 

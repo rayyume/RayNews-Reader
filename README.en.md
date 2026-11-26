@@ -15,16 +15,12 @@ A self-hosted news reader: it pulls news from a public Telegram channel and serv
 
 <table>
   <tr>
-    <th width="72%">Desktop</th>
-    <th width="28%">Mobile PWA</th>
+    <td align="center"><img src="docs/screenshots/home.png" alt="Home: categories and article list" width="100%"><br><sub>Home · categories and list</sub></td>
+    <td align="center"><img src="docs/screenshots/article.png" alt="Article view: AI summary and body" width="100%"><br><sub>Article · summary and body</sub></td>
   </tr>
   <tr>
-    <td align="center" valign="top">
-      <img src="https://img.rayyu.me/file/1781248235309_PC.png" alt="RayNews on desktop" width="100%">
-    </td>
-    <td align="center" valign="top">
-      <img src="https://img.rayyu.me/file/1781248235931_PWA.jpg" alt="RayNews PWA on mobile" width="100%">
-    </td>
+    <td align="center"><img src="docs/screenshots/tts.png" alt="Text-to-speech player" width="100%"><br><sub>Text-to-speech · plays while generating</sub></td>
+    <td align="center"><img src="docs/screenshots/share.png" alt="Share image: poster with summary and QR code" width="100%"><br><sub>Share image · poster generation</sub></td>
   </tr>
 </table>
 
